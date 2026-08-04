@@ -279,7 +279,7 @@ def fetch_ashby(slug: str, company_label: str) -> list:
 
 def fetch_lever(slug: str, company_label: str) -> list:
     """Lever ATS public API. Tries the US host, then the EU host
-    (EU-based companies like Mistral are served from api.eu.lever.co,
+    (EU-based companies like mistral\.ai are served from api.eu.lever.co,
     and the US host can silently return an empty list)."""
     for host in ("api.lever.co", "api.eu.lever.co"):
         jobs = _fetch_lever_host(host, slug, company_label)
@@ -640,7 +640,7 @@ SCRAPERS = [
     ("Anthropic",   fetch_greenhouse, "anthropic",   "Anthropic"),
     ("OpenAI",      fetch_ashby,      "openai",      "OpenAI"),
     ("DeepMind",    fetch_greenhouse, "deepmind",    "DeepMind"),
-    ("Mistral",     fetch_lever,      "mistral",     "Mistral"),
+    ("Mistral",     fetch_ashby,      "mistral.ai",  "Mistral"),
     ("Perplexity",  fetch_ashby,      "perplexity",  "Perplexity"),
     ("xAI",         fetch_greenhouse, "xai",         "xAI"),
     ("ElevenLabs",  fetch_ashby,      "elevenlabs",  "ElevenLabs"),
