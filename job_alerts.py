@@ -1,0 +1,803 @@
+"""
+Job Alerts — senior creative & brand leadership roles at AI / top-tier tech companies.
+Customized for Carlos Perez (Creative Director).
+
+Runs daily via GitHub Actions:
+  1. Scrapes each company's careers API
+  2. Filters by title keywords + location
+  3. Saves new matches to a Notion database
+  4. Emails a daily digest via Gmail
+
+Test mode (no Notion/email, prints diagnostics only):
+  python job_alerts.py --test
+"""
+
+import os
+import re
+import json
+import sys
+import requests
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import date, datetime, timezone, timedelta
+
+TEST_MODE = "--test" in sys.argv
+
+# -- Config (env vars not required in test mode)
+if not TEST_MODE:
+    NOTION_TOKEN   = os.environ["NOTION_TOKEN"]
+    NOTION_DB_ID   = os.environ["NOTION_DB_ID"]
+    GMAIL_USER     = os.environ["GMAIL_USER"]
+    GMAIL_PASSWORD = os.environ["GMAIL_APP_PASSWORD"]
+    RECIPIENT      = os.environ["RECIPIENT_EMAIL"]
+    NOTION_HEADERS = {
+        "Authorization": f"Bearer {NOTION_TOKEN}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+    }
+else:
+    NOTION_TOKEN = NOTION_DB_ID = GMAIL_USER = GMAIL_PASSWORD = RECIPIENT = ""
+    NOTION_HEADERS = {}
+
+HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
+
+# ======================================================================
+# FILTERS — edit these lists to change what jobs you get
+# ======================================================================
+
+# A job passes if its title contains AT LEAST ONE of these phrases.
+# Note: "creative director" also matches Senior/Group/Executive/Associate CD titles.
+INCLUDE = [
+    "creative director",
+    "director of creative", "director, creative",
+    "head of creative", "creative lead",
+    "head of brand", "brand director",
+    "director of brand", "director, brand", "brand lead",
+    "vp of creative", "vp, creative",
+    "vp of brand", "vp, brand",
+    "brand marketing director",
+    "executive creative",
+]
+
+# A job is dropped if its title contains ANY of these.
+EXCLUDE_TYPE = ["intern", "internship", "part-time", "part time", "contractor"]
+
+# Locations. Matching is word-boundary based ("us" will NOT match "Austin").
+# A job with NO listed location passes automatically.
+ACCEPTED_LOCATIONS = [
+    # US — California
+    "california", "san francisco", "bay area", "los angeles", "culver city",
+    "santa monica", "burbank", "mountain view", "menlo park", "palo alto",
+    "cupertino", "sunnyvale", "san jose", "santa clara",
+    # US — other hubs
+    "new york", "nyc", "brooklyn", "austin", "chicago",
+    "seattle", "bellevue", "redmond",
+    # US — general / remote
+    "united states", "usa", "us", "remote", "north america",
+    # Europe
+    "london", "paris", "dublin", "amsterdam", "berlin", "munich",
+    "zurich", "stockholm", "madrid", "barcelona", "lisbon", "milan",
+    "united kingdom", "uk", "france", "germany", "ireland",
+    "netherlands", "spain", "switzerland", "sweden", "europe", "emea",
+]
+
+# Search terms used by scrapers that require a query (Workday, Microsoft,
+# Netflix, Apple, Spotify, GitHub). Keep these broad — the INCLUDE list
+# above does the precise filtering afterwards.
+SEARCH_QUERIES = ["creative director", "brand", "creative lead"]
+
+# ======================================================================
+# Filter helpers
+# ======================================================================
+
+def passes_title(title: str) -> bool:
+    t = title.lower()
+    if not any(k in t for k in INCLUDE):
+        return False
+    if any(k in t for k in EXCLUDE_TYPE):
+        return False
+    return True
+
+def passes_location(location: str) -> bool:
+    if not location:
+        return True
+    loc = location.lower()
+    return any(re.search(rf"\b{re.escape(a)}\b", loc) for a in ACCEPTED_LOCATIONS)
+
+def matched_keywords(title: str) -> str:
+    t = title.lower()
+    return ", ".join(k for k in INCLUDE if k in t)[:120]
+
+# -- Date helpers
+def parse_iso(s: str):
+    """Parse ISO 8601 string to UTC-aware datetime, None on failure."""
+    if not s:
+        return None
+    try:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+def parse_unix(ts, millis=True):
+    """Parse Unix timestamp (ms or s) to UTC datetime, None on failure."""
+    try:
+        v = int(ts)
+        if millis:
+            v = v / 1000
+        return datetime.fromtimestamp(v, tz=timezone.utc)
+    except Exception:
+        return None
+
+def parse_workday_date(text: str):
+    """Parse Workday's human-readable 'Posted X Days Ago' text to datetime."""
+    if not text:
+        return None
+    t = text.lower()
+    now = datetime.now(timezone.utc)
+    if "today" in t or "just posted" in t or "0 days" in t:
+        return now
+    if "yesterday" in t or "1 day" in t:
+        return now - timedelta(days=1)
+    m = re.search(r'(\d+)\s+day', t)
+    if m:
+        return now - timedelta(days=int(m.group(1)))
+    return None
+
+def is_recent(posted_at) -> bool:
+    """True if posted_at is within the last 24 hours."""
+    if posted_at is None:
+        return False
+    now = datetime.now(timezone.utc)
+    if posted_at.tzinfo is None:
+        posted_at = posted_at.replace(tzinfo=timezone.utc)
+    return (now - posted_at) <= timedelta(hours=24)
+
+def format_age(posted_at) -> str:
+    """Return a short human-readable age string, e.g. '3h ago' or 'Apr 14'."""
+    if posted_at is None:
+        return ""
+    now = datetime.now(timezone.utc)
+    if posted_at.tzinfo is None:
+        posted_at = posted_at.replace(tzinfo=timezone.utc)
+    delta = now - posted_at
+    hours = int(delta.total_seconds() // 3600)
+    if hours < 24:
+        return f"{hours}h ago" if hours > 0 else "just posted"
+    return posted_at.strftime("%b %d")
+
+# ======================================================================
+# Notion helpers
+# ======================================================================
+
+def dedup_key(title: str, company: str) -> str:
+    return f"{title.lower().strip()}|{company.lower().strip()}"
+
+def get_existing_keys() -> set:
+    """Read every (title, company) pair already saved in Notion."""
+    url = f"https://api.notion.com/v1/databases/{NOTION_DB_ID}/query"
+    existing = set()
+    cursor = None
+    while True:
+        body = {"page_size": 100}
+        if cursor:
+            body["start_cursor"] = cursor
+        r = requests.post(url, headers=NOTION_HEADERS, json=body, timeout=15)
+        if not r.ok:
+            print(f"[Notion READ ERROR {r.status_code}]: {r.text[:300]}")
+            break
+        data = r.json()
+        for page in data.get("results", []):
+            props = page.get("properties", {})
+            parts = props.get("Job Title", {}).get("title", [])
+            title = parts[0].get("plain_text", "") if parts else ""
+            company = (props.get("Company", {}).get("select") or {}).get("name", "")
+            if title:
+                existing.add(dedup_key(title, company))
+        if not data.get("has_more"):
+            break
+        cursor = data.get("next_cursor")
+    return existing
+
+def add_to_notion(job: dict) -> bool:
+    r = requests.post(
+        "https://api.notion.com/v1/pages",
+        headers=NOTION_HEADERS,
+        json={
+            "parent": {"database_id": NOTION_DB_ID},
+            "properties": {
+                "Job Title":        {"title":     [{"text": {"content": job["title"]}}]},
+                "Company":          {"select":    {"name": job["company"]}},
+                "Location":         {"rich_text": [{"text": {"content": job.get("location", "")[:2000]}}]},
+                "Link":             {"url":       job.get("url") or None},
+                "Date Found":       {"date":      {"start": date.today().isoformat()}},
+                "Keywords Matched": {"rich_text": [{"text": {"content": job.get("keywords", "")}}]},
+                "Status":           {"select":    {"name": "New"}},
+            },
+        },
+        timeout=15,
+    )
+    if not r.ok:
+        print(f"  [Notion ERROR {r.status_code}] {job['title']}: {r.text[:200]}")
+    return r.ok
+
+# ======================================================================
+# Company scrapers
+# ======================================================================
+
+def fetch_greenhouse(slug: str, company_label: str) -> list:
+    """Greenhouse ATS public API."""
+    jobs = []
+    try:
+        r = requests.get(
+            f"https://boards-api.greenhouse.io/v1/boards/{slug}/jobs",
+            headers=HEADERS, timeout=20,
+        )
+        if r.ok:
+            for j in r.json().get("jobs", []):
+                jobs.append({
+                    "title":     j.get("title", ""),
+                    "location":  (j.get("location") or {}).get("name", ""),
+                    "url":       j.get("absolute_url", ""),
+                    "company":   company_label,
+                    "posted_at": None,  # Greenhouse has no reliable publish date
+                })
+        else:
+            print(f"[{company_label}] Greenhouse HTTP {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        print(f"[{company_label}] Greenhouse error: {e}")
+    return jobs
+
+def fetch_ashby(slug: str, company_label: str) -> list:
+    """Ashby ATS public API (no auth required)."""
+    jobs = []
+    try:
+        r = requests.get(
+            f"https://api.ashbyhq.com/posting-api/job-board/{slug}",
+            headers=HEADERS, timeout=20,
+        )
+        if r.ok:
+            for j in r.json().get("jobs", []):
+                loc = j.get("location", "") or j.get("locationName", "")
+                secondary = j.get("secondaryLocations") or []
+                if secondary:
+                    loc += ", " + ", ".join(
+                        s.get("location", "") for s in secondary if isinstance(s, dict)
+                    )
+                jobs.append({
+                    "title":     j.get("title", ""),
+                    "location":  loc if isinstance(loc, str) else ", ".join(loc),
+                    "url":       j.get("jobUrl", "") or f"https://jobs.ashbyhq.com/{slug}/{j.get('id', '')}",
+                    "company":   company_label,
+                    "posted_at": parse_iso(j.get("publishedAt", "")),
+                })
+        else:
+            print(f"[{company_label}] Ashby HTTP {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        print(f"[{company_label}] Ashby error: {e}")
+    return jobs
+
+def fetch_lever(slug: str, company_label: str) -> list:
+    """Lever ATS public API."""
+    jobs = []
+    try:
+        r = requests.get(
+            f"https://api.lever.co/v0/postings/{slug}?mode=json",
+            headers=HEADERS, timeout=20,
+        )
+        if r.ok:
+            for j in r.json():
+                cats = j.get("categories", {})
+                loc = cats.get("location", "")
+                if isinstance(cats.get("allLocations"), list) and cats["allLocations"]:
+                    loc = ", ".join(cats["allLocations"])
+                jobs.append({
+                    "title":     j.get("text", ""),
+                    "location":  loc,
+                    "url":       j.get("hostedUrl", ""),
+                    "company":   company_label,
+                    "posted_at": parse_unix(j.get("createdAt"), millis=True),
+                })
+        else:
+            print(f"[{company_label}] Lever HTTP {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        print(f"[{company_label}] Lever error: {e}")
+    return jobs
+
+def fetch_workday(host: str, tenant: str, board: str, company_label: str) -> list:
+    """Generic Workday public JSON API (Adobe, Nvidia, Snap, ...)."""
+    jobs = []
+    seen = set()
+    base = f"https://{host}.myworkdayjobs.com/wday/cxs/{tenant}/{board}/jobs"
+    try:
+        for q in SEARCH_QUERIES:
+            offset = 0
+            while True:
+                r = requests.post(
+                    base,
+                    headers={**HEADERS, "Content-Type": "application/json"},
+                    json={"appliedFacets": {}, "limit": 20, "offset": offset, "searchText": q},
+                    timeout=20,
+                )
+                if not r.ok:
+                    print(f"[{company_label}] Workday HTTP {r.status_code} for q={repr(q)}: {r.text[:150]}")
+                    break
+                data = r.json()
+                postings = data.get("jobPostings", [])
+                if not postings:
+                    break
+                for j in postings:
+                    title = j.get("title", "")
+                    key = title.lower().strip()
+                    if not title or key in seen:
+                        continue
+                    seen.add(key)
+                    path = j.get("externalPath", "")
+                    url = f"https://{host}.myworkdayjobs.com/en-US/{board}{path}" if path else ""
+                    jobs.append({
+                        "title":     title,
+                        "location":  j.get("locationsText", ""),
+                        "url":       url,
+                        "company":   company_label,
+                        "posted_at": parse_workday_date(j.get("postedOn", "")),
+                    })
+                if len(postings) < 20 or offset > 400:
+                    break
+                offset += 20
+    except Exception as e:
+        print(f"[{company_label}] error: {e}")
+    return jobs
+
+def fetch_netflix() -> list:
+    """Netflix via Eightfold public JSON API."""
+    jobs = []
+    seen = set()
+    base = "https://explore.jobs.netflix.net/api/apply/v2/jobs"
+    try:
+        for q in SEARCH_QUERIES:
+            start = 0
+            while start < 200:
+                r = requests.get(
+                    base,
+                    params={"domain": "netflix.com", "query": q, "num": 20, "start": start},
+                    headers=HEADERS, timeout=20,
+                )
+                if not r.ok:
+                    print(f"[Netflix] HTTP {r.status_code} for q={repr(q)}")
+                    break
+                data = r.json()
+                positions = data.get("positions", [])
+                if not positions:
+                    break
+                for p in positions:
+                    title = p.get("name", "")
+                    key = title.lower().strip()
+                    if not title or key in seen:
+                        continue
+                    seen.add(key)
+                    locs = p.get("locations") or []
+                    location = "; ".join(locs) if locs else (p.get("location", "") or "")
+                    posted = p.get("t_create") or p.get("postedDate")
+                    jobs.append({
+                        "title":     title,
+                        "location":  location,
+                        "url":       p.get("canonicalPositionUrl", "")
+                                     or f"https://explore.jobs.netflix.net/careers/job/{p.get('id','')}",
+                        "company":   "Netflix",
+                        "posted_at": parse_unix(posted, millis=False) if posted else None,
+                    })
+                start += 20
+    except Exception as e:
+        print(f"[Netflix] error: {e}")
+    return jobs
+
+def fetch_microsoft() -> list:
+    """Microsoft careers public search API."""
+    jobs = []
+    seen = set()
+    base = "https://gcsservices.careers.microsoft.com/search/api/v1/search"
+    try:
+        for q in SEARCH_QUERIES:
+            for pg in range(1, 6):
+                r = requests.get(
+                    base,
+                    params={"q": q, "l": "en_us", "pg": pg, "pgSz": 20, "o": "Relevance", "flt": "true"},
+                    headers=HEADERS, timeout=20,
+                )
+                if not r.ok:
+                    print(f"[Microsoft] HTTP {r.status_code} for q={repr(q)}")
+                    break
+                result = (r.json().get("operationResult") or {}).get("result") or {}
+                postings = result.get("jobs", [])
+                if not postings:
+                    break
+                for j in postings:
+                    title = j.get("title", "")
+                    jid = str(j.get("jobId", ""))
+                    key = title.lower().strip() + jid
+                    if not title or key in seen:
+                        continue
+                    seen.add(key)
+                    props = j.get("properties") or {}
+                    locs = props.get("locations") or []
+                    location = "; ".join(locs) if isinstance(locs, list) else str(locs)
+                    jobs.append({
+                        "title":     title,
+                        "location":  location or props.get("primaryLocation", ""),
+                        "url":       f"https://jobs.careers.microsoft.com/global/en/job/{jid}",
+                        "company":   "Microsoft",
+                        "posted_at": parse_iso(j.get("postingDate", "")),
+                    })
+    except Exception as e:
+        print(f"[Microsoft] error: {e}")
+    return jobs
+
+def fetch_github_careers() -> list:
+    """GitHub careers site (Radancy) public JSON API."""
+    jobs = []
+    seen = set()
+    try:
+        for pg in range(1, 15):
+            r = requests.get(
+                "https://www.github.careers/api/jobs",
+                params={"page": pg},
+                headers=HEADERS, timeout=20,
+            )
+            if not r.ok:
+                print(f"[GitHub] HTTP {r.status_code} page {pg}")
+                break
+            postings = r.json().get("jobs", [])
+            if not postings:
+                break
+            for item in postings:
+                j = item.get("data", item) or {}
+                title = j.get("title", "")
+                key = title.lower().strip() + str(j.get("req_id", ""))
+                if not title or key in seen:
+                    continue
+                seen.add(key)
+                loc = j.get("full_location", "") or j.get("location_name", "")
+                jobs.append({
+                    "title":     title,
+                    "location":  loc,
+                    "url":       j.get("apply_url", "") or f"https://www.github.careers/careers-home/jobs/{j.get('req_id','')}",
+                    "company":   "GitHub",
+                    "posted_at": parse_iso(j.get("posted_date", "")),
+                })
+    except Exception as e:
+        print(f"[GitHub] error: {e}")
+    return jobs
+
+def fetch_spotify() -> list:
+    """Spotify via lifeatspotify.com public JSON API."""
+    jobs = []
+    seen = set()
+    try:
+        for q in ["creative", "brand"]:
+            r = requests.get(
+                f"https://api.lifeatspotify.com/wp-json/animal/v1/job/search",
+                params={"q": q},
+                headers=HEADERS, timeout=20,
+            )
+            if not r.ok:
+                print(f"[Spotify] HTTP {r.status_code} for q={repr(q)}")
+                continue
+            for j in r.json().get("result", []):
+                title = j.get("text", "")
+                key = title.lower().strip()
+                if not title or key in seen:
+                    continue
+                seen.add(key)
+                locs = j.get("locations") or []
+                location = ", ".join(
+                    l.get("location", "") if isinstance(l, dict) else str(l) for l in locs
+                )
+                jobs.append({
+                    "title":     title,
+                    "location":  location,
+                    "url":       f"https://www.lifeatspotify.com/jobs/{j.get('id','')}",
+                    "company":   "Spotify",
+                    "posted_at": None,
+                })
+    except Exception as e:
+        print(f"[Spotify] error: {e}")
+    return jobs
+
+def fetch_canva() -> list:
+    """Canva via SmartRecruiters public API."""
+    jobs = []
+    try:
+        offset = 0
+        while offset < 500:
+            r = requests.get(
+                "https://api.smartrecruiters.com/v1/companies/canva/postings",
+                params={"limit": 100, "offset": offset},
+                headers=HEADERS, timeout=20,
+            )
+            if not r.ok:
+                print(f"[Canva] HTTP {r.status_code}")
+                break
+            data = r.json()
+            content = data.get("content", [])
+            if not content:
+                break
+            for j in content:
+                loc = j.get("location") or {}
+                city = loc.get("city", "")
+                country = loc.get("country", "")
+                remote = " (Remote)" if loc.get("remote") else ""
+                jobs.append({
+                    "title":     j.get("name", ""),
+                    "location":  ", ".join(filter(None, [city, country])) + remote,
+                    "url":       f"https://jobs.smartrecruiters.com/Canva/{j.get('id','')}",
+                    "company":   "Canva",
+                    "posted_at": parse_iso(j.get("releasedDate", "")),
+                })
+            offset += 100
+            if offset >= data.get("totalFound", 0):
+                break
+    except Exception as e:
+        print(f"[Canva] error: {e}")
+    return jobs
+
+def fetch_apple() -> list:
+    """Apple jobs — EXPERIMENTAL. Parses the server-rendered search page.
+    Apple has no stable public API; if this breaks, check manually at
+    https://jobs.apple.com/en-us/search?search=creative%20director"""
+    jobs = []
+    seen = set()
+    try:
+        for q in ["creative director", "brand"]:
+            r = requests.get(
+                "https://jobs.apple.com/en-us/search",
+                params={"search": q, "sort": "newest"},
+                headers=HEADERS, timeout=20,
+            )
+            if not r.ok:
+                print(f"[Apple] HTTP {r.status_code} for q={repr(q)}")
+                continue
+            html = r.text
+            # Try embedded JSON state first
+            m = re.search(r'window\.APP_STATE\s*=\s*(\{.*?\});\s*</script>', html, re.S)
+            if m:
+                try:
+                    state = json.loads(m.group(1))
+                    for j in state.get("searchResults", []):
+                        title = j.get("postingTitle", "") or j.get("title", "")
+                        key = title.lower().strip()
+                        if not title or key in seen:
+                            continue
+                        seen.add(key)
+                        locs = j.get("locations") or []
+                        location = "; ".join(
+                            l.get("name", "") for l in locs if isinstance(l, dict)
+                        )
+                        slug = j.get("positionId", "") or j.get("id", "")
+                        transformed = j.get("transformedPostingTitle", "")
+                        url = f"https://jobs.apple.com/en-us/details/{slug}/{transformed}" if slug else ""
+                        jobs.append({
+                            "title":     title,
+                            "location":  location,
+                            "url":       url,
+                            "company":   "Apple",
+                            "posted_at": parse_iso(j.get("postDateInGMT", "")),
+                        })
+                    continue
+                except Exception:
+                    pass
+            # Fallback: pull job links out of the HTML
+            for slug, title in re.findall(
+                r'href="(/en-us/details/[^"]+)"[^>]*>([^<]{4,120})</a>', html
+            ):
+                title = title.strip()
+                key = title.lower()
+                if not title or key in seen:
+                    continue
+                seen.add(key)
+                jobs.append({
+                    "title":     title,
+                    "location":  "",
+                    "url":       f"https://jobs.apple.com{slug}",
+                    "company":   "Apple",
+                    "posted_at": None,
+                })
+    except Exception as e:
+        print(f"[Apple] error: {e}")
+    return jobs
+
+# ======================================================================
+# Scraper registry: (label, function, *args)
+#
+# NOT scrapeable without a headless browser / paid service — check manually:
+#   - Meta      -> https://www.metacareers.com/jobs  (GraphQL, login-gated)
+#   - Google    -> https://www.google.com/about/careers/applications/jobs/results/?q=%22creative%20director%22
+#     (Google's public careers API was shut down; DeepMind below covers its AI arm)
+# ======================================================================
+
+SCRAPERS = [
+    # AI-native
+    ("Anthropic",   fetch_greenhouse, "anthropic",   "Anthropic"),
+    ("OpenAI",      fetch_ashby,      "openai",      "OpenAI"),
+    ("DeepMind",    fetch_greenhouse, "deepmind",    "DeepMind"),
+    ("Mistral",     fetch_lever,      "mistral",     "Mistral"),
+    ("Perplexity",  fetch_ashby,      "perplexity",  "Perplexity"),
+    ("xAI",         fetch_greenhouse, "xai",         "xAI"),
+    ("ElevenLabs",  fetch_ashby,      "elevenlabs",  "ElevenLabs"),
+    ("Cohere",      fetch_ashby,      "cohere",      "Cohere"),
+    ("Scale AI",    fetch_greenhouse, "scaleai",     "Scale AI"),
+    ("Runway",      fetch_ashby,      "runway-ml",   "Runway"),
+    # Big tech
+    ("Netflix",     fetch_netflix),
+    ("Microsoft",   fetch_microsoft),
+    ("Nvidia",      fetch_workday,    "nvidia.wd5",   "nvidia",   "NVIDIAExternalCareerSite", "Nvidia"),
+    ("Apple",       fetch_apple),
+    # Design-forward tech
+    ("Figma",       fetch_greenhouse, "figma",       "Figma"),
+    ("Airbnb",      fetch_greenhouse, "airbnb",      "Airbnb"),
+    ("Spotify",     fetch_spotify),
+    ("Snap",        fetch_workday,    "snapchat.wd1", "snapchat", "snap",                 "Snap"),
+    ("Canva",       fetch_canva),
+    ("Adobe",       fetch_workday,    "adobe.wd5",   "adobe",  "external_experienced",    "Adobe"),
+    # Applied-to set
+    ("GitHub",      fetch_github_careers),
+    ("Cleo",        fetch_greenhouse, "cleoai",      "Cleo"),
+]
+
+# Workday host format: "{tenant}.{datacenter}" — e.g. adobe.wd5, nvidia.wd5,
+# snapchat.wd1. fetch_workday builds "https://{host}.myworkdayjobs.com/...".
+
+# ======================================================================
+# Test mode
+# ======================================================================
+
+def run_test():
+    print(f"\n{'='*60}")
+    print(f"JOB ALERTS - TEST MODE - {date.today()}")
+    print(f"{'='*60}")
+    print(f"Filters: keywords={len(INCLUDE)}, locations={len(ACCEPTED_LOCATIONS)}\n")
+
+    grand_total = 0
+    grand_matches = 0
+    for entry in SCRAPERS:
+        label = entry[0]
+        fn    = entry[1]
+        args  = entry[2:]
+
+        print(f"--- {label} ---")
+        try:
+            jobs = fn(*args)
+        except Exception as e:
+            print(f"  CRASHED: {e}\n")
+            continue
+
+        title_pass  = [j for j in jobs if passes_title(j["title"])]
+        loc_pass    = [j for j in title_pass if passes_location(j["location"])]
+        with_date   = [j for j in jobs if j.get("posted_at") is not None]
+        recent      = [j for j in loc_pass if is_recent(j.get("posted_at"))]
+        grand_total += len(jobs)
+        grand_matches += len(loc_pass)
+
+        print(f"  Fetched: {len(jobs)} | Title match: {len(title_pass)} | Location match: {len(loc_pass)} | Recent (<24h): {len(recent)}")
+        print(f"  Date coverage: {len(with_date)}/{len(jobs)} jobs have a posting date")
+
+        if loc_pass:
+            print(f"  MATCHES:")
+            for j in loc_pass[:10]:
+                age = format_age(j.get("posted_at"))
+                print(f"    [{j.get('location','no-loc')[:60]}] {j['title']}" + (f" ({age})" if age else ""))
+        elif jobs:
+            print(f"  Sample raw titles (first 3):")
+            for j in jobs[:3]:
+                print(f"    [{j.get('location','no-loc')[:60]}] {j['title']}")
+        else:
+            print(f"  WARNING: 0 jobs returned - scraper likely broken or slug wrong")
+
+        if title_pass and not loc_pass:
+            print(f"  NOTE: titles matched but all filtered out by location. Sample locations:")
+            for j in title_pass[:3]:
+                print(f"    '{j.get('location', '')}'")
+
+        print()
+
+    print(f"{'='*60}")
+    print(f"Grand total fetched: {grand_total} | Total matches: {grand_matches}")
+    print(f"{'='*60}\n")
+
+# ======================================================================
+# Email
+# ======================================================================
+
+def send_email(new_jobs: list, notion_saved: int = 0):
+    today = date.today().strftime("%B %d, %Y")
+    subject = f"Job Alerts - {today}"
+
+    def format_job(j):
+        age = format_age(j.get("posted_at"))
+        lines = [f"* {j['title']} - {j['company']} | {j.get('location', '-')}" + (f" | {age}" if age else "")]
+        lines.append(f"  {j.get('url', '')}\n")
+        return "\n".join(lines)
+
+    if new_jobs:
+        recent = [j for j in new_jobs if is_recent(j.get("posted_at"))]
+        older  = [j for j in new_jobs if not is_recent(j.get("posted_at"))]
+
+        lines = [f"Hi Carlos,\n\nDaily job alert - {today}"]
+        lines.append(f"{len(new_jobs)} new role(s) found (saved to Notion: {notion_saved})\n")
+
+        if recent:
+            lines.append(f"🔥 POSTED IN THE LAST 24H ({len(recent)} role(s))\n")
+            for j in recent:
+                lines.append(format_job(j))
+
+        if older:
+            lines.append(f"📋 OTHER NEW ROLES ({len(older)} role(s))\n")
+            for j in older:
+                lines.append(format_job(j))
+    else:
+        lines = [
+            f"Hi Carlos,\n\nNo new matching roles found today ({today}).",
+            "All companies were checked.\n",
+        ]
+
+    lines.append("\n---\nFilters: Creative Director / Head of Brand / Creative & Brand leadership")
+    lines.append("Locations: CA, NYC, Austin, Chicago, Seattle, London, Paris, Europe + Remote")
+    lines.append("Not auto-checked (visit manually): Meta, Google")
+
+    msg = MIMEMultipart()
+    msg["Subject"] = subject
+    msg["From"]    = GMAIL_USER
+    msg["To"]      = RECIPIENT
+    msg.attach(MIMEText("\n".join(lines), "plain"))
+
+    with smtplib.SMTP("smtp.gmail.com", 587) as s:
+        s.starttls()
+        s.login(GMAIL_USER, GMAIL_PASSWORD)
+        s.sendmail(GMAIL_USER, RECIPIENT, msg.as_string())
+    print(f"Email sent to {RECIPIENT}")
+
+# ======================================================================
+# Main
+# ======================================================================
+
+def main():
+    print(f"Job Alerts - {date.today()}")
+
+    existing = get_existing_keys()
+    print(f"Existing in Notion: {len(existing)}")
+
+    raw = []
+    for entry in SCRAPERS:
+        label = entry[0]
+        fn    = entry[1]
+        args  = entry[2:]
+        results = fn(*args)
+        print(f"  {label}: {len(results)} jobs fetched")
+        raw += results
+
+    print(f"Total fetched: {len(raw)}")
+
+    filtered = [j for j in raw if passes_title(j["title"]) and passes_location(j["location"])]
+    print(f"After filters: {len(filtered)}")
+
+    new_jobs = [j for j in filtered if dedup_key(j["title"], j["company"]) not in existing]
+    print(f"New (not in Notion): {len(new_jobs)}")
+
+    added = []
+    for job in new_jobs:
+        job["keywords"] = matched_keywords(job["title"])
+        if add_to_notion(job):
+            added.append(job)
+            print(f"  + {job['title']} | {job['company']} | {job.get('location', '')}")
+
+    try:
+        send_email(new_jobs, len(added))
+    except Exception as e:
+        print(f"Email failed: {e}")
+
+    print(f"\nDone - {len(added)}/{len(new_jobs)} new role(s) saved to Notion.")
+
+if __name__ == "__main__":
+    if TEST_MODE:
+        run_test()
+    else:
+        main()
