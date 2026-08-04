@@ -70,17 +70,24 @@ ACCEPTED_LOCATIONS = [
     # US — California
     "california", "san francisco", "bay area", "los angeles", "culver city",
     "santa monica", "burbank", "mountain view", "menlo park", "palo alto",
-    "cupertino", "sunnyvale", "san jose", "santa clara",
+    "cupertino", "sunnyvale", "san jose", "santa clara", "los gatos",
     # US — other hubs
     "new york", "nyc", "brooklyn", "austin", "chicago",
     "seattle", "bellevue", "redmond",
+    "boston", "cambridge", "pittsburgh", "miami", "denver", "boulder",
+    "washington", "atlanta", "portland",
     # US — general / remote
     "united states", "usa", "us", "remote", "north america",
+    # Canada (major AI hubs — Cohere is Toronto-based)
+    "toronto", "montreal", "vancouver",
     # Europe
     "london", "paris", "dublin", "amsterdam", "berlin", "munich",
-    "zurich", "stockholm", "madrid", "barcelona", "lisbon", "milan",
-    "united kingdom", "uk", "france", "germany", "ireland",
-    "netherlands", "spain", "switzerland", "sweden", "europe", "emea",
+    "zurich", "geneva", "stockholm", "copenhagen", "oslo", "helsinki",
+    "madrid", "barcelona", "lisbon", "milan", "vienna", "brussels",
+    "united kingdom", "uk", "england", "france", "germany", "ireland",
+    "netherlands", "spain", "portugal", "italy", "switzerland",
+    "sweden", "denmark", "norway", "finland", "austria", "belgium",
+    "europe", "emea",
 ]
 
 # Search terms used by scrapers that require a query (Workday, Microsoft,
@@ -623,6 +630,8 @@ def fetch_apple() -> list:
 #     (Google's public careers API was shut down; DeepMind below covers its AI arm)
 #   - Microsoft -> https://jobs.careers.microsoft.com/global/en/search?q=creative%20director
 #     (their search API was shut down mid-2026 with a broken TLS cert; revisit later)
+#   - Midjourney -> https://www.midjourney.com  (no public job board; hires quietly)
+#   - Notion    -> https://www.notion.com/careers  (board not on standard ATS APIs)
 # ======================================================================
 
 SCRAPERS = [
@@ -651,6 +660,15 @@ SCRAPERS = [
     # Applied-to set
     ("GitHub",      fetch_github_careers),
     ("Cleo",        fetch_cleo),
+    # Design-led craft companies
+    ("Stripe",      fetch_greenhouse, "stripe",      "Stripe"),
+    ("Duolingo",    fetch_greenhouse, "duolingo",    "Duolingo"),
+    ("Squarespace", fetch_greenhouse, "squarespace", "Squarespace"),
+    ("Pinterest",   fetch_greenhouse, "pinterest",   "Pinterest"),
+    ("Discord",     fetch_greenhouse, "discord",     "Discord"),
+    ("Webflow",     fetch_greenhouse, "webflow",     "Webflow"),
+    ("Synthesia",   fetch_ashby,      "synthesia",   "Synthesia"),
+    ("Suno",        fetch_ashby,      "suno",        "Suno"),
 ]
 
 # Workday host format: "{tenant}.{datacenter}" — e.g. adobe.wd5, nvidia.wd5,
@@ -750,8 +768,8 @@ def send_email(new_jobs: list, notion_saved: int = 0):
         ]
 
     lines.append("\n---\nFilters: Creative Director / Head of Brand / Creative & Brand leadership")
-    lines.append("Locations: CA, NYC, Austin, Chicago, Seattle, London, Paris, Europe + Remote")
-    lines.append("Not auto-checked (visit manually): Meta, Google, Microsoft")
+    lines.append("Locations: US hubs (CA, NYC, Austin, Chicago, Seattle, Boston, Miami...), Toronto, Europe + Remote")
+    lines.append("Not auto-checked (visit manually): Meta, Google, Microsoft, Midjourney, Notion")
 
     msg = MIMEMultipart()
     msg["Subject"] = subject
