@@ -1,0 +1,45 @@
+name: Job Alerts
+
+on:
+  schedule:
+    # 8:00 AM Eastern on weekdays (EDT = UTC-4, so 12:00 UTC)
+    # In winter (EST = UTC-5), change to '0 13 * * 1-5' to keep 8 AM
+    - cron: '0 12 * * 1-5'
+  workflow_dispatch:   # lets you trigger manually from the GitHub Actions tab
+    inputs:
+      test_mode:
+        description: 'Run in test mode (no Notion/email, just scraper diagnostics)'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['false', 'true']
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run job alerts
+        env:
+          NOTION_TOKEN:       ${{ secrets.NOTION_TOKEN }}
+          NOTION_DB_ID:       ${{ secrets.NOTION_DB_ID }}
+          GMAIL_USER:         ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+          RECIPIENT_EMAIL:    ${{ secrets.RECIPIENT_EMAIL }}
+        run: |
+          if [ "${{ github.event.inputs.test_mode }}" = "true" ]; then
+            python job_alerts.py --test
+          else
+            python job_alerts.py
+          fi
