@@ -278,11 +278,21 @@ def fetch_ashby(slug: str, company_label: str) -> list:
     return jobs
 
 def fetch_lever(slug: str, company_label: str) -> list:
-    """Lever ATS public API."""
+    """Lever ATS public API. Tries the US host, then the EU host
+    (EU-based companies like Mistral are served from api.eu.lever.co,
+    and the US host can silently return an empty list)."""
+    for host in ("api.lever.co", "api.eu.lever.co"):
+        jobs = _fetch_lever_host(host, slug, company_label)
+        if jobs:
+            return jobs
+    print(f"[{company_label}] Lever returned 0 jobs on both US and EU hosts")
+    return []
+
+def _fetch_lever_host(host: str, slug: str, company_label: str) -> list:
     jobs = []
     try:
         r = requests.get(
-            f"https://api.lever.co/v0/postings/{slug}?mode=json",
+            f"https://{host}/v0/postings/{slug}?mode=json",
             headers=HEADERS, timeout=20,
         )
         if r.ok:
@@ -299,9 +309,9 @@ def fetch_lever(slug: str, company_label: str) -> list:
                     "posted_at": parse_unix(j.get("createdAt"), millis=True),
                 })
         else:
-            print(f"[{company_label}] Lever HTTP {r.status_code}: {r.text[:200]}")
+            print(f"[{company_label}] Lever ({host}) HTTP {r.status_code}: {r.text[:200]}")
     except Exception as e:
-        print(f"[{company_label}] Lever error: {e}")
+        print(f"[{company_label}] Lever ({host}) error: {e}")
     return jobs
 
 def fetch_workday(host: str, tenant: str, board: str, company_label: str) -> list:
@@ -391,6 +401,17 @@ def fetch_netflix() -> list:
         print(f"[Netflix] error: {e}")
     return jobs
 
+def _get_lenient_ssl(url, **kwargs):
+    """GET that falls back to skipping certificate verification.
+    Microsoft's careers API serves an incomplete cert chain that fails
+    on GitHub Actions runners."""
+    try:
+        return requests.get(url, **kwargs)
+    except requests.exceptions.SSLError:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        return requests.get(url, verify=False, **kwargs)
+
 def fetch_microsoft() -> list:
     """Microsoft careers public search API."""
     jobs = []
@@ -399,7 +420,7 @@ def fetch_microsoft() -> list:
     try:
         for q in SEARCH_QUERIES:
             for pg in range(1, 6):
-                r = requests.get(
+                r = _get_lenient_ssl(
                     base,
                     params={"q": q, "l": "en_us", "pg": pg, "pgSz": 20, "o": "Relevance", "flt": "true"},
                     headers=HEADERS, timeout=20,
