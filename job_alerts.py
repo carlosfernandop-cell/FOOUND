@@ -58,6 +58,7 @@ INCLUDE = [
     "vp of brand", "vp, brand",
     "brand marketing director",
     "executive creative",
+    "brand experience",
 ]
 
 # A job is dropped if its title contains ANY of these.
@@ -103,6 +104,10 @@ def passes_location(location: str) -> bool:
     if not location:
         return True
     loc = location.lower()
+    # Workday shows "3 Locations" instead of city names for multi-city
+    # postings — let those through rather than silently dropping them.
+    if re.search(r"\d+\s+locations", loc):
+        return True
     return any(re.search(rf"\b{re.escape(a)}\b", loc) for a in ACCEPTED_LOCATIONS)
 
 def matched_keywords(title: str) -> str:
@@ -279,7 +284,7 @@ def fetch_ashby(slug: str, company_label: str) -> list:
 
 def fetch_lever(slug: str, company_label: str) -> list:
     """Lever ATS public API. Tries the US host, then the EU host
-    (EU-based companies like mistral\.ai are served from api.eu.lever.co,
+    (EU-based companies like Mistral are served from api.eu.lever.co,
     and the US host can silently return an empty list)."""
     for host in ("api.lever.co", "api.eu.lever.co"):
         jobs = _fetch_lever_host(host, slug, company_label)
@@ -401,56 +406,37 @@ def fetch_netflix() -> list:
         print(f"[Netflix] error: {e}")
     return jobs
 
-def _get_lenient_ssl(url, **kwargs):
-    """GET that falls back to skipping certificate verification.
-    Microsoft's careers API serves an incomplete cert chain that fails
-    on GitHub Actions runners."""
-    try:
-        return requests.get(url, **kwargs)
-    except requests.exceptions.SSLError:
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-        return requests.get(url, verify=False, **kwargs)
-
-def fetch_microsoft() -> list:
-    """Microsoft careers public search API."""
+def fetch_cleo() -> list:
+    """Cleo via RevolutPeople careers page (best-effort HTML parse).
+    Job titles are reconstructed from URL slugs; locations are unknown
+    (unknown locations pass the filter)."""
     jobs = []
     seen = set()
-    base = "https://gcsservices.careers.microsoft.com/search/api/v1/search"
     try:
-        for q in SEARCH_QUERIES:
-            for pg in range(1, 6):
-                r = _get_lenient_ssl(
-                    base,
-                    params={"q": q, "l": "en_us", "pg": pg, "pgSz": 20, "o": "Relevance", "flt": "true"},
-                    headers=HEADERS, timeout=20,
-                )
-                if not r.ok:
-                    print(f"[Microsoft] HTTP {r.status_code} for q={repr(q)}")
-                    break
-                result = (r.json().get("operationResult") or {}).get("result") or {}
-                postings = result.get("jobs", [])
-                if not postings:
-                    break
-                for j in postings:
-                    title = j.get("title", "")
-                    jid = str(j.get("jobId", ""))
-                    key = title.lower().strip() + jid
-                    if not title or key in seen:
-                        continue
-                    seen.add(key)
-                    props = j.get("properties") or {}
-                    locs = props.get("locations") or []
-                    location = "; ".join(locs) if isinstance(locs, list) else str(locs)
-                    jobs.append({
-                        "title":     title,
-                        "location":  location or props.get("primaryLocation", ""),
-                        "url":       f"https://jobs.careers.microsoft.com/global/en/job/{jid}",
-                        "company":   "Microsoft",
-                        "posted_at": parse_iso(j.get("postingDate", "")),
-                    })
+        r = requests.get(
+            "https://revolutpeople.com/cleo/public/careers",
+            headers=HEADERS, timeout=20,
+        )
+        if not r.ok:
+            print(f"[Cleo] HTTP {r.status_code}")
+            return jobs
+        for slug in re.findall(r'/cleo/public/careers/position/([a-z0-9-]+)', r.text):
+            # slug looks like "head-of-fraud-02671591-342f-4910-..." — strip the uuid
+            words = [w for w in slug.split("-") if not re.fullmatch(r"[0-9a-f]{4,}", w)]
+            title = " ".join(w.capitalize() for w in words)
+            key = title.lower()
+            if not title or key in seen:
+                continue
+            seen.add(key)
+            jobs.append({
+                "title":     title,
+                "location":  "",
+                "url":       f"https://revolutpeople.com/cleo/public/careers/position/{slug}",
+                "company":   "Cleo",
+                "posted_at": None,
+            })
     except Exception as e:
-        print(f"[Microsoft] error: {e}")
+        print(f"[Cleo] error: {e}")
     return jobs
 
 def fetch_github_careers() -> list:
@@ -607,12 +593,14 @@ def fetch_apple() -> list:
                 except Exception:
                     pass
             # Fallback: pull job links out of the HTML
+            junk = {"see full role description", "where we're hiring",
+                    "where we&#x27;re hiring", "learn more", "apply", "share"}
             for slug, title in re.findall(
                 r'href="(/en-us/details/[^"]+)"[^>]*>([^<]{4,120})</a>', html
             ):
                 title = title.strip()
                 key = title.lower()
-                if not title or key in seen:
+                if not title or key in seen or key in junk:
                     continue
                 seen.add(key)
                 jobs.append({
@@ -633,6 +621,8 @@ def fetch_apple() -> list:
 #   - Meta      -> https://www.metacareers.com/jobs  (GraphQL, login-gated)
 #   - Google    -> https://www.google.com/about/careers/applications/jobs/results/?q=%22creative%20director%22
 #     (Google's public careers API was shut down; DeepMind below covers its AI arm)
+#   - Microsoft -> https://jobs.careers.microsoft.com/global/en/search?q=creative%20director
+#     (their search API was shut down mid-2026 with a broken TLS cert; revisit later)
 # ======================================================================
 
 SCRAPERS = [
@@ -649,7 +639,6 @@ SCRAPERS = [
     ("Runway",      fetch_ashby,      "runway-ml",   "Runway"),
     # Big tech
     ("Netflix",     fetch_netflix),
-    ("Microsoft",   fetch_microsoft),
     ("Nvidia",      fetch_workday,    "nvidia.wd5",   "nvidia",   "NVIDIAExternalCareerSite", "Nvidia"),
     ("Apple",       fetch_apple),
     # Design-forward tech
@@ -661,7 +650,7 @@ SCRAPERS = [
     ("Adobe",       fetch_workday,    "adobe.wd5",   "adobe",  "external_experienced",    "Adobe"),
     # Applied-to set
     ("GitHub",      fetch_github_careers),
-    ("Cleo",        fetch_greenhouse, "cleoai",      "Cleo"),
+    ("Cleo",        fetch_cleo),
 ]
 
 # Workday host format: "{tenant}.{datacenter}" — e.g. adobe.wd5, nvidia.wd5,
@@ -762,7 +751,7 @@ def send_email(new_jobs: list, notion_saved: int = 0):
 
     lines.append("\n---\nFilters: Creative Director / Head of Brand / Creative & Brand leadership")
     lines.append("Locations: CA, NYC, Austin, Chicago, Seattle, London, Paris, Europe + Remote")
-    lines.append("Not auto-checked (visit manually): Meta, Google")
+    lines.append("Not auto-checked (visit manually): Meta, Google, Microsoft")
 
     msg = MIMEMultipart()
     msg["Subject"] = subject
