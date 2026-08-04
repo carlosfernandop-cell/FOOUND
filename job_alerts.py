@@ -413,6 +413,32 @@ def fetch_netflix() -> list:
         print(f"[Netflix] error: {e}")
     return jobs
 
+def fetch_workable(slug: str, company_label: str) -> list:
+    """Workable ATS public widget API (Hugging Face, ...)."""
+    jobs = []
+    try:
+        r = requests.get(
+            f"https://apply.workable.com/api/v1/widget/accounts/{slug}?details=false",
+            headers=HEADERS, timeout=20,
+        )
+        if r.ok:
+            for j in r.json().get("jobs", []):
+                loc = ", ".join(filter(None, [j.get("city", ""), j.get("state", ""), j.get("country", "")]))
+                if j.get("telecommuting"):
+                    loc = (loc + " (Remote)").strip()
+                jobs.append({
+                    "title":     j.get("title", ""),
+                    "location":  loc,
+                    "url":       j.get("url", "") or f"https://apply.workable.com/{slug}/j/{j.get('shortcode', '')}/",
+                    "company":   company_label,
+                    "posted_at": parse_iso(j.get("published_on", "")),
+                })
+        else:
+            print(f"[{company_label}] Workable HTTP {r.status_code}: {r.text[:200]}")
+    except Exception as e:
+        print(f"[{company_label}] Workable error: {e}")
+    return jobs
+
 def fetch_cleo() -> list:
     """Cleo via RevolutPeople careers page (best-effort HTML parse).
     Job titles are reconstructed from URL slugs; locations are unknown
@@ -669,6 +695,13 @@ SCRAPERS = [
     ("Webflow",     fetch_greenhouse, "webflow",     "Webflow"),
     ("Synthesia",   fetch_ashby,      "synthesia",   "Synthesia"),
     ("Suno",        fetch_ashby,      "suno",        "Suno"),
+    # AI-native, wave 2 (enterprise + dev tools with brand-building briefs)
+    ("Harvey",      fetch_ashby,      "harvey",      "Harvey"),
+    ("Sierra",      fetch_ashby,      "sierra",      "Sierra"),
+    ("Decagon",     fetch_ashby,      "decagon",     "Decagon"),
+    ("Cursor",      fetch_ashby,      "cursor",      "Cursor"),
+    ("Cognition",   fetch_ashby,      "cognition",   "Cognition"),
+    ("Hugging Face", fetch_workable,  "huggingface", "Hugging Face"),
 ]
 
 # Workday host format: "{tenant}.{datacenter}" — e.g. adobe.wd5, nvidia.wd5,
