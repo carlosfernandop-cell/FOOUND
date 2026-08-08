@@ -918,6 +918,78 @@ def rank_with_fit(matches: list, new_keys: set):
         return sorted(matches, key=heuristic, reverse=True), False
     return sorted(candidates, key=lambda j: (j.get("fit", -1), heuristic(j)), reverse=True), True
 
+def write_brief(n: int, total_fetched: int, n_companies: int, ranked: list, new_keys: set):
+    """Ask Claude to write the one-line morning report from the run's real data.
+    Returns the line, or None (caller falls back to the fixed template)."""
+    if not ANTHROPIC_KEY or n == 0:
+        return None
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+        now = _dt.now(_tz.utc)
+        facts = []
+        for i, j in enumerate(ranked, 1):
+            is_new = dedup_key(j["title"], j["company"]) in new_keys
+            age = ""
+            pa = j.get("posted_at")
+            if pa is not None:
+                if pa.tzinfo is None:
+                    pa = pa.replace(tzinfo=_tz.utc)
+                age = f", posted {(now - pa).days}d ago"
+            facts.append(
+                f'{i}. {j["company"]} — {j["title"]} '
+                f'(fit {j.get("fit", "?")}, {j.get("location", "?")}{age}'
+                f'{", NEW TODAY" if is_new else ""})'
+            )
+        n_new = sum(1 for j in ranked if dedup_key(j["title"], j["company"]) in new_keys)
+        word = COUNT_WORDS[n].lower() if n < len(COUNT_WORDS) else str(n)
+        roles_word = "role" if n == 1 else "roles"
+        prompt = (
+            "You are the agent behind THE SHORTLIST, a daily job radar you run for one senior "
+            "creative director. You just finished this morning's run. Write the single line of "
+            "small monospace type that sits at the top of the page: your report of the job completed.\n\n"
+            "RUN DATA (real, this morning):\n"
+            f"- Scanned {total_fetched:,} openings at {n_companies} companies, 8:00 AM ET\n"
+            f"- {n} made the cut, {n_new} of them newly listed today\n"
+            f"- The ranked list:\n" + "\n".join(facts) + "\n\n"
+            "RULES:\n"
+            f'- Open with "I found {word} {roles_word} worth your time." then state the scan facts '
+            f"({total_fetched:,} openings, {n_companies} companies, 8:00 AM ET) in your own compact phrasing.\n"
+            "- Close with ONE short observation ONLY if the data genuinely offers one — a role that "
+            "appeared today, a standout fit score, a strong lead that has been open a long time and "
+            "may not last. If nothing stands out, close with: Nothing else made the cut.\n"
+            "- Voice: utilitarian field report. Dry, specific, no hype, no emoji, no exclamation "
+            "points, no adjectives that sell. Numbers stay as digits except the opening count word.\n"
+            "- One line, max 240 characters total.\n\n"
+            'Return ONLY JSON: {"line": "<the line>"}'
+        )
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": CLAUDE_MODEL,
+                "max_tokens": 300,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=60,
+        )
+        if not r.ok:
+            print(f"  [Brief API {r.status_code}] {r.text[:150]}")
+            return None
+        text = "".join(b.get("text", "") for b in r.json().get("content", []))
+        m = re.search(r"\{.*\}", text, re.S)
+        line = str(json.loads(m.group(0))["line"]).strip()
+        if not (40 < len(line) <= 300):
+            return None
+        print(f"Brief: {line}")
+        return line
+    except Exception as e:
+        print(f"  [Brief error] {e}")
+        return None
+
 # ======================================================================
 # THE SHORTLIST — daily-edition microsite (approved design, Aug 2026)
 # ======================================================================
@@ -1179,6 +1251,9 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         roles_word = "role" if n == 1 else "roles"
         brief = (f"I found {word} {roles_word} worth your time. "
                  f"Hand-filtered from {scan_stats}. Nothing else made the cut.")
+        ai_brief = write_brief(n, total_fetched, len(SCRAPERS), ranked, new_keys)
+        if ai_brief:
+            brief = ai_brief
 
     entries = []
     if n == 0:
@@ -1215,7 +1290,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         edition = len(prior) + 1
 
     page = (SHORTLIST_PAGE
-        .replace("__BRIEF__", brief)
+        .replace("__BRIEF__", _html.escape(brief))
         .replace("__DATELONG__", datelong)
         .replace("__EDITION__", f"{edition:03d}")
         .replace("__ENTRIES__", "".join(entries))
