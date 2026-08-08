@@ -7,6 +7,7 @@ Runs daily via GitHub Actions:
   2. Filters by title keywords + location
   3. Saves new matches to a Notion database
   4. Emails a daily digest via Gmail
+  5. Publishes THE SHORTLIST — a daily-edition microsite (docs/) via GitHub Pages
 
 Test mode (no Notion/email, prints diagnostics only):
   python job_alerts.py --test
@@ -817,6 +818,260 @@ def send_email(new_jobs: list, notion_saved: int = 0):
     print(f"Email sent to {RECIPIENT}")
 
 # ======================================================================
+# THE SHORTLIST — daily-edition microsite (approved design, Aug 2026)
+# ======================================================================
+
+import html as _html
+import glob as _glob
+import subprocess as _sub
+
+COUNT_WORDS = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven",
+               "Eight", "Nine", "Ten", "Eleven"]
+
+# One-line blurbs in the approved editorial voice. v1 is company-level;
+# v1.1 replaces these with AI-written role-specific lines.
+BLURBS = {
+    "Anthropic":    "Shape how the most safety-minded frontier lab speaks to the world.",
+    "OpenAI":       "The most-watched brand in technology, still deciding what it looks like.",
+    "DeepMind":     "Google's AI vanguard — science-grade substance in need of story.",
+    "Mistral":      "Own how Europe's frontier AI lab shows up in the world — brand, campaigns, culture.",
+    "Perplexity":   "The challenger answer engine building a brand on speed and candor.",
+    "xAI":          "Maximum velocity, maximum attention — a brand built in public.",
+    "ElevenLabs":   "One identity stretched across voice, music, and agents — a brand-architecture brief.",
+    "Cohere":       "Enterprise AI from Toronto that must feel trustworthy before it feels exciting.",
+    "Scale AI":     "The data backbone of the AI boom, largely unbranded territory.",
+    "Runway":       "Define the creative voice of the tool redefining filmmaking.",
+    "Netflix":      "Shape how the world's biggest entertainment brand publishes culture.",
+    "Nvidia":       "The most valuable company on earth, with an enterprise brand to grow into.",
+    "Apple":        "The reference point. Craft as religion.",
+    "Figma":        "Design's home field — an audience that judges every pixel professionally.",
+    "Airbnb":       "Brand-led to its core; creative leadership reports to the very top.",
+    "Spotify":      "The brand that turned data into pop culture. Wrapped, but all year.",
+    "Snap":         "A global brand that still knows how to play.",
+    "Canva":        "Design for 200M people, with a taste for big swings.",
+    "Adobe":        "The tools creativity runs on, mid-reinvention for the AI era.",
+    "GitHub":       "The home of 100M developers — brand, film, campaigns, and craft in-house.",
+    "Cleo":         "Fintech with a voice — an AI that talks money like a friend.",
+    "Stripe":       "Lead brand moments for the company that set the bar for craft in tech.",
+    "Duolingo":     "The loudest, most awarded brand voice in consumer tech.",
+    "Squarespace":  "An in-house agency with Super Bowl reps and design awards to defend.",
+    "Pinterest":    "A visual-culture platform where inspiration is the product.",
+    "Discord":      "Playful, distinctive brand craft for the internet's living room.",
+    "Webflow":      "Design-native product, visual-first audience.",
+    "Synthesia":    "The AI-video leader, London-built, making enterprise feel cinematic.",
+    "Suno":         "Build the campaign language for AI-made music — a brand still wet on the canvas.",
+    "Harvey":       "Make an $11B legal-AI company feel inevitable to the most skeptical audience in business.",
+    "Sierra":       "Bret Taylor's $15B bet on conversational AI, polishing an enterprise identity.",
+    "Decagon":      "AI agents for customer support — fast-growing, identity still forming.",
+    "Cursor":       "The fastest-growing dev tool in history, whose editor is its brand.",
+    "Cognition":    "Maker of Devin — foundational brand work, wide open.",
+    "Hugging Face": "The beloved open-source home of AI, scrappy by design.",
+}
+
+def _seniority_score(title: str) -> int:
+    t = title.lower()
+    if any(k in t for k in ["executive creative", "head of", "vp", "group creative"]):
+        return 4
+    if "director" in t:
+        return 3
+    if "lead" in t:
+        return 2
+    return 1
+
+def _recency_score(posted_at) -> int:
+    if posted_at is None:
+        return 2  # unknown (e.g. Greenhouse) — assume moderately fresh
+    now = datetime.now(timezone.utc)
+    if posted_at.tzinfo is None:
+        posted_at = posted_at.replace(tzinfo=timezone.utc)
+    days = (now - posted_at).days
+    if days <= 1:
+        return 4
+    if days <= 7:
+        return 3
+    if days <= 30:
+        return 2
+    return 1
+
+def _fmt_posted(posted_at) -> str:
+    if posted_at is None:
+        return ""
+    return posted_at.strftime("%b %d").replace(" 0", " ")
+
+def _et_now():
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/New_York"))
+    except Exception:
+        return datetime.now()
+
+SHORTLIST_ENTRY = """    <li>
+      <div class="num">__NUM____NEWLABEL__</div>
+      <div class="co">__COMPANY____NEWTAG__</div>
+      <div class="role">__ROLE__</div>
+      <p class="desc">__DESC__</p>
+      <div class="meta"><b>__LOC__</b><span class="sep">/</span><span>__SALARY__</span>__POSTED__</div>
+      <a class="apply" href="__URL__">Apply &#8599;</a>
+    </li>
+"""
+
+SHORTLIST_PAGE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>THE SHORTLIST — __DATELONG__</title>
+<style>
+  :root{--ink:#000;--paper:#fff;--mute:#6b6b6b;--hair:#e5e5e5;}
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html{-webkit-text-size-adjust:100%;}
+  body{background:var(--paper);color:var(--ink);font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;line-height:1.35;}
+  .page{max-width:680px;margin:0 auto;padding:72px 24px 96px;}
+  header{margin-bottom:88px;}
+  .mast{font-size:13px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;}
+  .mast span{font-weight:400;color:var(--mute);letter-spacing:.14em;}
+  h1{margin-top:40px;font-size:clamp(40px,9vw,72px);font-weight:800;letter-spacing:-.03em;line-height:.98;}
+  .stand{margin-top:20px;font-size:15px;color:var(--mute);max-width:34em;}
+  ol{list-style:none;}
+  li{padding:44px 0;border-top:1px solid var(--ink);}
+  li:last-child{border-bottom:1px solid var(--ink);}
+  .num{font-size:12px;font-weight:400;color:var(--mute);font-variant-numeric:tabular-nums;letter-spacing:.08em;}
+  .co{margin-top:10px;font-size:clamp(26px,5.5vw,38px);font-weight:800;letter-spacing:-.02em;line-height:1;}
+  .role{margin-top:6px;font-size:clamp(17px,3.4vw,21px);font-weight:400;letter-spacing:-.005em;}
+  .desc{margin-top:16px;font-size:15px;color:var(--mute);max-width:36em;}
+  .meta{margin-top:16px;font-size:13px;display:flex;flex-wrap:wrap;gap:6px 0;}
+  .meta b{font-weight:700;}
+  .meta .sep{color:var(--mute);padding:0 10px;}
+  .meta .dim{color:var(--mute);font-weight:400;}
+  a.apply{display:inline-block;margin-top:20px;font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--ink);text-decoration:none;border-bottom:2px solid var(--ink);padding-bottom:2px;}
+  a.apply:hover{background:var(--ink);color:var(--paper);border-bottom-color:var(--ink);}
+  .new{display:inline-block;margin-left:14px;font-size:11px;font-weight:700;letter-spacing:.12em;border:1px solid var(--ink);padding:2px 7px 1px;vertical-align:middle;transform:translateY(-4px);}
+  footer{margin-top:88px;font-size:12px;color:var(--mute);line-height:1.9;}
+  footer b{color:var(--ink);font-weight:700;}
+  .rule{width:48px;height:4px;background:var(--ink);margin-bottom:28px;}
+  @media (max-width:480px){.page{padding:48px 20px 72px;}header{margin-bottom:56px;}li{padding:36px 0;}}
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <div class="mast">THE SHORTLIST <span>&nbsp;&middot;&nbsp; __DATELONG__ &nbsp;&middot;&nbsp; No. __EDITION__</span></div>
+    <h1>__HEADLINE__</h1>
+    <p class="stand">__STANDFIRST__</p>
+  </header>
+  <ol>
+__ENTRIES__  </ol>
+  <footer>
+    <div class="rule"></div>
+    Compiled every weekday at 8:00 AM ET for <b>Carlos Perez</b>.<br>
+    Watching __NCOMPANIES__ companies &middot; __NSCANNED__ roles scanned &middot; __NCUT__ made the cut.<br>
+    <a href="archive/" style="color:inherit;">Past editions</a> &nbsp;&mdash;&nbsp; Salary shown when the company posts it.
+  </footer>
+</div>
+</body>
+</html>
+"""
+
+def build_shortlist(matches: list, new_keys: set, total_fetched: int):
+    """Render THE SHORTLIST from today's matches and write docs/."""
+    now = _et_now()
+    datelong = now.strftime("%A, %B %d, %Y").replace(" 0", " ")
+
+    ranked = sorted(
+        matches,
+        key=lambda j: (
+            _seniority_score(j["title"])
+            + _recency_score(j.get("posted_at"))
+            + (2 if dedup_key(j["title"], j["company"]) in new_keys else 0)
+        ),
+        reverse=True,
+    )[:11]
+
+    n = len(ranked)
+    if n == 0:
+        headline = "Nothing new &mdash;<br>your time is yours."
+        stand = f"All {total_fetched:,} openings at {len(SCRAPERS)} companies were scanned this morning at 8:00 AM. Nothing cleared the bar today."
+    else:
+        word = COUNT_WORDS[n] if n < len(COUNT_WORDS) else str(n)
+        roles_word = "role" if n == 1 else "roles"
+        headline = f"{word} {roles_word}<br>worth your time."
+        stand = f"Hand-filtered from {total_fetched:,} openings at {len(SCRAPERS)} companies, scanned this morning at 8:00 AM. Nothing else made the cut."
+
+    entries = []
+    for i, j in enumerate(ranked, 1):
+        is_new = dedup_key(j["title"], j["company"]) in new_keys
+        posted = _fmt_posted(j.get("posted_at"))
+        entry = (SHORTLIST_ENTRY
+            .replace("__NUM__", f"{i:02d}")
+            .replace("__NEWLABEL__", " / NEW TODAY" if is_new else "")
+            .replace("__COMPANY__", _html.escape(j["company"]))
+            .replace("__NEWTAG__", '<span class="new">NEW</span>' if is_new else "")
+            .replace("__ROLE__", _html.escape(j["title"]))
+            .replace("__DESC__", _html.escape(BLURBS.get(j["company"], "A senior creative seat at a company worth watching.")))
+            .replace("__LOC__", _html.escape(j.get("location", "") or "Location not listed"))
+            .replace("__SALARY__", "Salary not posted")
+            .replace("__POSTED__", f'<span class="sep">/</span><span class="dim">posted {posted}</span>' if posted else "")
+            .replace("__URL__", _html.escape(j.get("url", "") or "#"))
+        )
+        entries.append(entry)
+
+    os.makedirs("docs/archive", exist_ok=True)
+    today_file = f"docs/archive/{now.strftime('%Y-%m-%d')}.html"
+    prior = sorted(_glob.glob("docs/archive/????-??-??.html"))
+    if today_file in prior:
+        edition = prior.index(today_file) + 1   # same-day re-run reprints, no bump
+    else:
+        edition = len(prior) + 1
+
+    page = (SHORTLIST_PAGE
+        .replace("__DATELONG__", datelong)
+        .replace("__EDITION__", f"{edition:03d}")
+        .replace("__HEADLINE__", headline)
+        .replace("__STANDFIRST__", stand)
+        .replace("__ENTRIES__", "".join(entries))
+        .replace("__NCOMPANIES__", str(len(SCRAPERS)))
+        .replace("__NSCANNED__", f"{total_fetched:,}")
+        .replace("__NCUT__", str(n))
+    )
+
+    with open("docs/index.html", "w") as f:
+        f.write(page)
+    archive_page = page.replace('href="archive/"', 'href="./"')
+    with open(today_file, "w") as f:
+        f.write(archive_page)
+
+    # simple archive index (newest first, numbered by chronological position)
+    editions = sorted(_glob.glob("docs/archive/????-??-??.html"))
+    links = "\n".join(
+        f'<li style="padding:10px 0;border-top:1px solid #000;"><a style="color:#000;font-weight:700;text-decoration:none;" href="{os.path.basename(p)}">No. {i:03d}<span style="color:#6b6b6b;font-weight:400;"> &nbsp;&middot;&nbsp; {os.path.basename(p)[:-5]}</span></a></li>'
+        for i, p in reversed(list(enumerate(editions, 1)))
+    )
+    with open("docs/archive/index.html", "w") as f:
+        f.write(f'<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>THE SHORTLIST — Archive</title></head><body style="font-family:\'Helvetica Neue\',Helvetica,Arial,sans-serif;max-width:680px;margin:0 auto;padding:72px 24px;"><div style="font-size:13px;font-weight:700;letter-spacing:.14em;">THE SHORTLIST <span style="color:#6b6b6b;font-weight:400;">&middot; ARCHIVE</span></div><ol style="list-style:none;margin-top:48px;">{links}</ol><p style="margin-top:48px;font-size:13px;"><a href="../" style="color:#000;">&larr; Latest edition</a></p></body></html>')
+
+    print(f"Shortlist: edition No. {edition:03d} built with {n} role(s).")
+    return edition
+
+def publish_shortlist():
+    """Commit and push docs/ from inside GitHub Actions."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        print("Shortlist: not in GitHub Actions, skipping publish.")
+        return
+    try:
+        _sub.run(["git", "config", "user.name", "shortlist-bot"], check=True)
+        _sub.run(["git", "config", "user.email", "actions@users.noreply.github.com"], check=True)
+        _sub.run(["git", "add", "docs/"], check=True)
+        diff = _sub.run(["git", "diff", "--staged", "--quiet"])
+        if diff.returncode == 0:
+            print("Shortlist: no changes to publish.")
+            return
+        _sub.run(["git", "commit", "-m", f"The Shortlist — {date.today().isoformat()}"], check=True)
+        _sub.run(["git", "push"], check=True)
+        print("Shortlist: published.")
+    except Exception as e:
+        print(f"Shortlist publish failed: {e}")
+
+# ======================================================================
 # Main
 # ======================================================================
 
@@ -854,6 +1109,13 @@ def main():
         send_email(new_jobs, len(added))
     except Exception as e:
         print(f"Email failed: {e}")
+
+    try:
+        new_keys = {dedup_key(j["title"], j["company"]) for j in new_jobs}
+        build_shortlist(filtered, new_keys, len(raw))
+        publish_shortlist()
+    except Exception as e:
+        print(f"Shortlist failed: {e}")
 
     print(f"\nDone - {len(added)}/{len(new_jobs)} new role(s) saved to Notion.")
 
