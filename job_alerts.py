@@ -1031,6 +1031,11 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   html{-webkit-text-size-adjust:100%;}
   body{background:var(--paper);color:var(--ink);font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;}
   .plate{padding:6vw 5vw 4vw;}
+  .brief{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.5px;line-height:1.7;letter-spacing:.01em;
+    margin:0 0 8vh 0;
+  }
   .item{border:none;}
   .row{
     display:flex;align-items:center;gap:.38em;width:100%;
@@ -1115,6 +1120,7 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
 <body>
 
   <div class="plate">
+    <p class="brief">__BRIEF__</p>
 __ENTRIES__  </div>
 
   <footer>
@@ -1164,6 +1170,16 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
 
     n = len(ranked)
 
+    scan_stats = f"{total_fetched:,} openings at {len(SCRAPERS)} companies, scanned this morning at 8:00 AM ET"
+    if n == 0:
+        brief = (f"I read all {total_fetched:,} openings at {len(SCRAPERS)} companies "
+                 "this morning at 8:00 AM ET. Nothing cleared the bar today.")
+    else:
+        word = COUNT_WORDS[n].lower() if n < len(COUNT_WORDS) else str(n)
+        roles_word = "role" if n == 1 else "roles"
+        brief = (f"I found {word} {roles_word} worth your time. "
+                 f"Hand-filtered from {scan_stats}. Nothing else made the cut.")
+
     entries = []
     if n == 0:
         entries.append(
@@ -1199,6 +1215,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         edition = len(prior) + 1
 
     page = (SHORTLIST_PAGE
+        .replace("__BRIEF__", brief)
         .replace("__DATELONG__", datelong)
         .replace("__EDITION__", f"{edition:03d}")
         .replace("__ENTRIES__", "".join(entries))
