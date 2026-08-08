@@ -962,30 +962,47 @@ def write_brief(n: int, total_fetched: int, n_companies: int, ranked: list, new_
             "- One line, max 240 characters total.\n\n"
             'Return ONLY JSON: {"line": "<the line>"}'
         )
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": CLAUDE_MODEL,
-                "max_tokens": 300,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=60,
-        )
-        if not r.ok:
-            print(f"  [Brief API {r.status_code}] {r.text[:150]}")
+        def _extract(text):
+            # preferred: JSON object with "line"
+            m = re.search(r'\{[^{}]*"line"[^{}]*\}', text, re.S)
+            if m:
+                try:
+                    return str(json.loads(m.group(0))["line"]).strip()
+                except Exception:
+                    pass
+            # tolerated: the model answered with the bare line
+            t = text.strip().strip("`").strip()
+            if t:
+                t = t.splitlines()[0].strip().strip('"').strip()
+                if t.lower().startswith("i found"):
+                    return t
             return None
-        text = "".join(b.get("text", "") for b in r.json().get("content", []))
-        m = re.search(r"\{.*\}", text, re.S)
-        line = str(json.loads(m.group(0))["line"]).strip()
-        if not (40 < len(line) <= 300):
-            return None
-        print(f"Brief: {line}")
-        return line
+
+        for attempt in (1, 2):
+            r = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": CLAUDE_MODEL,
+                    "max_tokens": 500,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=60,
+            )
+            if not r.ok:
+                print(f"  [Brief API {r.status_code}] {r.text[:150]}")
+                return None
+            text = "".join(b.get("text", "") for b in r.json().get("content", []))
+            line = _extract(text)
+            if line and 40 < len(line) <= 300:
+                print(f"Brief: {line}")
+                return line
+            print(f"  [Brief attempt {attempt}] unusable reply: {text[:120]!r}")
+        return None
     except Exception as e:
         print(f"  [Brief error] {e}")
         return None
