@@ -1006,14 +1006,17 @@ def _et_now():
     except Exception:
         return datetime.now()
 
-SHORTLIST_ENTRY = """    <li>
-      <div class="num">__NUM____NEWLABEL__</div>
-      <div class="co">__COMPANY____NEWTAG__</div>
-      <div class="role">__ROLE__</div>
-      <p class="desc">__DESC__</p>
-      <div class="meta"><b>__LOC__</b><span class="sep">/</span><span>__SALARY__</span>__POSTED__</div>
-      <a class="apply" href="__URL__">Apply &#8599;</a>
-    </li>
+SHORTLIST_ENTRY = """    <div class="item">
+      <button class="row" aria-expanded="false">
+        <span class="marker"><span__D2__>__NUM__</span></span>__COMPANY__<span class="anno">__ANNO__</span>
+      </button>
+      <div class="panel"><div class="panel-inner">
+        <div class="role">__ROLE____NEWTAG__</div>
+        <p class="desc">__DESC__</p>
+        <div class="meta"><b>__LOC__</b><span class="sep">/</span><span>__SALARY__</span>__POSTED__</div>
+        <a class="apply" href="__URL__">Apply &#8599;</a>
+      </div></div>
+    </div>
 """
 
 SHORTLIST_PAGE = """<!DOCTYPE html>
@@ -1023,52 +1026,118 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>THE SHORTLIST — __DATELONG__</title>
 <style>
-  :root{--ink:#000;--paper:#fff;--mute:#6b6b6b;--hair:#e5e5e5;}
+  :root{--ink:#000;--paper:#fff;--mute:#6b6b6b;}
   *{margin:0;padding:0;box-sizing:border-box;}
   html{-webkit-text-size-adjust:100%;}
-  body{background:var(--paper);color:var(--ink);font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;line-height:1.35;}
-  .page{max-width:680px;margin:0 auto;padding:72px 24px 96px;}
-  header{margin-bottom:88px;}
-  .mast{font-size:13px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;}
-  .mast span{font-weight:400;color:var(--mute);letter-spacing:.14em;}
-  h1{margin-top:40px;font-size:clamp(40px,9vw,72px);font-weight:800;letter-spacing:-.03em;line-height:.98;}
-  .stand{margin-top:20px;font-size:15px;color:var(--mute);max-width:34em;}
-  ol{list-style:none;}
-  li{padding:44px 0;border-top:1px solid var(--ink);}
-  li:last-child{border-bottom:1px solid var(--ink);}
-  .num{font-size:12px;font-weight:400;color:var(--mute);font-variant-numeric:tabular-nums;letter-spacing:.08em;}
-  .co{margin-top:10px;font-size:clamp(26px,5.5vw,38px);font-weight:800;letter-spacing:-.02em;line-height:1;}
-  .role{margin-top:6px;font-size:clamp(17px,3.4vw,21px);font-weight:400;letter-spacing:-.005em;}
-  .desc{margin-top:16px;font-size:15px;color:var(--mute);max-width:36em;}
-  .meta{margin-top:16px;font-size:13px;display:flex;flex-wrap:wrap;gap:6px 0;}
+  body{background:var(--paper);color:var(--ink);font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;}
+  .plate{padding:6vw 5vw 4vw;}
+  .item{border:none;}
+  .row{
+    display:flex;align-items:center;gap:.38em;width:100%;
+    background:none;border:none;cursor:pointer;text-align:left;
+    color:var(--ink);font-family:inherit;
+    font-size:clamp(40px,8.6vw,124px);
+    font-weight:500;letter-spacing:-.035em;line-height:1.08;
+    padding:.03em 0;white-space:nowrap;
+  }
+  .row:focus{outline:none;}
+  .row:focus-visible{outline:2px solid var(--ink);outline-offset:6px;}
+  .marker{
+    flex:none;width:.62em;height:.62em;border-radius:50%;
+    background:var(--ink);
+    display:flex;align-items:center;justify-content:center;
+    overflow:visible;
+  }
+  .marker span{display:none;font-size:.92em;font-weight:500;line-height:0;letter-spacing:-.06em;}
+  .marker span.d2{font-size:.6em;}
+  .item.open .marker{background:none;border:.028em solid var(--ink);}
+  .item.open .marker span{display:block;}
+  .anno{
+    font-size:.42em;font-weight:500;letter-spacing:-.02em;
+    align-self:flex-start;transform:translateY(.28em);margin-left:.12em;
+    opacity:0;transition:opacity .25s ease .1s;
+  }
+  .item.open .anno{opacity:1;}
+  @media (hover:hover){
+    .row:hover .marker{background:var(--ink);}
+    .item.open .row:hover .marker{background:none;}
+  }
+  .panel{overflow:hidden;max-height:0;transition:max-height .35s ease;}
+  .panel-inner{padding:14px 0 44px;max-width:640px;}
+  .item.open .panel{max-height:560px;}
+  .role{font-size:clamp(18px,3.4vw,24px);font-weight:400;letter-spacing:-.005em;}
+  .desc{margin-top:14px;font-size:15px;line-height:1.5;color:var(--mute);max-width:36em;}
+  .meta{margin-top:16px;font-size:13px;line-height:1.35;display:flex;flex-wrap:wrap;gap:6px 0;}
   .meta b{font-weight:700;}
   .meta .sep{color:var(--mute);padding:0 10px;}
-  .meta .dim{color:var(--mute);font-weight:400;}
-  a.apply{display:inline-block;margin-top:20px;font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--ink);text-decoration:none;border-bottom:2px solid var(--ink);padding-bottom:2px;}
-  a.apply:hover{background:var(--ink);color:var(--paper);border-bottom-color:var(--ink);}
-  .new{display:inline-block;margin-left:14px;font-size:11px;font-weight:700;letter-spacing:.12em;border:1px solid var(--ink);padding:2px 7px 1px;vertical-align:middle;transform:translateY(-4px);}
-  footer{margin-top:88px;font-size:12px;color:var(--mute);line-height:1.9;}
-  footer b{color:var(--ink);font-weight:700;}
-  .rule{width:48px;height:4px;background:var(--ink);margin-bottom:28px;}
-  @media (max-width:480px){.page{padding:48px 20px 72px;}header{margin-bottom:56px;}li{padding:36px 0;}}
+  .meta .dim{color:var(--mute);}
+  a.apply{
+    display:inline-block;margin-top:20px;font-size:13px;font-weight:700;
+    letter-spacing:.1em;text-transform:uppercase;color:var(--ink);
+    text-decoration:none;border-bottom:2px solid var(--ink);padding-bottom:2px;
+  }
+  a.apply:hover{background:var(--ink);color:var(--paper);}
+  .new{
+    display:inline-block;margin-left:12px;font-size:11px;font-weight:700;
+    letter-spacing:.12em;border:1px solid var(--ink);padding:2px 7px 1px;
+    vertical-align:middle;transform:translateY(-2px);
+  }
+  footer{
+    display:flex;align-items:flex-end;
+    padding:8vh 5vw 4vh;
+    font-size:11px;font-weight:500;letter-spacing:.01em;line-height:1.45;
+  }
+  footer .col{margin-right:8vw;}
+  footer .lab{text-transform:uppercase;}
+  footer .val{font-weight:400;color:var(--mute);}
+  footer .val a{color:inherit;text-decoration:none;}
+  footer .val a:hover{color:var(--ink);}
+  footer .num{margin-left:auto;font-weight:400;color:var(--mute);}
+  @media (max-width:560px){
+    .row{font-size:clamp(30px,10.5vw,64px);}
+    footer{flex-wrap:wrap;gap:12px 0;}
+    footer .col{margin-right:10vw;}
+  }
 </style>
 </head>
 <body>
-<div class="page">
-  <header>
-    <div class="mast">THE SHORTLIST <span>&nbsp;&middot;&nbsp; __DATELONG__ &nbsp;&middot;&nbsp; No. __EDITION__</span></div>
-    <h1>__HEADLINE__</h1>
-    <p class="stand">__STANDFIRST__</p>
-  </header>
-  <ol>
-__ENTRIES__  </ol>
+
+  <div class="plate">
+__ENTRIES__  </div>
+
   <footer>
-    <div class="rule"></div>
-    Compiled every weekday at 8:00 AM ET for <b>Carlos Perez</b>.<br>
-    Watching __NCOMPANIES__ companies &middot; __NSCANNED__ roles scanned &middot; __NCUT__ made the cut.<br>
-    <a href="archive/" style="color:inherit;">Past editions</a> &nbsp;&mdash;&nbsp; Salary shown when the company posts it.
+    <div class="col">
+      <div class="lab">The Shortlist&mdash;Daily Selection</div>
+      <div class="val">__DATELONG__</div>
+    </div>
+    <div class="col">
+      <div class="lab">Edition</div>
+      <div class="val"><a href="archive/">No. __EDITION__</a></div>
+    </div>
+    <div class="col">
+      <div class="lab">Compiled</div>
+      <div class="val">8:00 AM ET &middot; __NCOMPANIES__ companies</div>
+    </div>
+    <div class="num">__FRACTION__</div>
   </footer>
-</div>
+
+<script>
+document.querySelectorAll(".item .row").forEach(function(btn){
+  btn.addEventListener("click", function(){
+    var item = btn.parentElement;
+    var wasOpen = item.classList.contains("open");
+    document.querySelectorAll(".item.open").forEach(function(o){
+      o.classList.remove("open");
+      o.querySelector(".row").setAttribute("aria-expanded","false");
+    });
+    if(!wasOpen){
+      item.classList.add("open");
+      btn.setAttribute("aria-expanded","true");
+    }
+  });
+});
+</script>
+
 </body>
 </html>
 """
@@ -1082,23 +1151,23 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
     ranked = ranked_all[:11]
 
     n = len(ranked)
-    if n == 0:
-        headline = "Nothing new &mdash;<br>your time is yours."
-        stand = f"All {total_fetched:,} openings at {len(SCRAPERS)} companies were scanned this morning at 8:00 AM. Nothing cleared the bar today."
-    else:
-        word = COUNT_WORDS[n] if n < len(COUNT_WORDS) else str(n)
-        roles_word = "role" if n == 1 else "roles"
-        headline = f"{word} {roles_word}<br>worth your time."
-        stand = f"Hand-filtered from {total_fetched:,} openings at {len(SCRAPERS)} companies, scanned this morning at 8:00 AM. Nothing else made the cut."
 
     entries = []
+    if n == 0:
+        entries.append(
+            '    <div class="item"><div class="row" style="cursor:default;">'
+            '<span class="marker"></span>Nothing today.</div></div>\n'
+        )
     for i, j in enumerate(ranked, 1):
         is_new = dedup_key(j["title"], j["company"]) in new_keys
         posted = _fmt_posted(j.get("posted_at"))
+        fit = j.get("fit")
+        anno = f"{{fit&nbsp;{fit}}}" if fit is not None else ""
         entry = (SHORTLIST_ENTRY
-            .replace("__NUM__", f"{i:02d}")
-            .replace("__NEWLABEL__", " / NEW TODAY" if is_new else "")
+            .replace("__NUM__", str(i))
+            .replace("__D2__", ' class="d2"' if i >= 10 else "")
             .replace("__COMPANY__", _html.escape(j["company"]))
+            .replace("__ANNO__", anno)
             .replace("__NEWTAG__", '<span class="new">NEW</span>' if is_new else "")
             .replace("__ROLE__", _html.escape(j["title"]))
             .replace("__DESC__", _html.escape(j.get("ai_line") or BLURBS.get(j["company"], "A senior creative seat at a company worth watching.")))
@@ -1120,12 +1189,9 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
     page = (SHORTLIST_PAGE
         .replace("__DATELONG__", datelong)
         .replace("__EDITION__", f"{edition:03d}")
-        .replace("__HEADLINE__", headline)
-        .replace("__STANDFIRST__", stand)
         .replace("__ENTRIES__", "".join(entries))
         .replace("__NCOMPANIES__", str(len(SCRAPERS)))
-        .replace("__NSCANNED__", f"{total_fetched:,}")
-        .replace("__NCUT__", str(n))
+        .replace("__FRACTION__", f"{n:03d}/{total_fetched:,}")
     )
 
     with open("docs/index.html", "w") as f:
