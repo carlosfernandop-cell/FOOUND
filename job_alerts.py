@@ -801,7 +801,8 @@ def send_email(new_jobs: list, notion_saved: int = 0):
             "All companies were checked.\n",
         ]
 
-    lines.append("\n---\nFilters: Creative Director / Head of Brand / Creative & Brand leadership")
+    lines.append("\n---\nRead today's edition -> https://carlosfernandop-cell.github.io/job-alerts/")
+    lines.append("Filters: Creative Director / Head of Brand / Creative & Brand leadership")
     lines.append("Locations: US hubs (CA, NYC, Austin, Chicago, Seattle, Boston, Miami...), Toronto, Europe + Remote")
     lines.append("Not auto-checked (visit manually): Meta, Google, Microsoft, Midjourney, Notion")
 
@@ -816,6 +817,106 @@ def send_email(new_jobs: list, notion_saved: int = 0):
         s.login(GMAIL_USER, GMAIL_PASSWORD)
         s.sendmail(GMAIL_USER, RECIPIENT, msg.as_string())
     print(f"Email sent to {RECIPIENT}")
+
+# ======================================================================
+# FIT ENGINE — ranks roles against Carlos's profile using the Claude API
+# Requires: ANTHROPIC_API_KEY secret + profile.md in the repo.
+# Degrades gracefully: no key / any failure -> heuristic ranking + blurbs.
+# ======================================================================
+
+ANTHROPIC_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+CLAUDE_MODEL  = "claude-sonnet-5"
+MAX_JD_CHARS  = 6000
+MAX_CANDIDATES_TO_SCORE = 25
+
+def fetch_jd_text(url: str) -> str:
+    """Best-effort: fetch a job posting page and strip it to readable text."""
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15)
+        if not r.ok:
+            return ""
+        t = r.text
+        t = re.sub(r"<script.*?</script>", " ", t, flags=re.S | re.I)
+        t = re.sub(r"<style.*?</style>", " ", t, flags=re.S | re.I)
+        t = re.sub(r"<[^>]+>", " ", t)
+        t = _html.unescape(t)
+        t = re.sub(r"\s+", " ", t).strip()
+        return t[:MAX_JD_CHARS]
+    except Exception:
+        return ""
+
+def load_profile() -> str:
+    try:
+        with open("profile.md") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+def score_fit(profile: str, job: dict, jd_text: str):
+    """Ask Claude for a 0-100 fit score + a one-line 'why' in the approved
+    editorial voice. Returns (score, line) or (None, None) on failure."""
+    try:
+        prompt = (
+            "You rank job openings for a specific candidate and write one line about each.\n\n"
+            f"CANDIDATE PROFILE:\n{profile}\n\n"
+            f"ROLE: {job['title']} at {job['company']} — {job.get('location','')}\n\n"
+            f"JOB POSTING TEXT (may include page boilerplate — ignore navigation/footer noise):\n{jd_text or '(no description available — judge from title and company)'}\n\n"
+            "Return ONLY a JSON object, no other text:\n"
+            '{"score": <0-100 integer, how strong a fit this role is for THIS candidate — seniority match, craft match, brand-led scope, AI-era relevance>, '
+            '"line": "<ONE sentence, max 130 chars, confident editorial voice, specific to this role and this candidate. No emoji. No exclamation points.>"}'
+        )
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": CLAUDE_MODEL,
+                "max_tokens": 200,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=60,
+        )
+        if not r.ok:
+            print(f"  [Fit API {r.status_code}] {r.text[:150]}")
+            return None, None
+        text = "".join(b.get("text", "") for b in r.json().get("content", []))
+        m = re.search(r"\{.*\}", text, re.S)
+        data = json.loads(m.group(0))
+        score = max(0, min(100, int(data["score"])))
+        line = str(data["line"]).strip()[:160]
+        return score, line
+    except Exception as e:
+        print(f"  [Fit error] {job['title']}: {e}")
+        return None, None
+
+def rank_with_fit(matches: list, new_keys: set):
+    """Return (ranked_matches, used_ai). Each match may gain 'fit' and 'ai_line'."""
+    heuristic = lambda j: (
+        _seniority_score(j["title"]) + _recency_score(j.get("posted_at"))
+        + (2 if dedup_key(j["title"], j["company"]) in new_keys else 0)
+    )
+    profile = load_profile()
+    if not ANTHROPIC_KEY or not profile:
+        print("Fit engine: no API key or profile — using heuristic ranking.")
+        return sorted(matches, key=heuristic, reverse=True), False
+
+    candidates = sorted(matches, key=heuristic, reverse=True)[:MAX_CANDIDATES_TO_SCORE]
+    scored_any = False
+    for j in candidates:
+        jd = fetch_jd_text(j.get("url", ""))
+        score, line = score_fit(profile, j, jd)
+        if score is not None:
+            j["fit"] = score
+            j["ai_line"] = line
+            scored_any = True
+            print(f"  fit {score:3d}  {j['company']} — {j['title']}")
+    if not scored_any:
+        print("Fit engine: all scoring failed — falling back to heuristic.")
+        return sorted(matches, key=heuristic, reverse=True), False
+    return sorted(candidates, key=lambda j: (j.get("fit", -1), heuristic(j)), reverse=True), True
 
 # ======================================================================
 # THE SHORTLIST — daily-edition microsite (approved design, Aug 2026)
@@ -977,15 +1078,8 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
     now = _et_now()
     datelong = now.strftime("%A, %B %d, %Y").replace(" 0", " ")
 
-    ranked = sorted(
-        matches,
-        key=lambda j: (
-            _seniority_score(j["title"])
-            + _recency_score(j.get("posted_at"))
-            + (2 if dedup_key(j["title"], j["company"]) in new_keys else 0)
-        ),
-        reverse=True,
-    )[:11]
+    ranked_all, used_ai = rank_with_fit(matches, new_keys)
+    ranked = ranked_all[:11]
 
     n = len(ranked)
     if n == 0:
@@ -1007,7 +1101,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
             .replace("__COMPANY__", _html.escape(j["company"]))
             .replace("__NEWTAG__", '<span class="new">NEW</span>' if is_new else "")
             .replace("__ROLE__", _html.escape(j["title"]))
-            .replace("__DESC__", _html.escape(BLURBS.get(j["company"], "A senior creative seat at a company worth watching.")))
+            .replace("__DESC__", _html.escape(j.get("ai_line") or BLURBS.get(j["company"], "A senior creative seat at a company worth watching.")))
             .replace("__LOC__", _html.escape(j.get("location", "") or "Location not listed"))
             .replace("__SALARY__", "Salary not posted")
             .replace("__POSTED__", f'<span class="sep">/</span><span class="dim">posted {posted}</span>' if posted else "")
