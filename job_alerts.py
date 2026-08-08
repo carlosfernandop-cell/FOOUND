@@ -1045,11 +1045,15 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   .marker{
     flex:none;width:.62em;height:.62em;border-radius:50%;
     background:var(--ink);
-    display:flex;align-items:center;justify-content:center;
-    overflow:visible;
+    position:relative;
   }
-  .marker span{display:none;font-size:.92em;font-weight:500;line-height:0;letter-spacing:-.06em;}
-  .marker span.d2{font-size:.6em;}
+  .marker span{
+    display:none;
+    position:absolute;top:50%;left:50%;
+    transform:translate(-50%,-54%);
+    font-size:.8em;line-height:1;font-weight:500;letter-spacing:-.05em;
+  }
+  .marker span.d2{font-size:.52em;}
   .item.open .marker{background:none;border:.028em solid var(--ink);}
   .item.open .marker span{display:block;}
   .anno{
