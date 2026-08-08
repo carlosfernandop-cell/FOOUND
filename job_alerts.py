@@ -1050,12 +1050,20 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   .marker span{
     display:none;
     position:absolute;top:50%;left:50%;
-    transform:translate(-50%,-54%);
-    font-size:.8em;line-height:1;font-weight:500;letter-spacing:-.05em;
+    transform:translate(-50%,-52%);
+    font-size:.34em;line-height:1;font-weight:500;letter-spacing:-.02em;
   }
-  .marker span.d2{font-size:.52em;}
-  .item.open .marker{background:none;border:.028em solid var(--ink);}
+  .marker span.d2{font-size:.29em;}
+  .marker::after{
+    content:"";display:none;
+    position:absolute;top:50%;left:50%;
+    transform:translate(-50%,-50%);
+    width:.21em;height:.21em;
+    border:.012em solid var(--ink);border-radius:50%;
+  }
+  .item.open .marker{background:none;}
   .item.open .marker span{display:block;}
+  .item.open .marker::after{display:block;}
   .anno{
     font-size:.42em;font-weight:500;letter-spacing:-.02em;
     align-self:flex-start;transform:translateY(.28em);margin-left:.12em;
