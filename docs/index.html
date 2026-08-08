@@ -24,11 +24,15 @@
   .marker{
     flex:none;width:.62em;height:.62em;border-radius:50%;
     background:var(--ink);
-    display:flex;align-items:center;justify-content:center;
-    overflow:visible;
+    position:relative;
   }
-  .marker span{display:none;font-size:.92em;font-weight:500;line-height:0;letter-spacing:-.06em;}
-  .marker span.d2{font-size:.6em;}
+  .marker span{
+    display:none;
+    position:absolute;top:50%;left:50%;
+    transform:translate(-50%,-54%);
+    font-size:.8em;line-height:1;font-weight:500;letter-spacing:-.05em;
+  }
+  .marker span.d2{font-size:.52em;}
   .item.open .marker{background:none;border:.028em solid var(--ink);}
   .item.open .marker span{display:block;}
   .anno{
@@ -84,35 +88,35 @@
   <div class="plate">
     <div class="item">
       <button class="row" aria-expanded="false">
-        <span class="marker"><span>1</span></span>Mistral<span class="anno">{fit&nbsp;90}</span>
+        <span class="marker"><span>1</span></span>Mistral<span class="anno">{fit&nbsp;92}</span>
       </button>
       <div class="panel"><div class="panel-inner">
         <div class="role">Head of Brand Marketing</div>
-        <p class="desc">AI-native brand at a defining moment, global hubs he already calls home—this is the operating-model-building challenge he&#x27;s built for.</p>
+        <p class="desc">An AI-native brand at an inflection point, needing exactly the global creative architecture Carlos has built at Apple, Samsung, and Airbnb.</p>
         <div class="meta"><b>Paris, New York, London</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Jul 22</span></div>
         <a class="apply" href="https://jobs.ashbyhq.com/mistral.ai/1211221e-5d2c-4335-b221-70934bb17337">Apply &#8599;</a>
       </div></div>
     </div>
     <div class="item">
       <button class="row" aria-expanded="false">
-        <span class="marker"><span>2</span></span>Suno<span class="anno">{fit&nbsp;88}</span>
+        <span class="marker"><span>2</span></span>Runway<span class="anno">{fit&nbsp;88}</span>
       </button>
       <div class="panel"><div class="panel-inner">
-        <div class="role">Creative Director, Marketing Campaigns</div>
-        <p class="desc">AI-native brand at the campaign-defining stage—exactly the kind of ground-zero creative build Carlos has repeated across Apple, Samsung, and Airbnb.</p>
-        <div class="meta"><b>NYC</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Jul 21</span></div>
-        <a class="apply" href="https://jobs.ashbyhq.com/suno/4c4563b4-7e53-44cf-a261-7515fe575337">Apply &#8599;</a>
+        <div class="role">Creative Director</div>
+        <p class="desc">Runway is inventing the AI-era brand from scratch, exactly the kind of blank canvas Carlos has built creative orgs and models for before.</p>
+        <div class="meta"><b>Remote</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Apr 10</span></div>
+        <a class="apply" href="https://jobs.ashbyhq.com/runway-ml/0ea253c8-590b-4d5b-b72d-2ca08b2ee0e2">Apply &#8599;</a>
       </div></div>
     </div>
     <div class="item">
       <button class="row" aria-expanded="false">
-        <span class="marker"><span>3</span></span>Runway<span class="anno">{fit&nbsp;88}</span>
+        <span class="marker"><span>3</span></span>Suno<span class="anno">{fit&nbsp;87}</span>
       </button>
       <div class="panel"><div class="panel-inner">
-        <div class="role">Creative Director</div>
-        <p class="desc">Runway is building the visual language of the AI era, exactly the kind of brand-still-being-invented remit Carlos thrives on.</p>
-        <div class="meta"><b>Remote</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Apr 10</span></div>
-        <a class="apply" href="https://jobs.ashbyhq.com/runway-ml/0ea253c8-590b-4d5b-b72d-2ca08b2ee0e2">Apply &#8599;</a>
+        <div class="role">Creative Director, Marketing Campaigns</div>
+        <p class="desc">AI-native music platform reinventing its brand voice—exactly the intersection of craft and AI-era leadership he was built for.</p>
+        <div class="meta"><b>NYC</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Jul 21</span></div>
+        <a class="apply" href="https://jobs.ashbyhq.com/suno/4c4563b4-7e53-44cf-a261-7515fe575337">Apply &#8599;</a>
       </div></div>
     </div>
     <div class="item">
@@ -121,7 +125,7 @@
       </button>
       <div class="panel"><div class="panel-inner">
         <div class="role">Executive Creative Director, North America</div>
-        <p class="desc">Executive Creative Director for a design-led tech brand at global scale—squarely in his lane, minus the AI-native edge.</p>
+        <p class="desc">A brand-scale ECD role with global remit and consumer-tech craft that plays straight to his executive creative strengths.</p>
         <div class="meta"><b>San Francisco, us</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Jul 6</span></div>
         <a class="apply" href="https://jobs.smartrecruiters.com/Canva/6000000001211806">Apply &#8599;</a>
       </div></div>
@@ -132,18 +136,18 @@
       </button>
       <div class="panel"><div class="panel-inner">
         <div class="role">Director, Creative Strategy &amp; AI Innovation</div>
-        <p class="desc">Adobe&#x27;s AI-creative crossroads is exactly the terrain he&#x27;s already mapped at Airbnb—brand-led, global, and built for what&#x27;s next.</p>
+        <p class="desc">Adobe&#x27;s creative/AI mandate plays right into his AI operating model work at Airbnb and his craft-first brand instincts.</p>
         <div class="meta"><b>3 Locations</b><span class="sep">/</span><span>Salary not posted</span></div>
         <a class="apply" href="https://adobe.wd5.myworkdayjobs.com/en-US/external_experienced/job/New-York/Director--Creative-Strategy---AI-Innovation_R167440">Apply &#8599;</a>
       </div></div>
     </div>
     <div class="item">
       <button class="row" aria-expanded="false">
-        <span class="marker"><span>6</span></span>Duolingo<span class="anno">{fit&nbsp;82}</span>
+        <span class="marker"><span>6</span></span>Duolingo<span class="anno">{fit&nbsp;78}</span>
       </button>
       <div class="panel"><div class="panel-inner">
         <div class="role">Creative Director, Marketing</div>
-        <p class="desc">A culture-hacking, globally beloved brand at an AI-native company—squarely in his zone of building creative that&#x27;s ambitious and unmistakable.</p>
+        <p class="desc">Duolingo&#x27;s culture-hacking brand needs exactly his mix of global craft and AI-era instinct, though details are thin here.</p>
         <div class="meta"><b>New York, NY</b><span class="sep">/</span><span>Salary not posted</span></div>
         <a class="apply" href="https://careers.duolingo.com/jobs/8442932002?gh_jid=8442932002">Apply &#8599;</a>
       </div></div>
@@ -154,7 +158,7 @@
       </button>
       <div class="panel"><div class="panel-inner">
         <div class="role">Creative Director, Marketing</div>
-        <p class="desc">Brand-led CD title at a culture-fluent, AI-forward consumer brand in London fits his global playbook, though thin posting details limit certainty.</p>
+        <p class="desc">Duolingo&#x27;s playful, culture-fluent brand needs exactly his mix of global craft and multi-market fluency, London base is a plus.</p>
         <div class="meta"><b>London, England</b><span class="sep">/</span><span>Salary not posted</span></div>
         <a class="apply" href="https://careers.duolingo.com/jobs/8442934002?gh_jid=8442934002">Apply &#8599;</a>
       </div></div>
@@ -165,7 +169,7 @@
       </button>
       <div class="panel"><div class="panel-inner">
         <div class="role">Head of Brand Campaigns</div>
-        <p class="desc">Legal AI needs a brand voice as sharp as its product—Carlos has built exactly that at the frontier before.</p>
+        <p class="desc">Harvey needs a brand voice for AI-native legal tech—squarely his territory, though thin posting leaves scope unclear.</p>
         <div class="meta"><b>New York</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Jun 29</span></div>
         <a class="apply" href="https://jobs.ashbyhq.com/harvey/4b57fc7f-3b29-4501-b41d-b700f4e3d6c6">Apply &#8599;</a>
       </div></div>
@@ -176,31 +180,31 @@
       </button>
       <div class="panel"><div class="panel-inner">
         <div class="role">Creative Director, Brand Studio</div>
-        <p class="desc">Brand-studio CD at a global dev platform reinventing itself for AI—strong craft and seniority match, if the scope proves truly brand-led.</p>
+        <p class="desc">Strong brand-craft match and AI-native platform, though title suggests a narrower scope than his global CD track record.</p>
         <div class="meta"><b>United States</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Jun 8</span></div>
         <a class="apply" href="https://careers-githubinc.icims.com/jobs/5431/login">Apply &#8599;</a>
       </div></div>
     </div>
     <div class="item">
       <button class="row" aria-expanded="false">
-        <span class="marker"><span class="d2">10</span></span>Harvey<span class="anno">{fit&nbsp;68}</span>
+        <span class="marker"><span class="d2">10</span></span>Harvey<span class="anno">{fit&nbsp;62}</span>
       </button>
       <div class="panel"><div class="panel-inner">
         <div class="role">Head of Creative Design</div>
-        <p class="desc">AI-native legal tech craving brand definition plays right into his specialty of inventing creative cultures from zero.</p>
+        <p class="desc">AI-native and senior enough to fit, but thin posting details make it hard to confirm true brand-creative scope.</p>
         <div class="meta"><b>San Francisco</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Jul 16</span></div>
         <a class="apply" href="https://jobs.ashbyhq.com/harvey/2b35e24d-72bc-4588-b823-50e514c3d430">Apply &#8599;</a>
       </div></div>
     </div>
     <div class="item">
       <button class="row" aria-expanded="false">
-        <span class="marker"><span class="d2">11</span></span>Netflix<span class="anno">{fit&nbsp;62}</span>
+        <span class="marker"><span class="d2">11</span></span>Spotify<span class="anno">{fit&nbsp;62}</span>
       </button>
       <div class="panel"><div class="panel-inner">
-        <div class="role">Creative Director, Creative Publishing</div>
-        <p class="desc">A strong brand-storytelling remit at a culture-shaping platform, though publishing/marketing craft is narrower than his integrated campaign leadership.</p>
-        <div class="meta"><b>USA - Remote</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Jul 10</span></div>
-        <a class="apply" href="https://explore.jobs.netflix.net/careers/job/790317054439">Apply &#8599;</a>
+        <div class="role">Creative Lead, Visual Merchandising</div>
+        <p class="desc">Strong AI-era brand systems fit and global scale, but visual merchandising/artwork production sits narrower than his campaign-and-brand remit.</p>
+        <div class="meta"><b>London, Stockholm</b><span class="sep">/</span><span>Salary not posted</span></div>
+        <a class="apply" href="https://www.lifeatspotify.com/jobs/creative-lead-visual-merchandising">Apply &#8599;</a>
       </div></div>
     </div>
   </div>
