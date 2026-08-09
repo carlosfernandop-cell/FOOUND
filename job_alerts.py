@@ -863,7 +863,7 @@ def score_fit(profile: str, job: dict, jd_text: str):
             f"JOB POSTING TEXT (may include page boilerplate — ignore navigation/footer noise):\n{jd_text or '(no description available — judge from title and company)'}\n\n"
             "Return ONLY a JSON object, no other text:\n"
             '{"score": <0-100 integer, how strong a fit this role is for THIS candidate — seniority match, craft match, brand-led scope, AI-era relevance>, '
-            '"line": "<ONE sentence, max 130 chars, confident editorial voice, specific to this role and this candidate. No emoji. No exclamation points.>"}'
+            '"line": "<ONE sentence, max 130 chars, confident editorial voice, spoken DIRECTLY TO the candidate as you/your — never his name, never he/his/him — telling him why this role fits him, e.g. cities you already call home, the kind of blank canvas you build best on. Specific to this role. No emoji. No exclamation points.>"}'
         )
         r = requests.post(
             "https://api.anthropic.com/v1/messages",
@@ -1095,15 +1095,18 @@ def _et_now():
     except Exception:
         return datetime.now()
 
-SHORTLIST_ENTRY = """    <div class="item">
+SHORTLIST_ENTRY = """    <div class="item" data-key="__KEY__">
       <button class="row" aria-expanded="false">
-        <span class="marker"><span__D2__>__NUM__</span></span>__COMPANY__<span class="anno">__ANNO__</span>
+        <span class="marker"><span__D2__>__NUM__</span></span><span class="co">__COMPANY__</span>__FRESH__<span class="anno">__ANNO__</span>
       </button>
       <div class="panel"><div class="panel-inner">
         <div class="role">__ROLE____NEWTAG__</div>
         <p class="desc">__DESC__</p>
         <div class="meta"><b>__LOC__</b><span class="sep">/</span><span>__SALARY__</span>__POSTED__</div>
-        <a class="apply" href="__URL__">Apply &#8599;</a>
+        <div class="actions">
+          <a class="apply" href="__URL__" target="_blank" rel="noopener">Apply &#8599;</a>
+          <button class="mark" type="button">Mark applied</button>
+        </div>
       </div></div>
     </div>
 """
@@ -1177,12 +1180,28 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   .meta b{font-weight:700;}
   .meta .sep{color:var(--mute);padding:0 10px;}
   .meta .dim{color:var(--mute);}
+  .actions{display:flex;align-items:baseline;gap:32px;margin-top:20px;}
   a.apply{
-    display:inline-block;margin-top:20px;font-size:13px;font-weight:700;
+    display:inline-block;font-size:13px;font-weight:700;
     letter-spacing:.1em;text-transform:uppercase;color:var(--ink);
     text-decoration:none;border-bottom:2px solid var(--ink);padding-bottom:2px;
   }
   a.apply:hover{background:var(--ink);color:var(--paper);}
+  button.mark{
+    background:none;border:none;cursor:pointer;font-family:inherit;
+    font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--mute);padding:0 0 2px;border-bottom:2px solid transparent;
+  }
+  button.mark:hover{color:var(--ink);}
+  /* fresh — posted in the last 3 days */
+  .fresh{font-size:.5em;align-self:flex-start;transform:translateY(.18em);margin-left:.08em;}
+  /* applied — struck from the list, kept for the record */
+  .item.applied .co{color:#b9b9b9;text-decoration:line-through;text-decoration-thickness:.045em;}
+  .item.applied:not(.open) .marker{background:none;border:.028em solid #b9b9b9;}
+  .item.applied .marker span{color:#b9b9b9;}
+  .item.applied .marker::after{border-color:#b9b9b9;}
+  .item.applied .anno,.item.applied .fresh{color:#b9b9b9;}
+  .item.applied button.mark{color:var(--ink);}
   .new{
     display:inline-block;margin-left:12px;font-size:11px;font-weight:700;
     letter-spacing:.12em;border:1px solid var(--ink);padding:2px 7px 1px;
@@ -1225,6 +1244,10 @@ __ENTRIES__  </div>
       <div class="lab">Compiled</div>
       <div class="val">8:00 AM ET &middot; __NCOMPANIES__ companies</div>
     </div>
+    <div class="col">
+      <div class="lab">*</div>
+      <div class="val">out of the oven &mdash; posted in the last 3 days</div>
+    </div>
     <div class="num">__FRACTION__</div>
   </footer>
 
@@ -1241,6 +1264,29 @@ document.querySelectorAll(".item .row").forEach(function(btn){
       item.classList.add("open");
       btn.setAttribute("aria-expanded","true");
     }
+  });
+});
+
+/* applied tracking — remembered by this browser across editions */
+var AP_KEY = "shortlist_applied";
+function apLoad(){ try{ return JSON.parse(localStorage.getItem(AP_KEY) || "[]"); }catch(e){ return []; } }
+function apSave(a){ try{ localStorage.setItem(AP_KEY, JSON.stringify(a)); }catch(e){} }
+var apList = apLoad();
+document.querySelectorAll(".item[data-key]").forEach(function(it){
+  var k = it.getAttribute("data-key");
+  var btn = it.querySelector("button.mark");
+  function sync(){
+    var on = apList.indexOf(k) >= 0;
+    it.classList.toggle("applied", on);
+    if(btn) btn.textContent = on ? "Applied ✓ — undo" : "Mark applied";
+  }
+  sync();
+  if(btn) btn.addEventListener("click", function(e){
+    e.stopPropagation();
+    var i = apList.indexOf(k);
+    if(i >= 0) apList.splice(i, 1); else apList.push(k);
+    apSave(apList);
+    sync();
   });
 });
 </script>
@@ -1279,13 +1325,22 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
             '<span class="marker"></span>Nothing today.</div></div>\n'
         )
     for i, j in enumerate(ranked, 1):
-        is_new = dedup_key(j["title"], j["company"]) in new_keys
+        key = dedup_key(j["title"], j["company"])
+        is_new = key in new_keys
         posted = _fmt_posted(j.get("posted_at"))
         fit = j.get("fit")
         anno = f"{{fit&nbsp;{fit}}}" if fit is not None else ""
+        pa = j.get("posted_at")
+        fresh = False
+        if pa is not None:
+            if pa.tzinfo is None:
+                pa = pa.replace(tzinfo=timezone.utc)
+            fresh = (datetime.now(timezone.utc) - pa).days <= 3
         entry = (SHORTLIST_ENTRY
             .replace("__NUM__", str(i))
             .replace("__D2__", ' class="d2"' if i >= 10 else "")
+            .replace("__KEY__", _html.escape(key))
+            .replace("__FRESH__", '<span class="fresh">*</span>' if fresh else "")
             .replace("__COMPANY__", _html.escape(j["company"]))
             .replace("__ANNO__", anno)
             .replace("__NEWTAG__", '<span class="new">NEW</span>' if is_new else "")
