@@ -1241,6 +1241,10 @@ __ENTRIES__  </div>
       <div class="val"><a href="archive/">No. __EDITION__</a></div>
     </div>
     <div class="col">
+      <div class="lab">Candidate</div>
+      <div class="val"><a href="cv.html">Carlos Perez Botero</a></div>
+    </div>
+    <div class="col">
       <div class="lab">Compiled</div>
       <div class="val">8:00 AM ET &middot; __NCOMPANIES__ companies</div>
     </div>
@@ -1372,7 +1376,9 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
 
     with open("docs/index.html", "w") as f:
         f.write(page)
-    archive_page = page.replace('href="archive/"', 'href="./"')
+    archive_page = (page
+        .replace('href="archive/"', 'href="./"')
+        .replace('href="cv.html"', 'href="../cv.html"'))
     with open(today_file, "w") as f:
         f.write(archive_page)
 
