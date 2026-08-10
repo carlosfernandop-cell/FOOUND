@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Carlos Fernando Perez Botero — The Candidate</title>
+<style>
+  :root{--ink:#000;--paper:#fff;--mute:#6b6b6b;}
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html{-webkit-text-size-adjust:100%;}
+  body{background:var(--paper);color:var(--ink);font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;}
+  .plate{padding:6vw 5vw 4vw;}
+  .brief{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.5px;line-height:1.7;letter-spacing:.01em;
+    margin:0 0 7vh 0;
+  }
+
+  /* ---- masthead: name + portrait ---- */
+  .head{display:flex;align-items:flex-start;justify-content:space-between;gap:6vw;margin-bottom:9vh;}
+  .names{flex:1;min-width:0;}
+  .nm{
+    font-size:clamp(44px,9.2vw,132px);
+    font-weight:500;letter-spacing:-.035em;line-height:1.02;
+    white-space:nowrap;
+  }
+  .role-line{
+    margin-top:26px;font-size:15px;line-height:1.5;color:var(--mute);max-width:30em;
+  }
+  .portrait{flex:none;width:min(30vw,340px);}
+  .portrait img{display:block;width:100%;height:auto;filter:grayscale(1) contrast(1.02);}
+
+  /* ---- career accordion (same grammar as the daily) ---- */
+  .item{border:none;}
+  .row{
+    display:flex;align-items:center;gap:.38em;width:100%;
+    background:none;border:none;cursor:pointer;text-align:left;
+    color:var(--ink);font-family:inherit;
+    font-size:clamp(36px,7.4vw,104px);
+    font-weight:500;letter-spacing:-.035em;line-height:1.1;
+    padding:.03em 0;white-space:nowrap;
+  }
+  .row:focus{outline:none;}
+  .row:focus-visible{outline:2px solid var(--ink);outline-offset:6px;}
+  .marker{flex:none;width:.62em;height:.62em;border-radius:50%;background:var(--ink);position:relative;}
+  .marker span{
+    display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-52%);
+    font-size:.34em;line-height:1;font-weight:500;letter-spacing:-.02em;
+  }
+  .marker::after{
+    content:"";display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    width:.21em;height:.21em;border:.012em solid var(--ink);border-radius:50%;
+  }
+  .item.open .marker{background:none;}
+  .item.open .marker span{display:block;}
+  .item.open .marker::after{display:block;}
+  .anno{
+    font-size:.42em;font-weight:500;letter-spacing:-.02em;
+    align-self:flex-start;transform:translateY(.28em);margin-left:.12em;
+    opacity:0;transition:opacity .25s ease .1s;
+  }
+  .item.open .anno{opacity:1;}
+  @media (hover:hover){
+    .row:hover .marker{background:var(--ink);}
+    .item.open .row:hover .marker{background:none;}
+  }
+  .panel{overflow:hidden;max-height:0;transition:max-height .35s ease;}
+  .panel-inner{padding:14px 0 44px;max-width:640px;}
+  .item.open .panel{max-height:560px;}
+  .jobtitle{font-size:clamp(18px,3.4vw,24px);font-weight:400;letter-spacing:-.005em;}
+  .desc{margin-top:14px;font-size:15px;line-height:1.5;color:var(--mute);max-width:38em;}
+  .meta{margin-top:16px;font-size:13px;line-height:1.35;display:flex;flex-wrap:wrap;gap:6px 0;}
+  .meta b{font-weight:700;}
+  .meta .sep{color:var(--mute);padding:0 10px;}
+  .meta .dim{color:var(--mute);}
+
+  footer{
+    display:flex;align-items:flex-end;
+    padding:8vh 5vw 4vh;
+    font-size:11px;font-weight:500;letter-spacing:.01em;line-height:1.45;
+  }
+  footer .col{margin-right:7vw;}
+  footer .lab{text-transform:uppercase;}
+  footer .val{font-weight:400;color:var(--mute);}
+  footer .val a{color:inherit;text-decoration:none;}
+  footer .val a:hover{color:var(--ink);}
+  footer .num{margin-left:auto;font-weight:400;color:var(--mute);}
+  footer .num a{color:inherit;text-decoration:none;font-weight:700;color:var(--ink);}
+
+  @media (max-width:640px){
+    .head{flex-direction:column-reverse;gap:32px;}
+    .portrait{width:62%;}
+    .nm{font-size:clamp(40px,12vw,72px);}
+    .row{font-size:clamp(28px,9.5vw,58px);}
+    footer{flex-wrap:wrap;gap:12px 0;}
+    footer .col{margin-right:10vw;}
+  }
+</style>
+</head>
+<body>
+
+  <div class="plate">
+    <p class="brief">This is the candidate I work for. Twenty years of global brand leadership — Apple, Samsung, Airbnb — born in Colombia, built in the US, fluent in both.</p>
+
+    <div class="head">
+      <div class="names">
+        <div class="nm">Carlos</div>
+        <div class="nm">Fernando</div>
+        <div class="nm">Perez</div>
+        <div class="nm">Botero</div>
+        <p class="role-line">Senior creative leader for brands being invented — or reinvented — for the AI era. Builds global ideas that feel locally true, and the teams, operating models, and creative cultures that don&rsquo;t exist yet.</p>
+      </div>
+      <div class="portrait"><img src="carlos.jpg" alt="Carlos Fernando Perez Botero"></div>
+    </div>
+
+    <div id="career">
+
+      <div class="item">
+        <button class="row" aria-expanded="false"><span class="marker"><span>1</span></span>Airbnb<span class="anno">{2023&ndash;now}</span></button>
+        <div class="panel"><div class="panel-inner">
+          <div class="jobtitle">Senior Creative Director</div>
+          <p class="desc">Leads creative for global expansion across LATAM, US Hispanic, Canada, EMEA, and APAC. Built the multidisciplinary in-house team — design, art direction, writing, motion, UX. Helped launch Airbnb Services and the reimagined Experiences, and designed the AI operating model for a world-class creative org.</p>
+          <div class="meta"><b>Austin &middot; San Francisco</b><span class="sep">/</span><span class="dim">global remit</span></div>
+        </div></div>
+      </div>
+
+      <div class="item">
+        <button class="row" aria-expanded="false"><span class="marker"><span>2</span></span>Ogilvy<span class="anno">{2022&ndash;23}</span></button>
+        <div class="panel"><div class="panel-inner">
+          <div class="jobtitle">Global Executive Creative Director &mdash; Samsung</div>
+          <p class="desc">Led the global Samsung Mobile creative business from New York: a 50-plus person team, launches across the Galaxy ecosystem, multimillion-dollar productions across the US, UK, Germany, Japan, Brazil, Mexico, and Australia — in daily partnership with Seoul.</p>
+          <div class="meta"><b>New York</b><span class="sep">/</span><span class="dim">global remit</span></div>
+        </div></div>
+      </div>
+
+      <div class="item">
+        <button class="row" aria-expanded="false"><span class="marker"><span>3</span></span>Publicis<span class="anno">{2020&ndash;22}</span></button>
+        <div class="panel"><div class="panel-inner">
+          <div class="jobtitle">Global Group Creative Director &mdash; Infiniti</div>
+          <p class="desc">Won the global Infiniti pitch, then built and led the worldwide creative team — connecting one brand vision to launches, campaigns, and retail across markets.</p>
+          <div class="meta"><b>New York</b><span class="sep">/</span><span class="dim">global remit</span></div>
+        </div></div>
+      </div>
+
+      <div class="item">
+        <button class="row" aria-expanded="false"><span class="marker"><span>4</span></span>TBWA\MAL<span class="anno">{2018&ndash;19}</span></button>
+        <div class="panel"><div class="panel-inner">
+          <div class="jobtitle">Group Creative Director &mdash; Apple</div>
+          <p class="desc">Built Media Arts Lab&rsquo;s LATAM creative hub for Apple from zero, embedded in Apple&rsquo;s Miami office: iPhone, iPad, and Apple Watch launches and @apple content across Mexico, Brazil, Colombia, Argentina, and Chile, with Marcom leadership in Cupertino.</p>
+          <div class="meta"><b>Miami</b><span class="sep">/</span><span class="dim">LATAM hub, built from zero</span></div>
+        </div></div>
+      </div>
+
+      <div class="item">
+        <button class="row" aria-expanded="false"><span class="marker"><span>5</span></span>AKQA<span class="anno">{2014&ndash;16}</span></button>
+        <div class="panel"><div class="panel-inner">
+          <div class="jobtitle">Creative Director</div>
+          <p class="desc">Verizon&rsquo;s flagship Destination Stores from concept through deployment — UX, motion, software, retail. Pitched and won Clinique for the network; led Nike Running and Yoga.</p>
+          <div class="meta"><b>New York</b><span class="sep">/</span><span class="dim">Verizon &middot; Nike &middot; Clinique</span></div>
+        </div></div>
+      </div>
+
+    </div>
+  </div>
+
+  <footer>
+    <div class="col">
+      <div class="lab">The Shortlist&mdash;Candidate</div>
+      <div class="val">Carlos Fernando Perez Botero</div>
+    </div>
+    <div class="col">
+      <div class="lab">Contact</div>
+      <div class="val"><a href="mailto:carlosfernandop@gmail.com">carlosfernandop@gmail.com</a></div>
+    </div>
+    <div class="col">
+      <div class="lab">Based</div>
+      <div class="val">Austin, TX &mdash; globally mobile &middot; EN / ES</div>
+    </div>
+    <div class="num"><a href="./">&larr; Today&rsquo;s edition</a></div>
+  </footer>
+
+<script>
+document.querySelectorAll(".item .row").forEach(function(btn){
+  btn.addEventListener("click", function(){
+    var item = btn.parentElement;
+    var wasOpen = item.classList.contains("open");
+    document.querySelectorAll(".item.open").forEach(function(o){
+      o.classList.remove("open");
+      o.querySelector(".row").setAttribute("aria-expanded","false");
+    });
+    if(!wasOpen){
+      item.classList.add("open");
+      btn.setAttribute("aria-expanded","true");
+    }
+  });
+});
+</script>
+
+</body>
+</html>
