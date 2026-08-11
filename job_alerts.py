@@ -920,45 +920,81 @@ def load_profile() -> str:
     except Exception:
         return ""
 
+def _cut(text: str, limit: int) -> str:
+    """Truncate at a word boundary — never mid-word."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:—–-")
+    return cut + "…"
+
+def fit_tier(score) -> str:
+    """Editorial label for a fit score."""
+    if score is None:
+        return ""
+    if score >= 85:
+        return "Exceptional fit"
+    if score >= 75:
+        return "Strong fit"
+    if score >= 60:
+        return "Worth considering"
+    return "Wildcard"
+
 def score_fit(profile: str, job: dict, jd_text: str):
-    """Ask Claude for a 0-100 fit score + a one-line 'why' in the approved
-    editorial voice. Returns (score, line) or (None, None) on failure."""
+    """Ask Claude to argue one role for this candidate: score + the case for,
+    and the honest case against. Returns (score, why, pause) or (None, None, None)."""
     try:
         prompt = (
-            "You rank job openings for a specific candidate and write one line about each.\n\n"
+            "You are the personal career agent of one senior creative director. "
+            "You are judging ONE role for HIM specifically, and you will present "
+            "your reasoning to him directly.\n\n"
             f"CANDIDATE PROFILE:\n{profile}\n\n"
             f"ROLE: {job['title']} at {job['company']} — {job.get('location','')}\n\n"
-            f"JOB POSTING TEXT (may include page boilerplate — ignore navigation/footer noise):\n{jd_text or '(no description available — judge from title and company)'}\n\n"
+            f"JOB POSTING TEXT (may include page boilerplate — ignore navigation/footer noise):\n"
+            f"{jd_text or '(no description available — judge from title and company)'}\n\n"
             "Return ONLY a JSON object, no other text:\n"
-            '{"score": <0-100 integer, how strong a fit this role is for THIS candidate — seniority match, craft match, brand-led scope, AI-era relevance>, '
-            '"line": "<ONE sentence, max 130 chars, confident editorial voice, spoken DIRECTLY TO the candidate as you/your — never his name, never he/his/him — telling him why this role fits him, e.g. cities you already call home, the kind of blank canvas you build best on. Specific to this role. No emoji. No exclamation points.>"}'
+            '{"score": <0-100 integer — seniority match, craft match, brand-led scope, AI-era relevance for THIS candidate>, '
+            '"why": "<WHY I CHOSE IT: one or two sentences, max 200 chars, spoken to him as you/your (never his name, never he/his). '
+            "Connect THIS role to his specific pattern — the companies he has built for, brands he entered before their identity "
+            "was fixed, cities he calls home, teams he built from zero. Perceptive and confident, not flattering. No emoji, no exclamation points.>\", "
+            '"pause": "<WHAT GIVES ME PAUSE: one sentence, max 140 chars, the honest counterargument — remit too narrow, seniority ambiguity, '
+            "scope skewed to execution, thin posting, location friction. Every role has one; if genuinely nothing, name what he should verify first. Same voice.>\"}"
         )
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": CLAUDE_MODEL,
-                "max_tokens": 200,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=60,
-        )
-        if not r.ok:
-            print(f"  [Fit API {r.status_code}] {r.text[:150]}")
-            return None, None
-        text = "".join(b.get("text", "") for b in r.json().get("content", []))
-        m = re.search(r"\{.*\}", text, re.S)
-        data = json.loads(m.group(0))
-        score = max(0, min(100, int(data["score"])))
-        line = str(data["line"]).strip()[:160]
-        return score, line
+        for attempt in (1, 2):
+            r = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": ANTHROPIC_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": CLAUDE_MODEL,
+                    "max_tokens": 400,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=60,
+            )
+            if not r.ok:
+                print(f"  [Fit API {r.status_code}] {r.text[:150]}")
+                return None, None, None
+            text = "".join(b.get("text", "") for b in r.json().get("content", []))
+            m = re.search(r'\{.*"score".*\}', text, re.S)
+            if m:
+                try:
+                    data = json.loads(m.group(0))
+                    score = max(0, min(100, int(data["score"])))
+                    why = _cut(str(data.get("why", "")), 220)
+                    pause = _cut(str(data.get("pause", "")), 160)
+                    if why:
+                        return score, why, pause
+                except Exception:
+                    pass
+            print(f"  [Fit attempt {attempt}] unusable reply: {text[:100]!r}")
+        return None, None, None
     except Exception as e:
         print(f"  [Fit error] {job['title']}: {e}")
-        return None, None
+        return None, None, None
 
 def rank_with_fit(matches: list, new_keys: set):
     """Return (ranked_matches, used_ai). Each match may gain 'fit' and 'ai_line'."""
@@ -975,12 +1011,14 @@ def rank_with_fit(matches: list, new_keys: set):
     scored_any = False
     for j in candidates:
         jd = fetch_jd_text(j.get("url", ""))
-        score, line = score_fit(profile, j, jd)
+        score, why, pause = score_fit(profile, j, jd)
         if score is not None:
             j["fit"] = score
-            j["ai_line"] = line
+            j["ai_why"] = why
+            j["ai_pause"] = pause
+            j["ai_line"] = why  # back-compat (email etc.)
             scored_any = True
-            print(f"  fit {score:3d}  {j['company']} — {j['title']}")
+            print(f"  fit {score:3d} ({fit_tier(score)})  {j['company']} — {j['title']}")
     if not scored_any:
         print("Fit engine: all scoring failed — falling back to heuristic.")
         return sorted(matches, key=heuristic, reverse=True), False
@@ -1009,41 +1047,32 @@ def write_brief(n: int, total_fetched: int, n_companies: int, ranked: list, new_
                 f'{", NEW TODAY" if is_new else ""})'
             )
         n_new = sum(1 for j in ranked if dedup_key(j["title"], j["company"]) in new_keys)
-        word = COUNT_WORDS[n].lower() if n < len(COUNT_WORDS) else str(n)
-        roles_word = "role" if n == 1 else "roles"
         prompt = (
-            "You are the agent behind THE SHORTLIST, a daily job radar you run for one senior "
-            "creative director. You just finished this morning's run. Write the single line of "
-            "small monospace type that sits at the top of the page: your report of the job completed.\n\n"
+            "You are the personal career agent behind THE SHORTLIST. You just finished this "
+            "morning's run for your one client, a senior creative director. The page already "
+            "reports the numbers — your job is ONE short observation, if the data earns it.\n\n"
             "RUN DATA (real, this morning):\n"
             f"- Scanned {total_fetched:,} openings at {n_companies} companies, 8:00 AM ET\n"
-            f"- {n} made the cut, {n_new} of them newly listed today\n"
+            f"- {n} made the cut, {n_new} newly listed today\n"
             f"- The ranked list:\n" + "\n".join(facts) + "\n\n"
             "RULES:\n"
-            f'- Open with "I found {word} {roles_word} worth your time." then state the scan facts '
-            f"({total_fetched:,} openings, {n_companies} companies, 8:00 AM ET) in your own compact phrasing.\n"
-            "- Close with ONE short observation ONLY if the data genuinely offers one — a role that "
-            "appeared today, a standout fit score, a strong lead that has been open a long time and "
-            "may not last. If nothing stands out, close with: Nothing else made the cut.\n"
-            "- Voice: utilitarian field report. Dry, specific, no hype, no emoji, no exclamation "
-            "points, no adjectives that sell. Numbers stay as digits except the opening count word.\n"
-            "- One line, max 240 characters total.\n\n"
-            'Return ONLY JSON: {"line": "<the line>"}'
+            "- ONE sentence, max 120 characters: the single most notable fact — a lead clear of "
+            "the field, a cluster from one company, a role that appeared overnight, a strong role "
+            "open so long it may not last.\n"
+            "- Dry, specific, first person allowed. No hype, no emoji, no exclamation points.\n"
+            '- If nothing genuinely stands out, return {"line": ""}.\n\n'
+            'Return ONLY JSON: {"line": "<the observation or empty>"}'
         )
         def _extract(text):
-            # preferred: JSON object with "line"
             m = re.search(r'\{[^{}]*"line"[^{}]*\}', text, re.S)
             if m:
                 try:
                     return str(json.loads(m.group(0))["line"]).strip()
                 except Exception:
                     pass
-            # tolerated: the model answered with the bare line
             t = text.strip().strip("`").strip()
-            if t:
-                t = t.splitlines()[0].strip().strip('"').strip()
-                if t.lower().startswith("i found"):
-                    return t
+            if t and "\n" not in t and len(t) < 200:
+                return t.strip('"').strip()
             return None
 
         for attempt in (1, 2):
@@ -1056,7 +1085,7 @@ def write_brief(n: int, total_fetched: int, n_companies: int, ranked: list, new_
                 },
                 json={
                     "model": CLAUDE_MODEL,
-                    "max_tokens": 500,
+                    "max_tokens": 300,
                     "messages": [{"role": "user", "content": prompt}],
                 },
                 timeout=60,
@@ -1066,9 +1095,11 @@ def write_brief(n: int, total_fetched: int, n_companies: int, ranked: list, new_
                 return None
             text = "".join(b.get("text", "") for b in r.json().get("content", []))
             line = _extract(text)
-            if line and 40 < len(line) <= 300:
-                print(f"Brief: {line}")
-                return line
+            if line is not None:
+                line = _cut(line, 140)
+                if line:
+                    print(f"Observation: {line}")
+                return line or None
             print(f"  [Brief attempt {attempt}] unusable reply: {text[:120]!r}")
         return None
     except Exception as e:
@@ -1169,14 +1200,13 @@ def _et_now():
     except Exception:
         return datetime.now()
 
-SHORTLIST_ENTRY = """    <div class="item" data-key="__KEY__">
-      <button class="row" aria-expanded="false">
+SHORTLIST_ENTRY = """    <div class="item__LEAD____OPEN__" data-key="__KEY__">
+      <button class="row" aria-expanded="__EXP__">
         <span class="marker"><span__D2__>__NUM__</span></span><span class="co">__COMPANY__</span>__FRESH__<span class="anno">__ANNO__</span>
       </button>
       <div class="panel"><div class="panel-inner">
         <div class="role">__ROLE____NEWTAG__</div>
-        <p class="desc">__DESC__</p>
-        <div class="meta"><b>__LOC__</b><span class="sep">/</span><span>__SALARY__</span>__POSTED__</div>
+__ARGUMENT__        <div class="meta"><b>__LOC__</b><span class="sep">/</span><span>__SALARY__</span>__POSTED__</div>
         <div class="actions">
           <a class="apply" href="__URL__" target="_blank" rel="noopener">Apply &#8599;</a>
           <button class="mark" type="button">Mark applied</button>
@@ -1200,9 +1230,30 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   .brief{
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
     font-size:12.5px;line-height:1.7;letter-spacing:.01em;
-    margin:0 0 8vh 0;
+    margin:0 0 5vh 0;
   }
+  /* ---- the overnight briefing: the agent's telegram, one quiet voice ---- */
+  .cascade{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.5px;line-height:1.7;letter-spacing:.01em;
+    margin:0 0 3.5vh 0;
+  }
+  .statline{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.5px;line-height:1.7;letter-spacing:.01em;color:var(--mute);
+    margin:0 0 2vh 0;
+  }
+  /* ---- section labels (I'd start with… / unusually strong / worth your attention) ---- */
+  .seclabel{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    margin:8vh 0 2.5vh;
+    display:flex;align-items:center;gap:10px;
+  }
+  .seclabel::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ink);}
   .item{border:none;}
+  /* the standout reads larger */
+  .item.lead .row{font-size:clamp(46px,10.4vw,148px);}
   .row{
     display:flex;align-items:center;gap:.38em;width:100%;
     background:none;border:none;cursor:pointer;text-align:left;
@@ -1247,9 +1298,21 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   }
   .panel{overflow:hidden;max-height:0;transition:max-height .35s ease;}
   .panel-inner{padding:14px 0 44px;max-width:640px;}
-  .item.open .panel{max-height:560px;}
+  .item.open .panel{max-height:1100px;}
   .role{font-size:clamp(18px,3.4vw,24px);font-weight:400;letter-spacing:-.005em;}
   .desc{margin-top:14px;font-size:15px;line-height:1.5;color:var(--mute);max-width:36em;}
+  /* ---- the argument: score line + why / pause / why now ---- */
+  .scoreline{
+    margin-top:10px;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.5px;letter-spacing:.01em;
+  }
+  .plabel{
+    margin-top:24px;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+  }
+  .ptext{margin-top:7px;font-size:15px;line-height:1.55;color:var(--mute);max-width:38em;}
   .meta{margin-top:16px;font-size:13px;line-height:1.35;display:flex;flex-wrap:wrap;gap:6px 0;}
   .meta b{font-weight:700;}
   .meta .sep{color:var(--mute);padding:0 10px;}
@@ -1302,7 +1365,9 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
 <body>
 
   <div class="plate">
-    <p class="brief">__BRIEF__</p>
+    <p class="brief">__GREETING__</p>
+    <div class="cascade">__CASCADE__</div>
+    <p class="statline">__STATLINE__</p>
 __ENTRIES__  </div>
 
   <footer>
@@ -1383,26 +1448,75 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
 
     n = len(ranked)
 
-    scan_stats = f"{total_fetched:,} openings at {len(SCRAPERS)} companies, scanned this morning at 8:00 AM ET"
-    if n == 0:
-        brief = (f"I read all {total_fetched:,} openings at {len(SCRAPERS)} companies "
-                 "this morning at 8:00 AM ET. Nothing cleared the bar today.")
-    else:
-        word = COUNT_WORDS[n].lower() if n < len(COUNT_WORDS) else str(n)
-        roles_word = "role" if n == 1 else "roles"
-        brief = (f"I found {word} {roles_word} worth your time. "
-                 f"Hand-filtered from {scan_stats}. Nothing else made the cut.")
-        ai_brief = write_brief(n, total_fetched, len(SCRAPERS), ranked, new_keys)
-        if ai_brief:
-            brief = ai_brief
+    # ---- the overnight briefing: greeting, cascade, statline ----
+    hour = now.hour
+    daypart = "morning" if hour < 12 else ("afternoon" if hour < 18 else "evening")
+    greeting = f"Good {daypart}, Carlos."
 
-    entries = []
+    top = ranked[0].get("fit") if n else None
+    second = ranked[1].get("fit") if n > 1 else None
+    n_strong = sum(1 for j in ranked if (j.get("fit") or 0) >= 80)
+    has_standout = (top is not None and top >= 88
+                    and (second is None or top - second >= 5))
+
+    cascade_lines = []
     if n == 0:
-        entries.append(
-            '    <div class="item"><div class="row" style="cursor:default;">'
-            '<span class="marker"></span>Nothing today.</div></div>\n'
-        )
-    for i, j in enumerate(ranked, 1):
+        cascade_lines.append(f"I searched {total_fetched:,} jobs overnight.")
+        cascade_lines.append("Nothing cleared the bar today.")
+    else:
+        cascade_lines.append(f"I searched {total_fetched:,} jobs overnight.")
+        cascade_lines.append(f"{n} are worth your attention.")
+        if n_strong >= 2:
+            cascade_lines.append(f"{n_strong} are unusually strong.")
+        if has_standout:
+            cascade_lines.append("1 could change the trajectory of your search.")
+    cascade = "<br>".join(cascade_lines)
+
+    read_closely = sum(1 for j in matches if j.get("fit") is not None) if used_ai else len(matches)
+    statline = (f"{total_fetched - read_closely:,} dismissed on sight &middot; "
+                f"{read_closely} read in full &middot; {n} chosen.")
+    if n > 0:
+        obs = write_brief(n, total_fetched, len(SCRAPERS), ranked, new_keys)
+        if obs:
+            statline += " " + _html.escape(obs)
+
+    # ---- entries, in three editorial ranks ----
+    def _argument(j) -> str:
+        blocks = []
+        fit = j.get("fit")
+        if fit is not None:
+            blocks.append(f'        <div class="scoreline">{fit} &mdash; {fit_tier(fit)}</div>\n')
+        why = j.get("ai_why") or BLURBS.get(j["company"], "A senior creative seat at a company worth watching.")
+        blocks.append('        <div class="plabel">Why I chose it</div>\n')
+        blocks.append(f'        <p class="ptext">{_html.escape(why)}</p>\n')
+        pause = j.get("ai_pause")
+        if pause:
+            blocks.append('        <div class="plabel">What gives me pause</div>\n')
+            blocks.append(f'        <p class="ptext">{_html.escape(pause)}</p>\n')
+        # why now — computed from the run's real data
+        key = dedup_key(j["title"], j["company"])
+        pa = j.get("posted_at")
+        parts = []
+        if key in new_keys:
+            parts.append("Surfaced for the first time this morning")
+        if pa is not None:
+            if pa.tzinfo is None:
+                pa = pa.replace(tzinfo=timezone.utc)
+            days = (datetime.now(timezone.utc) - pa).days
+            if days <= 0:
+                parts.append("posted today")
+            elif days == 1:
+                parts.append("posted yesterday")
+            else:
+                parts.append(f"posted {days} days ago")
+        parts.append("still open as of 8:00 AM ET")
+        whynow = " &middot; ".join(parts)
+        whynow = whynow[0].upper() + whynow[1:]
+        blocks.append('        <div class="plabel">Why now</div>\n')
+        blocks.append(f'        <p class="ptext">{whynow}</p>\n')
+        return "".join(blocks)
+
+    def _entry(i, j, lead=False):
         key = dedup_key(j["title"], j["company"])
         is_new = key in new_keys
         posted = _fmt_posted(j.get("posted_at"))
@@ -1414,7 +1528,10 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
             if pa.tzinfo is None:
                 pa = pa.replace(tzinfo=timezone.utc)
             fresh = (datetime.now(timezone.utc) - pa).days <= 3
-        entry = (SHORTLIST_ENTRY
+        return (SHORTLIST_ENTRY
+            .replace("__LEAD__", " lead" if lead else "")
+            .replace("__OPEN__", " open" if lead else "")
+            .replace("__EXP__", "true" if lead else "false")
             .replace("__NUM__", str(i))
             .replace("__D2__", ' class="d2"' if i >= 10 else "")
             .replace("__KEY__", _html.escape(key))
@@ -1423,13 +1540,34 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
             .replace("__ANNO__", anno)
             .replace("__NEWTAG__", '<span class="new">NEW</span>' if is_new else "")
             .replace("__ROLE__", _html.escape(j["title"]))
-            .replace("__DESC__", _html.escape(j.get("ai_line") or BLURBS.get(j["company"], "A senior creative seat at a company worth watching.")))
+            .replace("__ARGUMENT__", _argument(j))
             .replace("__LOC__", _html.escape(j.get("location", "") or "Location not listed"))
             .replace("__SALARY__", "Salary not posted")
             .replace("__POSTED__", f'<span class="sep">/</span><span class="dim">posted {posted}</span>' if posted else "")
             .replace("__URL__", _html.escape(j.get("url", "") or "#"))
         )
-        entries.append(entry)
+
+    entries = []
+    if n == 0:
+        entries.append(
+            '    <div class="item"><div class="row" style="cursor:default;">'
+            '<span class="marker"></span>Nothing today.</div></div>\n'
+        )
+    else:
+        lead_job = ranked[0]
+        strong = [j for j in ranked[1:] if (j.get("fit") or 0) >= 80]
+        rest = [j for j in ranked[1:] if (j.get("fit") or 0) < 80]
+        entries.append(f'    <div class="seclabel" style="margin-top:3vh;">I&rsquo;d start with {_html.escape(lead_job["company"])}</div>\n')
+        entries.append(_entry(1, lead_job, lead=True))
+        idx = 2
+        if strong:
+            entries.append('    <div class="seclabel">Unusually strong</div>\n')
+            for j in strong:
+                entries.append(_entry(idx, j)); idx += 1
+        if rest:
+            entries.append('    <div class="seclabel">Worth your attention</div>\n')
+            for j in rest:
+                entries.append(_entry(idx, j)); idx += 1
 
     os.makedirs("docs/archive", exist_ok=True)
     today_file = f"docs/archive/{now.strftime('%Y-%m-%d')}.html"
@@ -1440,7 +1578,9 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         edition = len(prior) + 1
 
     page = (SHORTLIST_PAGE
-        .replace("__BRIEF__", _html.escape(brief))
+        .replace("__GREETING__", _html.escape(greeting))
+        .replace("__CASCADE__", cascade)
+        .replace("__STATLINE__", statline)
         .replace("__DATELONG__", datelong)
         .replace("__EDITION__", f"{edition:03d}")
         .replace("__ENTRIES__", "".join(entries))
