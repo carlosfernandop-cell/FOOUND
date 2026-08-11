@@ -74,6 +74,48 @@
   .meta .sep{color:var(--mute);padding:0 10px;}
   .meta .dim{color:var(--mute);}
 
+
+  /* ---- section label: tiny mono, reference-style ---- */
+  .seclabel{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    margin:11vh 0 3.5vh;
+    display:flex;align-items:center;gap:10px;
+  }
+  .seclabel::before{
+    content:"";width:7px;height:7px;border-radius:50%;background:var(--ink);
+  }
+
+  /* ---- static specimen rows (content is the hierarchy) ---- */
+  .srow{
+    display:flex;align-items:center;gap:.38em;
+    font-size:clamp(36px,7.4vw,104px);
+    font-weight:500;letter-spacing:-.035em;line-height:1.1;
+    padding:.03em 0;white-space:nowrap;
+  }
+  .srow .dot{
+    flex:none;width:.62em;height:.62em;border-radius:50%;background:var(--ink);
+  }
+  .srow .anno{
+    font-size:.42em;font-weight:500;letter-spacing:-.02em;
+    align-self:flex-start;transform:translateY(.28em);margin-left:.12em;
+    opacity:1;
+  }
+
+  /* ---- references: the words carry the weight ---- */
+  .quote{margin:0 0 7vh;max-width:30em;}
+  .quote p{
+    font-size:clamp(22px,4vw,40px);
+    font-weight:400;letter-spacing:-.02em;line-height:1.25;
+  }
+  .quote .who{
+    margin-top:20px;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.5px;color:var(--mute);letter-spacing:.01em;
+  }
+  @media (max-width:640px){
+    .srow{font-size:clamp(28px,9.5vw,58px);}
+  }
   footer{
     display:flex;align-items:flex-end;
     padding:8vh 5vw 4vh;
@@ -92,7 +134,49 @@
     .portrait{width:62%;}
     .nm{font-size:clamp(40px,12vw,72px);}
     .row{font-size:clamp(28px,9.5vw,58px);}
-    footer{flex-wrap:wrap;gap:12px 0;}
+  
+  /* ---- section label: tiny mono, reference-style ---- */
+  .seclabel{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    margin:11vh 0 3.5vh;
+    display:flex;align-items:center;gap:10px;
+  }
+  .seclabel::before{
+    content:"";width:7px;height:7px;border-radius:50%;background:var(--ink);
+  }
+
+  /* ---- static specimen rows (content is the hierarchy) ---- */
+  .srow{
+    display:flex;align-items:center;gap:.38em;
+    font-size:clamp(36px,7.4vw,104px);
+    font-weight:500;letter-spacing:-.035em;line-height:1.1;
+    padding:.03em 0;white-space:nowrap;
+  }
+  .srow .dot{
+    flex:none;width:.62em;height:.62em;border-radius:50%;background:var(--ink);
+  }
+  .srow .anno{
+    font-size:.42em;font-weight:500;letter-spacing:-.02em;
+    align-self:flex-start;transform:translateY(.28em);margin-left:.12em;
+    opacity:1;
+  }
+
+  /* ---- references: the words carry the weight ---- */
+  .quote{margin:0 0 7vh;max-width:30em;}
+  .quote p{
+    font-size:clamp(22px,4vw,40px);
+    font-weight:400;letter-spacing:-.02em;line-height:1.25;
+  }
+  .quote .who{
+    margin-top:20px;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.5px;color:var(--mute);letter-spacing:.01em;
+  }
+  @media (max-width:640px){
+    .srow{font-size:clamp(28px,9.5vw,58px);}
+  }
+  footer{flex-wrap:wrap;gap:12px 0;}
     footer .col{margin-right:10vw;}
   }
 </style>
@@ -160,6 +244,38 @@
         </div></div>
       </div>
 
+    </div>
+
+    <div class="seclabel">Capabilities</div>
+    <div class="srow"><span class="dot"></span>Brand platforms</div>
+    <div class="srow"><span class="dot"></span>Teams from zero</div>
+    <div class="srow"><span class="dot"></span>AI operating models</div>
+    <div class="srow"><span class="dot"></span>Global launches</div>
+    <div class="srow"><span class="dot"></span>Multicultural fluency</div>
+
+    <div class="seclabel">Languages</div>
+    <div class="srow"><span class="dot"></span>English<span class="anno">{native}</span></div>
+    <div class="srow"><span class="dot"></span>Espa&ntilde;ol<span class="anno">{nativo}</span></div>
+
+    <div class="seclabel">Brands</div>
+    <div class="srow"><span class="dot"></span>Apple</div>
+    <div class="srow"><span class="dot"></span>Airbnb</div>
+    <div class="srow"><span class="dot"></span>Samsung</div>
+    <div class="srow"><span class="dot"></span>Microsoft</div>
+    <div class="srow"><span class="dot"></span>Nike</div>
+    <div class="srow"><span class="dot"></span>Coca-Cola</div>
+    <div class="srow"><span class="dot"></span>IKEA</div>
+    <div class="srow"><span class="dot"></span>HPE</div>
+    <div class="srow"><span class="dot"></span>Cartier</div>
+
+    <div class="seclabel">References</div>
+    <div class="quote">
+      <p>&ldquo;Had the pleasure of working/partnering with Carlos for two years. You won&rsquo;t find anyone more committed to simplifying the complicated quite like Carlos. A creative leader that sees past the chaos.&rdquo;</p>
+      <div class="who">Ash Tavassoli &mdash; EVP, Executive Creative Director, West BBDO</div>
+    </div>
+    <div class="quote">
+      <p>&ldquo;Carlos is a man of great tastes, be it a fine meal, or a finely tuned creative idea. He has an eye for beautiful things and is always willing to roll up his sleeves and join the team in elevating the work to match his vision.&rdquo;</p>
+      <div class="who">Nick Ciffone &mdash; Senior Creative Director, OpenAI</div>
     </div>
   </div>
 
