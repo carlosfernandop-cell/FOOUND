@@ -102,6 +102,21 @@
     opacity:1;
   }
 
+
+  /* ---- capability: one strong word + tight explanation right ---- */
+  .cap{
+    display:flex;align-items:center;justify-content:space-between;
+    gap:5vw;
+  }
+  .cap .capdesc{
+    flex:none;width:min(30vw,320px);
+    font-size:14.5px;line-height:1.55;color:var(--mute);
+    letter-spacing:0;
+  }
+  @media (max-width:760px){
+    .cap{flex-direction:column;align-items:flex-start;gap:8px;padding:10px 0;}
+    .cap .capdesc{width:auto;max-width:30em;}
+  }
   /* ---- references: the words carry the weight ---- */
   .quote{margin:0 0 7vh;max-width:30em;}
   .quote p{
@@ -162,6 +177,21 @@
     opacity:1;
   }
 
+
+  /* ---- capability: one strong word + tight explanation right ---- */
+  .cap{
+    display:flex;align-items:center;justify-content:space-between;
+    gap:5vw;
+  }
+  .cap .capdesc{
+    flex:none;width:min(30vw,320px);
+    font-size:14.5px;line-height:1.55;color:var(--mute);
+    letter-spacing:0;
+  }
+  @media (max-width:760px){
+    .cap{flex-direction:column;align-items:flex-start;gap:8px;padding:10px 0;}
+    .cap .capdesc{width:auto;max-width:30em;}
+  }
   /* ---- references: the words carry the weight ---- */
   .quote{margin:0 0 7vh;max-width:30em;}
   .quote p{
@@ -247,11 +277,27 @@
     </div>
 
     <div class="seclabel">Capabilities</div>
-    <div class="srow"><span class="dot"></span>Brand platforms</div>
-    <div class="srow"><span class="dot"></span>Teams from zero</div>
-    <div class="srow"><span class="dot"></span>AI operating models</div>
-    <div class="srow"><span class="dot"></span>Global launches</div>
-    <div class="srow"><span class="dot"></span>Multicultural fluency</div>
+
+    <div class="cap">
+      <div class="srow"><span class="dot"></span>Brand</div>
+      <div class="capdesc">Platforms, campaigns, and launches with one voice &mdash; global by design.</div>
+    </div>
+    <div class="cap">
+      <div class="srow"><span class="dot"></span>Teams</div>
+      <div class="capdesc">Multidisciplinary creative orgs &mdash; hired, shaped, and led from zero.</div>
+    </div>
+    <div class="cap">
+      <div class="srow"><span class="dot"></span>AI</div>
+      <div class="capdesc">Operating models that make creative orgs faster &mdash; and more human.</div>
+    </div>
+    <div class="cap">
+      <div class="srow"><span class="dot"></span>Global</div>
+      <div class="capdesc">Ideas that feel locally true &mdash; five regions, two languages, one standard.</div>
+    </div>
+    <div class="cap">
+      <div class="srow"><span class="dot"></span>Craft</div>
+      <div class="capdesc">Film, social, experiential, retail &mdash; taste is the process.</div>
+    </div>
 
     <div class="seclabel">Languages</div>
     <div class="srow"><span class="dot"></span>English<span class="anno">{native}</span></div>
