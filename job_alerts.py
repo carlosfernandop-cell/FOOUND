@@ -763,8 +763,7 @@ SCRAPERS = [
     ("Cursor",      fetch_ashby,      "cursor",      "Cursor"),
     ("Cognition",   fetch_ashby,      "cognition",   "Cognition"),
     ("Hugging Face", fetch_workable,  "huggingface", "Hugging Face"),
-    # Agencies, design studios & craft shops (added Aug 2026)
-    ("Monks",             fetch_greenhouse, "monks",            "Monks"),
+    # Agencies, design studios & craft shops (added Aug 2026; Monks removed by request)
     ("Preacher",          fetch_greenhouse, "preacher",         "Preacher"),
     ("Johannes Leonardo", fetch_greenhouse, "johannesleonardo", "Johannes Leonardo"),
     ("Wolff Olins",       fetch_workable,   "wolff-olins",      "Wolff Olins"),
@@ -1125,7 +1124,6 @@ BLURBS = {
     "Cursor":       "The fastest-growing dev tool in history, whose editor is its brand.",
     "Cognition":    "Maker of Devin — foundational brand work, wide open.",
     "Hugging Face": "The beloved open-source home of AI, scrappy by design.",
-    "Monks":        "Creative production at planetary scale — the machine behind half of tech's big launches.",
     "Preacher":     "Austin's most decorated creative shop. Brand-led, craft-obsessed, hometown advantage.",
     "Johannes Leonardo": "The agency that made adidas and Volkswagen feel inevitable again.",
     "Wolff Olins":  "The identity house whose rebrands the rest of the industry studies.",
