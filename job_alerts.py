@@ -60,6 +60,7 @@ INCLUDE = [
     "brand marketing director",
     "executive creative",
     "brand experience",
+    "design director",   # studio-world equivalent of CD (Koto, Collins, Pentagram-tier)
 ]
 
 # A job is dropped if its title contains ANY of these.
@@ -440,6 +441,65 @@ def fetch_workable(slug: str, company_label: str) -> list:
         print(f"[{company_label}] Workable error: {e}")
     return jobs
 
+def fetch_recruitee(slug: str, company_label: str) -> list:
+    """Recruitee ATS public offers API (Framestore, ...)."""
+    jobs = []
+    try:
+        r = requests.get(
+            f"https://{slug}.recruitee.com/api/offers/",
+            headers=HEADERS, timeout=20,
+        )
+        if r.ok:
+            for o in r.json().get("offers", []):
+                loc = ", ".join(filter(None, [o.get("city", ""), o.get("country", "")]))
+                created = (o.get("created_at", "") or "").replace(" UTC", "").replace(" ", "T")
+                jobs.append({
+                    "title":     o.get("title", ""),
+                    "location":  loc,
+                    "url":       o.get("careers_url", "")
+                                 or f"https://{slug}.recruitee.com/o/{o.get('slug', '')}",
+                    "company":   company_label,
+                    "posted_at": parse_iso(created),
+                })
+        else:
+            print(f"[{company_label}] Recruitee HTTP {r.status_code}")
+    except Exception as e:
+        print(f"[{company_label}] Recruitee error: {e}")
+    return jobs
+
+def fetch_koto() -> list:
+    """Koto via Teamtailor careers site (server-rendered HTML).
+    Titles reconstructed from URL slugs; locations unknown (unknown passes)."""
+    jobs = []
+    seen = set()
+    try:
+        for page in (1, 2, 3, 4):
+            url = ("https://careers.koto.studio/jobs" if page == 1
+                   else f"https://careers.koto.studio/jobs/show_more?page={page}")
+            r = requests.get(url, headers=HEADERS, timeout=20)
+            if not r.ok:
+                break
+            found_new = False
+            for m in re.finditer(r'/jobs/(\d+)-([a-z0-9-]+)', r.text):
+                jid, slug = m.groups()
+                if jid in seen:
+                    continue
+                seen.add(jid)
+                found_new = True
+                title = slug.replace("-", " ").title()
+                jobs.append({
+                    "title":     title,
+                    "location":  "",
+                    "url":       f"https://careers.koto.studio/jobs/{jid}-{slug}",
+                    "company":   "Koto",
+                    "posted_at": None,
+                })
+            if not found_new:
+                break
+    except Exception as e:
+        print(f"[Koto] error: {e}")
+    return jobs
+
 def fetch_cleo() -> list:
     """Cleo via RevolutPeople careers page (best-effort HTML parse).
     Job titles are reconstructed from URL slugs; locations are unknown
@@ -703,6 +763,14 @@ SCRAPERS = [
     ("Cursor",      fetch_ashby,      "cursor",      "Cursor"),
     ("Cognition",   fetch_ashby,      "cognition",   "Cognition"),
     ("Hugging Face", fetch_workable,  "huggingface", "Hugging Face"),
+    # Agencies, design studios & craft shops (added Aug 2026)
+    ("Monks",             fetch_greenhouse, "monks",            "Monks"),
+    ("Preacher",          fetch_greenhouse, "preacher",         "Preacher"),
+    ("Johannes Leonardo", fetch_greenhouse, "johannesleonardo", "Johannes Leonardo"),
+    ("Wolff Olins",       fetch_workable,   "wolff-olins",      "Wolff Olins"),
+    ("DesignStudio",      fetch_workable,   "designstudio",     "DesignStudio"),
+    ("Koto",              fetch_koto),
+    ("Framestore",        fetch_recruitee,  "framestore",       "Framestore"),
 ]
 
 # Workday host format: "{tenant}.{datacenter}" — e.g. adobe.wd5, nvidia.wd5,
@@ -804,7 +872,8 @@ def send_email(new_jobs: list, notion_saved: int = 0):
     lines.append("\n---\nRead today's edition -> https://carlosfernandop-cell.github.io/job-alerts/")
     lines.append("Filters: Creative Director / Head of Brand / Creative & Brand leadership")
     lines.append("Locations: US hubs (CA, NYC, Austin, Chicago, Seattle, Boston, Miami...), Toronto, Europe + Remote")
-    lines.append("Not auto-checked (visit manually): Meta, Google, Microsoft, Midjourney, Notion")
+    lines.append("Not auto-checked (visit manually): Meta, Google, Microsoft, Midjourney, Notion, "
+                 "W+K, Droga5, Mother, Mischief, GUT, Uncommon, Buck, COLLINS, Pentagram, Porto Rocha, Instrument, ManvsMachine")
 
     msg = MIMEMultipart()
     msg["Subject"] = subject
@@ -1056,6 +1125,13 @@ BLURBS = {
     "Cursor":       "The fastest-growing dev tool in history, whose editor is its brand.",
     "Cognition":    "Maker of Devin — foundational brand work, wide open.",
     "Hugging Face": "The beloved open-source home of AI, scrappy by design.",
+    "Monks":        "Creative production at planetary scale — the machine behind half of tech's big launches.",
+    "Preacher":     "Austin's most decorated creative shop. Brand-led, craft-obsessed, hometown advantage.",
+    "Johannes Leonardo": "The agency that made adidas and Volkswagen feel inevitable again.",
+    "Wolff Olins":  "The identity house whose rebrands the rest of the industry studies.",
+    "DesignStudio": "Where Airbnb's Bélo was born — rebrands that become case studies.",
+    "Koto":         "Joy and rigor for modern tech brands, London to LA.",
+    "Framestore":   "Oscar-winning craft — the people who make the impossible photoreal.",
 }
 
 def _seniority_score(title: str) -> int:
