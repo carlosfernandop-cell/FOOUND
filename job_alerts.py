@@ -43,6 +43,24 @@ else:
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
 
+# ---- priority watch: companies Carlos has flagged. Their matches are always
+#      read in full, and a role that clears the bar is never trimmed by the cap.
+PRIORITY_COMPANIES = {"Apple"}
+
+# ---- hand-added roles: the unscrapeable tail and direct requests.
+#      Injected into every run as if fetched (deduped against the scrapers),
+#      then judged like everything else — pinned into the reading, not the verdict.
+MANUAL_JOBS = [
+    {
+        "title":     "Creative Director, A/V, Apple TV+ Marketing",
+        "company":   "Apple",
+        "location":  "",
+        "url":       "https://jobs.apple.com/en-us/details/200666406-0670/creative-director-a-v-apple-tv-marketing?team=MKTG",
+        "posted_at": None,
+        "added_by":  "Carlos — 2026-08-11",
+    },
+]
+
 # ======================================================================
 # FILTERS — edit these lists to change what jobs you get
 # ======================================================================
@@ -950,7 +968,10 @@ def score_fit(profile: str, job: dict, jd_text: str):
             "your reasoning to him directly.\n\n"
             f"CANDIDATE PROFILE:\n{profile}\n\n"
             f"ROLE: {job['title']} at {job['company']} — {job.get('location','')}\n\n"
-            f"JOB POSTING TEXT (may include page boilerplate — ignore navigation/footer noise):\n"
+            + (f"NOTE: He has flagged {job['company']} as a priority target — he asked his agent to watch this company closely. "
+               "Weigh his stated affinity as real fit-relevant information, but stay honest about the role itself.\n\n"
+               if job.get("company") in PRIORITY_COMPANIES else "")
+            + f"JOB POSTING TEXT (may include page boilerplate — ignore navigation/footer noise):\n"
             f"{jd_text or '(no description available — judge from title and company)'}\n\n"
             "Return ONLY a JSON object, no other text:\n"
             '{"score": <0-100 integer — seniority match, craft match, brand-led scope, AI-era relevance for THIS candidate>, '
@@ -970,7 +991,7 @@ def score_fit(profile: str, job: dict, jd_text: str):
                 },
                 json={
                     "model": CLAUDE_MODEL,
-                    "max_tokens": 400,
+                    "max_tokens": 600,
                     "messages": [{"role": "user", "content": prompt}],
                 },
                 timeout=60,
@@ -1008,6 +1029,9 @@ def rank_with_fit(matches: list, new_keys: set):
         return sorted(matches, key=heuristic, reverse=True), False
 
     candidates = sorted(matches, key=heuristic, reverse=True)[:MAX_CANDIDATES_TO_SCORE]
+    for j in matches:
+        if j["company"] in PRIORITY_COMPANIES and j not in candidates:
+            candidates.append(j)   # priority watch: always read in full
     scored_any = False
     for j in candidates:
         jd = fetch_jd_text(j.get("url", ""))
@@ -1535,6 +1559,13 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
 
     ranked_all, used_ai = rank_with_fit(matches, new_keys)
     ranked = ranked_all[:11]
+    for j in ranked_all[11:]:
+        if j["company"] in PRIORITY_COMPANIES and (j.get("fit") or 0) >= 60 and j not in ranked:
+            for k in range(len(ranked) - 1, -1, -1):
+                if ranked[k]["company"] not in PRIORITY_COMPANIES:
+                    ranked[k] = j
+                    break
+    ranked.sort(key=lambda j: (j.get("fit") or -1), reverse=True)
 
     n = len(ranked)
 
@@ -1785,6 +1816,14 @@ def main():
         results = fn(*args)
         print(f"  {label}: {len(results)} jobs fetched")
         raw += results
+
+    seen_keys = {dedup_key(j["title"], j["company"]) for j in raw}
+    for mj in MANUAL_JOBS:
+        if dedup_key(mj["title"], mj["company"]) in seen_keys:
+            print(f"  Manual: already fetched — {mj['company']} — {mj['title']}")
+        else:
+            raw.append(dict(mj))
+            print(f"  Manual: pinned — {mj['company']} — {mj['title']}")
 
     print(f"Total fetched: {len(raw)}")
 
