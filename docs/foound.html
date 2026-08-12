@@ -54,13 +54,13 @@
     font-weight:500;letter-spacing:-.015em;line-height:1.45;
   }
 
-  /* ---- 4 · the principles ---- */
+  /* ---- 4 · the principles: the system's own rows ---- */
   .principles{margin-top:13vh;}
   .principle{
-    display:flex;align-items:center;gap:.42em;
-    font-size:clamp(20px,3vw,34px);
-    font-weight:500;letter-spacing:-.025em;line-height:1.2;
-    padding:.16em 0;white-space:nowrap;
+    display:flex;align-items:center;gap:.38em;
+    font-size:clamp(36px,7.4vw,104px);
+    font-weight:500;letter-spacing:-.035em;line-height:1.1;
+    padding:.03em 0;white-space:nowrap;
   }
   .principle .dot{flex:none;width:.62em;height:.62em;border-radius:50%;background:var(--ink);}
 
@@ -101,7 +101,7 @@
     .statement{margin-top:9vh;font-size:17px;line-height:1.5;max-width:22em;}
     .kicker{font-size:17px;}
     .principles{margin-top:9vh;}
-    .principle{font-size:clamp(19px,5.6vw,24px);padding:.2em 0;}
+    .principle{font-size:clamp(28px,9.5vw,58px);}
     .closing{margin-top:11vh;margin-bottom:4vh;font-size:clamp(21px,6vw,27px);}
     footer{flex-wrap:wrap;gap:14px 0;padding:10vh 5vw 5vh;}
     footer .col{margin-right:9vw;}
@@ -111,7 +111,7 @@
 <body>
 
   <div class="mast">
-    <a class="id" href="foound.html">FOOUND &mdash; &#8470; 001</a>
+    <a class="id" href="foound.html">FOOUND</a>
     <nav>
       <a href="index.html">Today</a>
       <a href="cv.html">Candidate</a>
@@ -133,7 +133,7 @@
       <div class="principle"><span class="dot"></span>Read deeply.</div>
       <div class="principle"><span class="dot"></span>Choose carefully.</div>
       <div class="principle"><span class="dot"></span>Protect attention.</div>
-      <div class="principle"><span class="dot"></span>Work for one person.</div>
+      <div class="principle"><span class="dot"></span>1 FOOUND &times; 1 person.</div>
     </div>
 
     <p class="closing"><b>FOOUND</b> what is worth finding.</p>
@@ -157,6 +157,23 @@
     </div>
     <div class="num"><a href="index.html">&larr; Today&rsquo;s edition</a></div>
   </footer>
+
+<script>
+/* long-name guard: a row that cannot fit steps down deliberately, alone */
+function fitRows(){
+  document.querySelectorAll(".principle").forEach(function(r){
+    r.style.fontSize = "";
+    var guard = 0;
+    while (r.scrollWidth > r.clientWidth + 1 && guard < 4){
+      var cur = parseFloat(getComputedStyle(r).fontSize);
+      r.style.fontSize = (cur * 0.92) + "px";
+      guard++;
+    }
+  });
+}
+var fitT; window.addEventListener("resize", function(){ clearTimeout(fitT); fitT = setTimeout(fitRows, 120); });
+fitRows();
+</script>
 
 </body>
 </html>
