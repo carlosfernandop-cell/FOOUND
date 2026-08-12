@@ -1230,13 +1230,13 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   /* ---- masthead: the object's nameplate + quiet furniture nav ---- */
   .mast{
     display:flex;justify-content:space-between;align-items:baseline;gap:14px;
-    padding:20px 5vw 0;
+    padding:22px 5vw 0;
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
     font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
   }
   .mast .id{font-weight:500;white-space:nowrap;}
-  .mast nav{display:flex;gap:26px;flex-wrap:wrap;}
-  .mast nav a{color:var(--mute);text-decoration:none;white-space:nowrap;}
+  .mast nav{display:flex;gap:24px;flex-wrap:wrap;}
+  .mast nav a{color:var(--mute);text-decoration:none;white-space:nowrap;letter-spacing:.12em;}
   .mast nav a:hover{color:var(--ink);}
   .mast nav a.here{color:var(--ink);}
   @media (max-width:640px){.mast{flex-direction:column;gap:9px;}.mast nav{gap:18px;}}
@@ -1246,30 +1246,29 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   .brief{
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
     font-size:12.5px;line-height:1.7;letter-spacing:.01em;
-    margin:0 0 5vh 0;
+    margin:0 0 4vh 0;
   }
   /* ---- the overnight briefing: the agent's telegram, one quiet voice ---- */
   .cascade{
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
     font-size:12.5px;line-height:1.7;letter-spacing:.01em;
-    margin:0 0 3.5vh 0;
+    margin:0 0 2.5vh 0;
   }
   .statline{
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
     font-size:12.5px;line-height:1.7;letter-spacing:.01em;color:var(--mute);
-    margin:0 0 2vh 0;
+    margin:0;max-width:58em;
   }
   /* ---- section labels (I'd start with… / unusually strong / worth your attention) ---- */
   .seclabel{
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
     font-size:11px;letter-spacing:.14em;text-transform:uppercase;
-    margin:8vh 0 2.5vh;
+    margin:9vh 0 2vh;
     display:flex;align-items:center;gap:10px;
   }
   .seclabel::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ink);}
+  .seclabel.pass{margin-top:13vh;}
   .item{border:none;}
-  /* the standout reads larger */
-  .item.lead .row{font-size:clamp(46px,10.4vw,148px);}
   .row{
     display:flex;align-items:center;gap:.38em;width:100%;
     background:none;border:none;cursor:pointer;text-align:left;
@@ -1309,11 +1308,11 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   }
   .item.open .anno{opacity:1;}
   @media (hover:hover){
-    .row:hover .marker{background:var(--ink);}
-    .item.open .row:hover .marker{background:none;}
+    .item:not(.open) .row:hover .marker{background:none;}
+    .item:not(.open) .row:hover .marker::after{display:block;}
   }
   .panel{overflow:hidden;max-height:0;transition:max-height .35s ease;}
-  .panel-inner{padding:14px 0 44px;max-width:640px;}
+  .panel-inner{padding:14px 0 40px;max-width:640px;}
   .item.open .panel{max-height:1100px;}
   .role{font-size:clamp(18px,3.4vw,24px);font-weight:400;letter-spacing:-.005em;}
   .desc{margin-top:14px;font-size:15px;line-height:1.5;color:var(--mute);max-width:36em;}
@@ -1324,16 +1323,16 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
     font-size:12.5px;letter-spacing:.01em;
   }
   .plabel{
-    margin-top:24px;
+    margin-top:26px;
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
     font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
   }
-  .ptext{margin-top:7px;font-size:15px;line-height:1.55;color:var(--mute);max-width:38em;}
-  .meta{margin-top:16px;font-size:13px;line-height:1.35;display:flex;flex-wrap:wrap;gap:6px 0;}
+  .ptext{margin-top:6px;font-size:15px;line-height:1.55;color:var(--mute);max-width:35em;}
+  .meta{margin-top:18px;font-size:13px;line-height:1.35;display:flex;flex-wrap:wrap;gap:6px 0;}
   .meta b{font-weight:700;}
   .meta .sep{color:var(--mute);padding:0 10px;}
   .meta .dim{color:var(--mute);}
-  .actions{display:flex;align-items:baseline;gap:32px;margin-top:20px;}
+  .actions{display:flex;align-items:baseline;gap:32px;margin-top:22px;}
   a.apply{
     display:inline-block;font-size:13px;font-weight:700;
     letter-spacing:.1em;text-transform:uppercase;color:var(--ink);
@@ -1367,20 +1366,36 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
     font-size:12.5px;line-height:1.7;letter-spacing:.01em;color:var(--mute);
     margin:0 0 3vh 0;
   }
-  .passed{max-width:680px;}
-  .pitem{margin:0 0 22px;}
-  .pline{font-size:15px;font-weight:500;letter-spacing:-.005em;}
+  .passed{max-width:640px;}
+  .pitem{margin:0;}
+  .prow{
+    display:flex;align-items:center;gap:10px;width:100%;
+    background:none;border:none;cursor:pointer;text-align:left;
+    color:var(--ink);font-family:inherit;
+    font-size:15px;font-weight:500;letter-spacing:-.005em;
+    padding:7px 0;
+  }
+  .prow:focus{outline:none;}
+  .prow:focus-visible{outline:2px solid var(--ink);outline-offset:4px;}
+  .pdot{flex:none;width:7px;height:7px;border-radius:50%;border:1px solid var(--ink);background:none;}
+  @media (hover:hover){
+    .pitem:not(.open) .prow:hover .pdot{background:var(--ink);}
+  }
+  .ppanel{overflow:hidden;max-height:0;transition:max-height .3s ease;}
+  .pitem.open .ppanel{max-height:240px;}
+  .ppanel-inner{padding:2px 0 16px 17px;}
+  .pline{font-size:14.5px;font-weight:400;letter-spacing:-.005em;}
   .pline .pfit{
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
     font-size:11px;font-weight:400;color:var(--mute);margin-left:10px;letter-spacing:.01em;
   }
-  .preason{display:block;margin-top:4px;font-size:14px;line-height:1.5;color:var(--mute);max-width:36em;}
+  .preason{display:block;margin-top:5px;font-size:14px;line-height:1.5;color:var(--mute);max-width:36em;}
   footer{
     display:flex;align-items:flex-end;
-    padding:8vh 5vw 4vh;
+    padding:11vh 5vw 5vh;
     font-size:11px;font-weight:500;letter-spacing:.01em;line-height:1.45;
   }
-  footer .col{margin-right:8vw;}
+  footer .col{margin-right:6vw;}
   footer .lab{text-transform:uppercase;}
   footer .val{font-weight:400;color:var(--mute);}
   footer .val a{color:inherit;text-decoration:none;}
@@ -1388,8 +1403,11 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   footer .num{margin-left:auto;font-weight:400;color:var(--mute);}
   @media (max-width:560px){
     .row{font-size:clamp(30px,10.5vw,64px);}
-    footer{flex-wrap:wrap;gap:12px 0;}
-    footer .col{margin-right:10vw;}
+    .panel-inner{padding:12px 0 34px;}
+    .seclabel{margin:7.5vh 0 2vh;}
+    .seclabel.pass{margin-top:10vh;}
+    footer{flex-wrap:wrap;gap:14px 0;padding:9vh 5vw 5vh;}
+    footer .col{margin-right:9vw;}
   }
 </style>
 </head>
@@ -1455,6 +1473,33 @@ document.querySelectorAll(".item .row").forEach(function(btn){
   });
 });
 
+document.querySelectorAll(".pitem .prow").forEach(function(btn){
+  btn.addEventListener("click", function(){
+    var it = btn.parentElement;
+    var was = it.classList.contains("open");
+    document.querySelectorAll(".pitem.open").forEach(function(o){
+      o.classList.remove("open");
+      o.querySelector(".prow").setAttribute("aria-expanded","false");
+    });
+    if(!was){ it.classList.add("open"); btn.setAttribute("aria-expanded","true"); }
+  });
+});
+
+/* long-name guard: a row that cannot fit steps down deliberately, alone */
+function fitRows(){
+  document.querySelectorAll(".row, .srow").forEach(function(r){
+    r.style.fontSize = "";
+    var guard = 0;
+    while (r.scrollWidth > r.clientWidth + 1 && guard < 4){
+      var cur = parseFloat(getComputedStyle(r).fontSize);
+      r.style.fontSize = (cur * 0.92) + "px";
+      guard++;
+    }
+  });
+}
+var fitT; window.addEventListener("resize", function(){ clearTimeout(fitT); fitT = setTimeout(fitRows, 120); });
+fitRows();
+
 /* applied tracking — remembered by this browser across editions */
 var AP_KEY = "shortlist_applied";
 function apLoad(){ try{ return JSON.parse(localStorage.getItem(AP_KEY) || "[]"); }catch(e){ return []; } }
@@ -1518,8 +1563,8 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
     cascade = "<br>".join(cascade_lines)
 
     read_closely = sum(1 for j in matches if j.get("fit") is not None) if used_ai else len(matches)
-    statline = (f"{total_fetched - read_closely:,} dismissed on sight &middot; "
-                f"{read_closely} read in full &middot; {n} chosen.")
+    statline = (f"{read_closely} read in full &middot; "
+                "everything else dismissed on sight.")
     if n > 0:
         obs = write_brief(n, total_fetched, len(SCRAPERS), ranked, new_keys)
         if obs:
@@ -1614,8 +1659,8 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         lead_job = ranked[0]
         strong = [j for j in ranked[1:] if (j.get("fit") or 0) >= 80]
         rest = [j for j in ranked[1:] if (j.get("fit") or 0) < 80]
-        entries.append(f'    <div class="seclabel" style="margin-top:3vh;">I&rsquo;d start with {_html.escape(lead_job["company"])}</div>\n')
-        entries.append(_entry(1, lead_job, lead=True))
+        entries.append(f'    <div class="seclabel" style="margin-top:5vh;">I&rsquo;d start with {_html.escape(lead_job["company"])}</div>\n')
+        entries.append(_entry(1, lead_job))
         idx = 2
         if strong:
             entries.append('    <div class="seclabel">Unusually strong</div>\n')
@@ -1646,8 +1691,12 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
                 pfit = f'<span class="pfit">{{fit&nbsp;{fit}}}</span>' if fit is not None else ""
                 items.append(
                     '      <div class="pitem">\n'
-                    f'        <div class="pline">{_html.escape(j["company"])} &mdash; {_html.escape(j["title"])}{pfit}</div>\n'
-                    f'        <span class="preason">{_html.escape(j["ai_pause"])}</span>\n'
+                    '        <button class="prow" aria-expanded="false">'
+                    f'<span class="pdot"></span>{_html.escape(j["company"])}</button>\n'
+                    '        <div class="ppanel"><div class="ppanel-inner">\n'
+                    f'          <div class="pline">{_html.escape(j["title"])}{pfit}</div>\n'
+                    f'          <span class="preason">{_html.escape(j["ai_pause"])}</span>\n'
+                    '        </div></div>\n'
                     '      </div>\n')
             passed_html = (
                 '\n    <div class="seclabel pass">What I passed on</div>\n'
