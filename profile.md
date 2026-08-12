@@ -52,6 +52,12 @@ themselves. Born in Colombia, career built in the US; fully bilingual
   consumer tech, platforms, and culture-shaping brands
 - Roles where the brand is still being invented or reinvented for the AI era
 
+## Priority targets (he flagged these — August 2026)
+- **Apple** is a stated priority. He built Media Arts Lab's LATAM creative hub
+  for Apple from zero and considers Apple in-house creative leadership a career
+  north star. Watch Apple closely; an Apple creative-leadership role carries
+  real, earned affinity — weigh it as genuine fit, judge the role itself honestly.
+
 ## What "weak fit" looks like (score low)
 - Roles at **Airbnb** (current employer — not looking internally)
 - Individual-contributor or hands-on-only roles below his seniority
