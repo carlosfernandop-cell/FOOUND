@@ -1441,7 +1441,7 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
 <body>
 
   <div class="mast">
-    <a class="id" href="foound.html">FOOUND &mdash; &#8470; 001</a>
+    <a class="id" href="foound.html">FOOUND</a>
     <nav>
       <a class="here" href="index.html">Today</a>
       <a href="cv.html">Candidate</a>
