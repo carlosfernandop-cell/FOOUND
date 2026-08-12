@@ -13,13 +13,13 @@
   /* ---- masthead: the object's nameplate + quiet furniture nav ---- */
   .mast{
     display:flex;justify-content:space-between;align-items:baseline;gap:14px;
-    padding:20px 5vw 0;
+    padding:22px 5vw 0;
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
     font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
   }
   .mast .id{font-weight:500;white-space:nowrap;}
-  .mast nav{display:flex;gap:26px;flex-wrap:wrap;}
-  .mast nav a{color:var(--mute);text-decoration:none;white-space:nowrap;}
+  .mast nav{display:flex;gap:24px;flex-wrap:wrap;}
+  .mast nav a{color:var(--mute);text-decoration:none;white-space:nowrap;letter-spacing:.12em;}
   .mast nav a:hover{color:var(--ink);}
   .mast nav a.here{color:var(--ink);}
   @media (max-width:640px){.mast{flex-direction:column;gap:9px;}.mast nav{gap:18px;}}
@@ -106,10 +106,10 @@
 
   footer{
     display:flex;align-items:flex-end;
-    padding:8vh 5vw 4vh;
+    padding:11vh 5vw 5vh;
     font-size:11px;font-weight:500;letter-spacing:.01em;line-height:1.45;
   }
-  footer .col{margin-right:7vw;}
+  footer .col{margin-right:6vw;}
   footer .lab{text-transform:uppercase;}
   footer .val{font-weight:400;color:var(--mute);}
   footer .val a{color:inherit;text-decoration:none;}
@@ -224,5 +224,21 @@
     <div class="num"><a href="index.html" style="color:inherit;text-decoration:none;">&larr; Today&rsquo;s edition</a></div>
   </footer>
 
+<script>
+/* long-name guard: a row that cannot fit steps down deliberately, alone */
+function fitRows(){
+  document.querySelectorAll(".row, .srow, .krow, .nm").forEach(function(r){
+    r.style.fontSize = "";
+    var guard = 0;
+    while (r.scrollWidth > r.clientWidth + 1 && guard < 4){
+      var cur = parseFloat(getComputedStyle(r).fontSize);
+      r.style.fontSize = (cur * 0.92) + "px";
+      guard++;
+    }
+  });
+}
+var fitT; window.addEventListener("resize", function(){ clearTimeout(fitT); fitT = setTimeout(fitRows, 120); });
+fitRows();
+</script>
 </body>
 </html>

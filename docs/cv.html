@@ -13,13 +13,13 @@
   /* ---- masthead: the object's nameplate + quiet furniture nav ---- */
   .mast{
     display:flex;justify-content:space-between;align-items:baseline;gap:14px;
-    padding:20px 5vw 0;
+    padding:22px 5vw 0;
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
     font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
   }
   .mast .id{font-weight:500;white-space:nowrap;}
-  .mast nav{display:flex;gap:26px;flex-wrap:wrap;}
-  .mast nav a{color:var(--mute);text-decoration:none;white-space:nowrap;}
+  .mast nav{display:flex;gap:24px;flex-wrap:wrap;}
+  .mast nav a{color:var(--mute);text-decoration:none;white-space:nowrap;letter-spacing:.12em;}
   .mast nav a:hover{color:var(--ink);}
   .mast nav a.here{color:var(--ink);}
   @media (max-width:640px){.mast{flex-direction:column;gap:9px;}.mast nav{gap:18px;}}
@@ -77,12 +77,12 @@
   }
   .item.open .anno{opacity:1;}
   @media (hover:hover){
-    .row:hover .marker{background:var(--ink);}
-    .item.open .row:hover .marker{background:none;}
+    .item:not(.open) .row:hover .marker{background:none;}
+    .item:not(.open) .row:hover .marker::after{display:block;}
   }
   .panel{overflow:hidden;max-height:0;transition:max-height .35s ease;}
   .panel-inner{padding:14px 0 44px;max-width:640px;}
-  .item.open .panel{max-height:560px;}
+  .item.open .panel{max-height:760px;}
   .jobtitle{font-size:clamp(18px,3.4vw,24px);font-weight:400;letter-spacing:-.005em;}
   .desc{margin-top:14px;font-size:15px;line-height:1.5;color:var(--mute);max-width:38em;}
   .meta{margin-top:16px;font-size:13px;line-height:1.35;display:flex;flex-wrap:wrap;gap:6px 0;}
@@ -134,11 +134,17 @@
     .cap .capdesc{width:auto;max-width:30em;}
   }
   /* ---- references: the words carry the weight ---- */
-  .quote{margin:0 0 7vh;max-width:30em;}
+  .quote{margin:6px 0 0;max-width:30em;}
   .quote p{
     font-size:clamp(22px,4vw,40px);
     font-weight:400;letter-spacing:-.02em;line-height:1.25;
   }
+  .quote.long{max-width:36em;}
+  .quote.long p{
+    font-size:clamp(17px,2.2vw,21px);
+    letter-spacing:-.01em;line-height:1.55;color:var(--ink);
+  }
+  .quote p + p{margin-top:14px;}
   .quote .who{
     margin-top:20px;
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
@@ -149,10 +155,10 @@
   }
   footer{
     display:flex;align-items:flex-end;
-    padding:8vh 5vw 4vh;
+    padding:11vh 5vw 5vh;
     font-size:11px;font-weight:500;letter-spacing:.01em;line-height:1.45;
   }
-  footer .col{margin-right:7vw;}
+  footer .col{margin-right:6vw;}
   footer .lab{text-transform:uppercase;}
   footer .val{font-weight:400;color:var(--mute);}
   footer .val a{color:inherit;text-decoration:none;}
@@ -209,11 +215,17 @@
     .cap .capdesc{width:auto;max-width:30em;}
   }
   /* ---- references: the words carry the weight ---- */
-  .quote{margin:0 0 7vh;max-width:30em;}
+  .quote{margin:6px 0 0;max-width:30em;}
   .quote p{
     font-size:clamp(22px,4vw,40px);
     font-weight:400;letter-spacing:-.02em;line-height:1.25;
   }
+  .quote.long{max-width:36em;}
+  .quote.long p{
+    font-size:clamp(17px,2.2vw,21px);
+    letter-spacing:-.01em;line-height:1.55;color:var(--ink);
+  }
+  .quote p + p{margin-top:14px;}
   .quote .who{
     margin-top:20px;
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
@@ -341,13 +353,43 @@
     <div class="srow"><span class="dot"></span>Cartier</div>
 
     <div class="seclabel">References</div>
-    <div class="quote">
-      <p>&ldquo;Had the pleasure of working/partnering with Carlos for two years. You won&rsquo;t find anyone more committed to simplifying the complicated quite like Carlos. A creative leader that sees past the chaos.&rdquo;</p>
-      <div class="who">Ash Tavassoli &mdash; EVP, Executive Creative Director, West BBDO</div>
+    <div class="item">
+      <button class="row" aria-expanded="false"><span class="marker"></span>Ash</button>
+      <div class="panel"><div class="panel-inner">
+        <div class="quote">
+          <p>&ldquo;Had the pleasure of working/partnering with Carlos for two years. You won&rsquo;t find anyone more committed to simplifying the complicated quite like Carlos. A creative leader that sees past the chaos.&rdquo;</p>
+          <div class="who">Ash Tavassoli &mdash; EVP, Executive Creative Director, West BBDO</div>
+        </div>
+      </div></div>
     </div>
-    <div class="quote">
-      <p>&ldquo;Carlos is a man of great tastes, be it a fine meal, or a finely tuned creative idea. He has an eye for beautiful things and is always willing to roll up his sleeves and join the team in elevating the work to match his vision.&rdquo;</p>
-      <div class="who">Nick Ciffone &mdash; Senior Creative Director, OpenAI</div>
+    <div class="item">
+      <button class="row" aria-expanded="false"><span class="marker"></span>Nick</button>
+      <div class="panel"><div class="panel-inner">
+        <div class="quote">
+          <p>&ldquo;Carlos is a man of great tastes, be it a fine meal, or a finely tuned creative idea. He has an eye for beautiful things and is always willing to roll up his sleeves and join the team in elevating the work to match his vision.&rdquo;</p>
+          <div class="who">Nick Ciffone &mdash; Senior Creative Director, OpenAI</div>
+        </div>
+      </div></div>
+    </div>
+    <div class="item">
+      <button class="row" aria-expanded="false"><span class="marker"></span>Sydney</button>
+      <div class="panel"><div class="panel-inner">
+        <div class="quote long">
+          <p>&ldquo;Carlos Perez represents what a great creative director should be. He&rsquo;s passionate about the work, demanding the best from himself and pulling the best out of his team. He has the understanding to create purposeful ideas anchored by insights and strategy, and the vision to see how these ideas live in campaigns. With a keen eye for detail and the ability to lead a team effectively and efficiently, he brings everything together with flawless execution. If ever there was a testament to the impact he has on an agency, it&rsquo;s that the team still talks about &lsquo;what would Perez do&rsquo; when conceptualizing. I feel incredibly fortunate to have had him as a creative director, and any agency would be lucky to have him.&rdquo;</p>
+          <div class="who">Sydney Spence &mdash; ACD Copywriter &middot; reported to Carlos directly</div>
+        </div>
+      </div></div>
+    </div>
+    <div class="item">
+      <button class="row" aria-expanded="false"><span class="marker"></span>Dudu</button>
+      <div class="panel"><div class="panel-inner">
+        <div class="quote long">
+          <p>&ldquo;One of my goals as a professional, is work with good people. Someone able to sharp my skills and take the quality of my work to another level.</p>
+          <p>Carlos is one of a kind. A great creative leader that will push you until he gets the best out of you. He&rsquo;s a combination of conceptual thinker with a great eye for high-end craft.</p>
+          <p>Really easy-going guy, he&rsquo;s a excellent manager and team player, definitely someone who will fight for good ideas and great execution. The kind of professional you need to lead a team.&rdquo;</p>
+          <div class="who">Eduardo &ldquo;Dudu&rdquo; Gomes &mdash; Head of Art, Pereira O&rsquo;Dell &middot; reported to Carlos directly</div>
+        </div>
+      </div></div>
     </div>
   </div>
 
@@ -401,6 +443,21 @@ function openHash(){
 }
 window.addEventListener('hashchange', openHash);
 openHash();
+
+/* long-name guard: a row that cannot fit steps down deliberately, alone */
+function fitRows(){
+  document.querySelectorAll(".row, .srow, .krow, .nm").forEach(function(r){
+    r.style.fontSize = "";
+    var guard = 0;
+    while (r.scrollWidth > r.clientWidth + 1 && guard < 4){
+      var cur = parseFloat(getComputedStyle(r).fontSize);
+      r.style.fontSize = (cur * 0.92) + "px";
+      guard++;
+    }
+  });
+}
+var fitT; window.addEventListener("resize", function(){ clearTimeout(fitT); fitT = setTimeout(fitRows, 120); });
+fitRows();
 </script>
 
 </body>
