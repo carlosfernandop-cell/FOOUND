@@ -1424,6 +1424,7 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   }
   footer .col{margin-right:6vw;}
   footer .lab{text-transform:uppercase;}
+  footer .lab.star{font-size:17px;line-height:.7;}
   footer .val{font-weight:400;color:var(--mute);}
   footer .val a{color:inherit;text-decoration:none;}
   footer .val a:hover{color:var(--ink);}
@@ -1474,7 +1475,7 @@ __ENTRIES____PASSED__  </div>
       <div class="val">8:00 AM ET &middot; __NCOMPANIES__ companies</div>
     </div>
     <div class="col">
-      <div class="lab">*</div>
+      <div class="lab star">*</div>
       <div class="val">out of the oven &mdash; posted in the last 3 days</div>
     </div>
     <div class="col">
