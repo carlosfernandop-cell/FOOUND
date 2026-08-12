@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Request your agent — FOOUND № 001</title>
+<title>FOOUND FOR ME — № 002 open</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 fill=%27white%27/%3E%3Ccircle cx=%2710%27 cy=%2716%27 r=%276%27 fill=%27black%27/%3E%3Ccircle cx=%2723.5%27 cy=%2716%27 r=%275.4%27 fill=%27none%27 stroke=%27black%27 stroke-width=%271.2%27/%3E%3C/svg%3E">
 <style>
   :root{--ink:#000;--paper:#fff;--mute:#6b6b6b;}
@@ -25,25 +25,6 @@
   .mast nav a.here{color:var(--ink);}
   @media (max-width:640px){.mast{flex-direction:column;gap:9px;}.mast nav{gap:18px;}}
 
-  /* ---- the number ---- */
-  .srow{
-    display:flex;align-items:center;gap:.38em;
-    font-size:clamp(46px,10.4vw,148px);
-    font-weight:500;letter-spacing:-.035em;line-height:1.08;
-    padding:.03em 0;white-space:nowrap;
-    margin:2vh 0 4vh;
-  }
-  .srow .dot{flex:none;width:.62em;height:.62em;border-radius:50%;background:var(--ink);}
-  .srow .anno{
-    font-size:.42em;font-weight:500;letter-spacing:-.02em;
-    align-self:flex-start;transform:translateY(.28em);margin-left:.12em;color:var(--mute);
-  }
-
-  .mirror{
-    font-size:clamp(22px,4vw,40px);
-    font-weight:400;letter-spacing:-.02em;line-height:1.25;max-width:24em;
-    margin:0 0 5vh;
-  }
   /* ---- the agent speaks ---- */
   .brief{
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
@@ -131,7 +112,6 @@
   footer .val a:hover{color:var(--ink);}
   footer .num{margin-left:auto;font-weight:400;color:var(--mute);}
   @media (max-width:560px){
-    .srow{font-size:clamp(38px,13vw,72px);}
     .row{font-size:clamp(28px,9.5vw,58px);}
     footer{flex-wrap:wrap;gap:12px 0;}
     footer .col{margin-right:10vw;}
@@ -146,17 +126,14 @@
       <a href="index.html">Today</a>
       <a href="cv.html">Candidate</a>
       <a href="memory.html">Memory</a>
-      <a class="here" href="request.html">Request your agent</a>
+      <a href="foound.html">FOOUND</a>
+      <a class="here" href="request.html">FOOUND for me &rarr;</a>
     </nav>
   </div>
 
   <div class="plate">
 
-    <div class="srow"><span class="dot"></span>&#8470; 002<span class="anno">{open}</span></div>
-
-    <p class="mirror">Imagine one that knew you this well.</p>
-
-    <p class="brief">I work for one candidate.<br>His agent &mdash; &#8470; 001 &mdash; took weeks to tune: his history, his taste,<br>what he&rsquo;d never accept, what he&rsquo;d move for.<br><br>Yours would start the same way.<br><span class="dim">Not with a form &mdash; with a conversation. This is the first line of it.</span></p>
+    <p class="brief" id="afternote">&#8470; 002 &mdash; open. <span class="dim">Every request is read personally.</span></p>
 
     <div class="seclabel">Tell me what your next move needs to be</div>
 
@@ -203,10 +180,9 @@
           <input id="f6" name="email" type="email" autocomplete="email">
         </div></div>
       </div>
-      <button class="request" type="submit">Request your agent</button>
+      <button class="request" type="submit">FOOUND for me &rarr;</button>
     </form>
 
-    <p class="after" id="afternote">Every request is read personally. &#8470; 002 &mdash; open.</p>
     <p class="after sent" id="sentnote">Your mail app has opened with the request &mdash; send it, and it reaches the desk of &#8470; 001. It will be read personally.</p>
 
   </div>
@@ -251,6 +227,14 @@ document.querySelectorAll(".item .row").forEach(function(btn){
     }
   });
 });
+/* the product has started listening: the first question arrives open */
+(function(){
+  var first = document.querySelector(".item.fq");
+  if(first){
+    first.classList.add("open");
+    first.querySelector(".row").setAttribute("aria-expanded","true");
+  }
+})();
 /* an answered question fills its dot */
 document.querySelectorAll(".fq input, .fq textarea").forEach(function(field){
   field.addEventListener("input", function(){
