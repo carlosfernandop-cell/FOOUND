@@ -60,9 +60,38 @@
   }
   .seclabel::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ink);}
 
-  /* ---- the request: a first message, not a form ---- */
-  form{max-width:560px;}
-  .q{margin:0 0 34px;}
+  /* ---- the request: a first message, not a form — one question at a time ---- */
+  form{max-width:none;}
+  .item{border:none;}
+  .row{
+    display:flex;align-items:center;gap:.38em;width:100%;
+    background:none;border:none;cursor:pointer;text-align:left;
+    color:var(--ink);font-family:inherit;
+    font-size:clamp(34px,6.8vw,96px);
+    font-weight:500;letter-spacing:-.035em;line-height:1.1;
+    padding:.03em 0;white-space:nowrap;
+  }
+  .row:focus{outline:none;}
+  .row:focus-visible{outline:2px solid var(--ink);outline-offset:6px;}
+  .marker{flex:none;width:.62em;height:.62em;border-radius:50%;position:relative;}
+  .marker::after{
+    content:"";display:none;position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    width:.21em;height:.21em;border:.012em solid var(--ink);border-radius:50%;
+  }
+  .item.open .marker::after{display:block;}
+  .panel{overflow:hidden;max-height:0;transition:max-height .35s ease;}
+  .panel-inner{padding:10px 0 40px;max-width:560px;}
+  .item.open .panel{max-height:420px;}
+
+  /* the question's state lives in the dot: hollow = open question, filled = answered */
+  .fq .marker{background:none;border:.032em solid var(--ink);}
+  .fq.done .marker{background:var(--ink);border-color:transparent;}
+  .fq.open .marker{background:none;border-color:transparent;}
+  @media (hover:hover){
+    .fq:not(.open) .row:hover .marker{background:none;border-color:transparent;}
+    .fq:not(.open) .row:hover .marker::after{display:block;}
+  }
+
   .qlabel{
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
     font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
@@ -103,6 +132,7 @@
   footer .num{margin-left:auto;font-weight:400;color:var(--mute);}
   @media (max-width:560px){
     .srow{font-size:clamp(38px,13vw,72px);}
+    .row{font-size:clamp(28px,9.5vw,58px);}
     footer{flex-wrap:wrap;gap:12px 0;}
     footer .col{margin-right:10vw;}
   }
@@ -131,29 +161,47 @@
     <div class="seclabel">Tell me what your next move needs to be</div>
 
     <form id="reqform" novalidate>
-      <div class="q">
-        <label class="qlabel" for="f1">What do you do now?</label>
-        <input id="f1" name="now" type="text" autocomplete="organization-title">
+      <div class="item fq">
+        <button class="row" type="button" aria-expanded="false"><span class="marker"></span>Now</button>
+        <div class="panel"><div class="panel-inner">
+          <label class="qlabel" for="f1">What do you do now?</label>
+          <input id="f1" name="now" type="text" autocomplete="organization-title">
+        </div></div>
       </div>
-      <div class="q">
-        <label class="qlabel" for="f2">What kind of move are you considering?</label>
-        <input id="f2" name="move" type="text">
+      <div class="item fq">
+        <button class="row" type="button" aria-expanded="false"><span class="marker"></span>The move</button>
+        <div class="panel"><div class="panel-inner">
+          <label class="qlabel" for="f2">What kind of move are you considering?</label>
+          <input id="f2" name="move" type="text">
+        </div></div>
       </div>
-      <div class="q">
-        <label class="qlabel" for="f3">What would make an opportunity worth leaving for?</label>
-        <textarea id="f3" name="worth" rows="3"></textarea>
+      <div class="item fq">
+        <button class="row" type="button" aria-expanded="false"><span class="marker"></span>The bar</button>
+        <div class="panel"><div class="panel-inner">
+          <label class="qlabel" for="f3">What would make an opportunity worth leaving for?</label>
+          <textarea id="f3" name="worth" rows="3"></textarea>
+        </div></div>
       </div>
-      <div class="q">
-        <label class="qlabel" for="f4">Where can you work?</label>
-        <input id="f4" name="where" type="text">
+      <div class="item fq">
+        <button class="row" type="button" aria-expanded="false"><span class="marker"></span>Where</button>
+        <div class="panel"><div class="panel-inner">
+          <label class="qlabel" for="f4">Where can you work?</label>
+          <input id="f4" name="where" type="text">
+        </div></div>
       </div>
-      <div class="q">
-        <label class="qlabel" for="f5">LinkedIn or portfolio</label>
-        <input id="f5" name="link" type="url" autocomplete="url">
+      <div class="item fq">
+        <button class="row" type="button" aria-expanded="false"><span class="marker"></span>Links</button>
+        <div class="panel"><div class="panel-inner">
+          <label class="qlabel" for="f5">LinkedIn or portfolio</label>
+          <input id="f5" name="link" type="url" autocomplete="url">
+        </div></div>
       </div>
-      <div class="q">
-        <label class="qlabel" for="f6">Email</label>
-        <input id="f6" name="email" type="email" autocomplete="email">
+      <div class="item fq">
+        <button class="row" type="button" aria-expanded="false"><span class="marker"></span>Email</button>
+        <div class="panel"><div class="panel-inner">
+          <label class="qlabel" for="f6">Email</label>
+          <input id="f6" name="email" type="email" autocomplete="email">
+        </div></div>
       </div>
       <button class="request" type="submit">Request your agent</button>
     </form>
@@ -186,6 +234,31 @@
 <script>
 /* The request. If FORM_ENDPOINT is set (e.g. a Formspree URL), it POSTs there.
    Until then it composes an email — real, zero infrastructure. */
+/* one question at a time: rows open exclusively; the cursor is waiting inside */
+document.querySelectorAll(".item .row").forEach(function(btn){
+  btn.addEventListener("click", function(){
+    var item = btn.parentElement;
+    var wasOpen = item.classList.contains("open");
+    document.querySelectorAll(".item.open").forEach(function(o){
+      o.classList.remove("open");
+      o.querySelector(".row").setAttribute("aria-expanded","false");
+    });
+    if(!wasOpen){
+      item.classList.add("open");
+      btn.setAttribute("aria-expanded","true");
+      var field = item.querySelector("input, textarea");
+      if(field) setTimeout(function(){ field.focus({preventScroll:true}); }, 360);
+    }
+  });
+});
+/* an answered question fills its dot */
+document.querySelectorAll(".fq input, .fq textarea").forEach(function(field){
+  field.addEventListener("input", function(){
+    var item = field.closest(".fq");
+    if(field.value.trim()){ item.classList.add("done"); } else { item.classList.remove("done"); }
+  });
+});
+
 var FORM_ENDPOINT = "";
 document.getElementById("reqform").addEventListener("submit", function(e){
   e.preventDefault();
