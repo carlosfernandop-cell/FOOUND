@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Request your agent — Career Agent № 001</title>
+<style>
+  :root{--ink:#000;--paper:#fff;--mute:#6b6b6b;}
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html{-webkit-text-size-adjust:100%;}
+  body{background:var(--paper);color:var(--ink);font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;}
+  .plate{padding:4.5vw 5vw 4vw;}
+  /* ---- masthead ---- */
+  .mast{
+    display:flex;justify-content:space-between;align-items:baseline;gap:14px;
+    padding:20px 5vw 0;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+  }
+  .mast .id{font-weight:500;white-space:nowrap;}
+  .mast nav{display:flex;gap:26px;flex-wrap:wrap;}
+  .mast nav a{color:var(--mute);text-decoration:none;white-space:nowrap;}
+  .mast nav a:hover{color:var(--ink);}
+  .mast nav a.here{color:var(--ink);}
+  @media (max-width:640px){.mast{flex-direction:column;gap:9px;}.mast nav{gap:18px;}}
+
+  /* ---- the number ---- */
+  .srow{
+    display:flex;align-items:center;gap:.38em;
+    font-size:clamp(46px,10.4vw,148px);
+    font-weight:500;letter-spacing:-.035em;line-height:1.08;
+    padding:.03em 0;white-space:nowrap;
+    margin:2vh 0 4vh;
+  }
+  .srow .dot{flex:none;width:.62em;height:.62em;border-radius:50%;background:var(--ink);}
+  .srow .anno{
+    font-size:.42em;font-weight:500;letter-spacing:-.02em;
+    align-self:flex-start;transform:translateY(.28em);margin-left:.12em;color:var(--mute);
+  }
+
+  .mirror{
+    font-size:clamp(22px,4vw,40px);
+    font-weight:400;letter-spacing:-.02em;line-height:1.25;max-width:24em;
+    margin:0 0 5vh;
+  }
+  /* ---- the agent speaks ---- */
+  .brief{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.5px;line-height:1.7;letter-spacing:.01em;
+    margin:0 0 2vh 0;
+  }
+  .brief .dim{color:var(--mute);}
+
+  .seclabel{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    margin:8vh 0 4vh;
+    display:flex;align-items:center;gap:10px;
+  }
+  .seclabel::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ink);}
+
+  /* ---- the request: a first message, not a form ---- */
+  form{max-width:560px;}
+  .q{margin:0 0 34px;}
+  .qlabel{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+    display:block;margin-bottom:8px;
+  }
+  input,textarea{
+    width:100%;border:none;border-bottom:1px solid var(--ink);
+    font-family:inherit;font-size:16px;line-height:1.5;color:var(--ink);
+    padding:6px 0 8px;background:none;border-radius:0;resize:none;
+  }
+  input:focus,textarea:focus{outline:none;border-bottom:2px solid var(--ink);padding-bottom:7px;}
+  ::placeholder{color:#c9c9c9;}
+  button.request{
+    background:none;border:none;cursor:pointer;font-family:inherit;
+    display:inline-block;margin-top:8px;font-size:13px;font-weight:700;
+    letter-spacing:.1em;text-transform:uppercase;color:var(--ink);
+    border-bottom:2px solid var(--ink);padding:0 0 2px;
+  }
+  button.request:hover{background:var(--ink);color:var(--paper);}
+  .after{
+    margin-top:5vh;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.5px;line-height:1.7;letter-spacing:.01em;color:var(--mute);
+  }
+  .sent{display:none;}
+  .sent.show{display:block;}
+
+  footer{
+    display:flex;align-items:flex-end;
+    padding:8vh 5vw 4vh;
+    font-size:11px;font-weight:500;letter-spacing:.01em;line-height:1.45;
+  }
+  footer .col{margin-right:7vw;}
+  footer .lab{text-transform:uppercase;}
+  footer .val{font-weight:400;color:var(--mute);}
+  footer .val a{color:inherit;text-decoration:none;}
+  footer .val a:hover{color:var(--ink);}
+  footer .num{margin-left:auto;font-weight:400;color:var(--mute);}
+  @media (max-width:560px){
+    .srow{font-size:clamp(38px,13vw,72px);}
+    footer{flex-wrap:wrap;gap:12px 0;}
+    footer .col{margin-right:10vw;}
+  }
+</style>
+</head>
+<body>
+
+  <div class="mast">
+    <span class="id">Career Agent &mdash; &#8470; 001</span>
+    <nav>
+      <a href="index.html">Today</a>
+      <a href="cv.html">Candidate</a>
+      <a href="memory.html">Memory</a>
+      <a class="here" href="request.html">Request your agent</a>
+    </nav>
+  </div>
+
+  <div class="plate">
+
+    <div class="srow"><span class="dot"></span>&#8470; 002<span class="anno">{open}</span></div>
+
+    <p class="mirror">Imagine one that knew you this well.</p>
+
+    <p class="brief">I work for one candidate.<br>His agent &mdash; &#8470; 001 &mdash; took weeks to tune: his history, his taste,<br>what he&rsquo;d never accept, what he&rsquo;d move for.<br><br>Yours would start the same way.<br><span class="dim">Not with a form &mdash; with a conversation. This is the first line of it.</span></p>
+
+    <div class="seclabel">Tell me what your next move needs to be</div>
+
+    <form id="reqform" novalidate>
+      <div class="q">
+        <label class="qlabel" for="f1">What do you do now?</label>
+        <input id="f1" name="now" type="text" autocomplete="organization-title">
+      </div>
+      <div class="q">
+        <label class="qlabel" for="f2">What kind of move are you considering?</label>
+        <input id="f2" name="move" type="text">
+      </div>
+      <div class="q">
+        <label class="qlabel" for="f3">What would make an opportunity worth leaving for?</label>
+        <textarea id="f3" name="worth" rows="3"></textarea>
+      </div>
+      <div class="q">
+        <label class="qlabel" for="f4">Where can you work?</label>
+        <input id="f4" name="where" type="text">
+      </div>
+      <div class="q">
+        <label class="qlabel" for="f5">LinkedIn or portfolio</label>
+        <input id="f5" name="link" type="url" autocomplete="url">
+      </div>
+      <div class="q">
+        <label class="qlabel" for="f6">Email</label>
+        <input id="f6" name="email" type="email" autocomplete="email">
+      </div>
+      <button class="request" type="submit">Request your agent</button>
+    </form>
+
+    <p class="after" id="afternote">Every request is read personally. &#8470; 002 &mdash; open.</p>
+    <p class="after sent" id="sentnote">Your mail app has opened with the request &mdash; send it, and it reaches the desk of &#8470; 001. It will be read personally.</p>
+
+  </div>
+
+  <footer>
+    <div class="col">
+      <div class="lab">Career Agent&mdash;Commissions</div>
+      <div class="val">&#8470; 002 open</div>
+    </div>
+    <div class="col">
+      <div class="lab">&#8470; 001</div>
+      <div class="val"><a href="cv.html">Carlos Perez Botero</a></div>
+    </div>
+    <div class="col">
+      <div class="lab">Working since</div>
+      <div class="val">July 2026</div>
+    </div>
+    <div class="num"><a href="index.html" style="color:inherit;text-decoration:none;">&larr; Today&rsquo;s edition</a></div>
+  </footer>
+
+<script>
+/* The request. If FORM_ENDPOINT is set (e.g. a Formspree URL), it POSTs there.
+   Until then it composes an email — real, zero infrastructure. */
+var FORM_ENDPOINT = "";
+document.getElementById("reqform").addEventListener("submit", function(e){
+  e.preventDefault();
+  var f = e.target;
+  var lines = [
+    "What I do now: " + f.now.value,
+    "The move I'm considering: " + f.move.value,
+    "What would make it worth leaving for: " + f.worth.value,
+    "Where I can work: " + f.where.value,
+    "LinkedIn / portfolio: " + f.link.value,
+    "Email: " + f.email.value
+  ];
+  if (FORM_ENDPOINT) {
+    fetch(FORM_ENDPOINT, {
+      method:"POST",
+      headers:{"Content-Type":"application/json","Accept":"application/json"},
+      body: JSON.stringify({now:f.now.value, move:f.move.value, worth:f.worth.value, where:f.where.value, link:f.link.value, email:f.email.value})
+    }).then(function(){
+      document.getElementById("sentnote").textContent = "Received. It will be read personally.";
+      document.getElementById("sentnote").classList.add("show");
+      document.getElementById("afternote").style.display = "none";
+      f.style.display = "none";
+    });
+  } else {
+    var mail = "mailto:carlosfernandop@gmail.com"
+      + "?subject=" + encodeURIComponent("Career Agent — request for № 002")
+      + "&body=" + encodeURIComponent(lines.join("\n"));
+    window.location.href = mail;
+    document.getElementById("sentnote").classList.add("show");
+    document.getElementById("afternote").style.display = "none";
+  }
+});
+</script>
+
+</body>
+</html>
