@@ -1226,7 +1226,23 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   *{margin:0;padding:0;box-sizing:border-box;}
   html{-webkit-text-size-adjust:100%;}
   body{background:var(--paper);color:var(--ink);font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;}
-  .plate{padding:6vw 5vw 4vw;}
+  .plate{padding:4.5vw 5vw 4vw;}
+  /* ---- masthead: the object's nameplate + quiet furniture nav ---- */
+  .mast{
+    display:flex;justify-content:space-between;align-items:baseline;gap:14px;
+    padding:20px 5vw 0;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+  }
+  .mast .id{font-weight:500;white-space:nowrap;}
+  .mast nav{display:flex;gap:26px;flex-wrap:wrap;}
+  .mast nav a{color:var(--mute);text-decoration:none;white-space:nowrap;}
+  .mast nav a:hover{color:var(--ink);}
+  .mast nav a.here{color:var(--ink);}
+  @media (max-width:640px){.mast{flex-direction:column;gap:9px;}.mast nav{gap:18px;}}
+  /* career-evidence links inside the argument */
+  a.ev{color:inherit;text-decoration:none;border-bottom:1px dotted #b9b9b9;}
+  a.ev:hover{border-bottom:1px solid var(--ink);}
   .brief{
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
     font-size:12.5px;line-height:1.7;letter-spacing:.01em;
@@ -1344,6 +1360,21 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
     letter-spacing:.12em;border:1px solid var(--ink);padding:2px 7px 1px;
     vertical-align:middle;transform:translateY(-2px);
   }
+  /* ---- what I passed on: taste shown by refusal, set at footnote scale ---- */
+  .seclabel.pass::before{background:none;border:1px solid var(--ink);}
+  .passintro{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.5px;line-height:1.7;letter-spacing:.01em;color:var(--mute);
+    margin:0 0 3vh 0;
+  }
+  .passed{max-width:680px;}
+  .pitem{margin:0 0 22px;}
+  .pline{font-size:15px;font-weight:500;letter-spacing:-.005em;}
+  .pline .pfit{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:11px;font-weight:400;color:var(--mute);margin-left:10px;letter-spacing:.01em;
+  }
+  .preason{display:block;margin-top:4px;font-size:14px;line-height:1.5;color:var(--mute);max-width:36em;}
   footer{
     display:flex;align-items:flex-end;
     padding:8vh 5vw 4vh;
@@ -1364,11 +1395,21 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
 </head>
 <body>
 
+  <div class="mast">
+    <span class="id">Career Agent &mdash; &#8470; 001</span>
+    <nav>
+      <a class="here" href="index.html">Today</a>
+      <a href="cv.html">Candidate</a>
+      <a href="memory.html">Memory</a>
+      <a href="request.html">Request your agent</a>
+    </nav>
+  </div>
+
   <div class="plate">
     <p class="brief">__GREETING__</p>
     <div class="cascade">__CASCADE__</div>
     <p class="statline">__STATLINE__</p>
-__ENTRIES__  </div>
+__ENTRIES____PASSED__  </div>
 
   <footer>
     <div class="col">
@@ -1377,7 +1418,7 @@ __ENTRIES__  </div>
     </div>
     <div class="col">
       <div class="lab">Edition</div>
-      <div class="val"><a href="archive/">No. __EDITION__</a></div>
+      <div class="val"><a href="archive/">__EDITION__</a></div>
     </div>
     <div class="col">
       <div class="lab">Candidate</div>
@@ -1390,6 +1431,10 @@ __ENTRIES__  </div>
     <div class="col">
       <div class="lab">*</div>
       <div class="val">out of the oven &mdash; posted in the last 3 days</div>
+    </div>
+    <div class="col">
+      <div class="lab">Request your agent</div>
+      <div class="val"><a href="request.html">&#8470; 002 &mdash; open</a></div>
     </div>
     <div class="num">__FRACTION__</div>
   </footer>
@@ -1469,7 +1514,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         if n_strong >= 2:
             cascade_lines.append(f"{n_strong} are unusually strong.")
         if has_standout:
-            cascade_lines.append("1 could change the trajectory of your search.")
+            cascade_lines.append("1 stands apart.")
     cascade = "<br>".join(cascade_lines)
 
     read_closely = sum(1 for j in matches if j.get("fit") is not None) if used_ai else len(matches)
@@ -1481,6 +1526,18 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
             statline += " " + _html.escape(obs)
 
     # ---- entries, in three editorial ranks ----
+    _EV_MAP = [("MAL", "cv.html#c-mal"), ("Airbnb", "cv.html#c-airbnb"),
+               ("Publicis", "cv.html#c-publicis"), ("Ogilvy", "cv.html#c-ogilvy"),
+               ("AKQA", "cv.html#c-akqa")]
+
+    def _evidence_links(escaped_text: str) -> str:
+        """Wrap the first mention of each career anchor in a quiet evidence link."""
+        out = escaped_text
+        for word, href in _EV_MAP:
+            out = re.sub(r"\b(%s)\b" % re.escape(word),
+                         r'<a class="ev" href="%s">\1</a>' % href, out, count=1)
+        return out
+
     def _argument(j) -> str:
         blocks = []
         fit = j.get("fit")
@@ -1488,7 +1545,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
             blocks.append(f'        <div class="scoreline">{fit} &mdash; {fit_tier(fit)}</div>\n')
         why = j.get("ai_why") or BLURBS.get(j["company"], "A senior creative seat at a company worth watching.")
         blocks.append('        <div class="plabel">Why I chose it</div>\n')
-        blocks.append(f'        <p class="ptext">{_html.escape(why)}</p>\n')
+        blocks.append(f'        <p class="ptext">{_evidence_links(_html.escape(why))}</p>\n')
         pause = j.get("ai_pause")
         if pause:
             blocks.append('        <div class="plabel">What gives me pause</div>\n')
@@ -1569,6 +1626,35 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
             for j in rest:
                 entries.append(_entry(idx, j)); idx += 1
 
+    # ---- what I passed on: the judged-and-declined, at footnote scale ----
+    seen_pass = set()
+    rejects = []
+    for j in ranked_all[11:]:
+        k = (j["company"], j["title"])
+        if k in seen_pass:
+            continue
+        seen_pass.add(k)
+        rejects.append(j)
+    passed_html = ""
+    if n > 0 and rejects:
+        shown = [j for j in rejects if j.get("ai_pause")][:5]
+        if shown:
+            word = "misses" if len(shown) > 1 else "miss"
+            items = []
+            for j in shown:
+                fit = j.get("fit")
+                pfit = f'<span class="pfit">{{fit&nbsp;{fit}}}</span>' if fit is not None else ""
+                items.append(
+                    '      <div class="pitem">\n'
+                    f'        <div class="pline">{_html.escape(j["company"])} &mdash; {_html.escape(j["title"])}{pfit}</div>\n'
+                    f'        <span class="preason">{_html.escape(j["ai_pause"])}</span>\n'
+                    '      </div>\n')
+            passed_html = (
+                '\n    <div class="seclabel pass">What I passed on</div>\n'
+                f'    <p class="passintro">{len(rejects)} more read in full and declined. '
+                f'The {COUNT_WORDS[len(shown)].lower()} nearest {word}, and why they failed:</p>\n'
+                '    <div class="passed">\n' + "".join(items) + '    </div>\n')
+
     os.makedirs("docs/archive", exist_ok=True)
     today_file = f"docs/archive/{now.strftime('%Y-%m-%d')}.html"
     prior = sorted(_glob.glob("docs/archive/????-??-??.html"))
@@ -1584,6 +1670,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         .replace("__DATELONG__", datelong)
         .replace("__EDITION__", f"{edition:03d}")
         .replace("__ENTRIES__", "".join(entries))
+        .replace("__PASSED__", passed_html)
         .replace("__NCOMPANIES__", str(len(SCRAPERS)))
         .replace("__FRACTION__", f"{n:03d}/{total_fetched:,}")
     )
@@ -1592,14 +1679,18 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         f.write(page)
     archive_page = (page
         .replace('href="archive/"', 'href="./"')
-        .replace('href="cv.html"', 'href="../cv.html"'))
+        .replace('href="cv.html"', 'href="../cv.html"')
+        .replace('href="cv.html#', 'href="../cv.html#')
+        .replace('href="memory.html"', 'href="../memory.html"')
+        .replace('href="request.html"', 'href="../request.html"')
+        .replace('href="index.html"', 'href="../"'))
     with open(today_file, "w") as f:
         f.write(archive_page)
 
     # simple archive index (newest first, numbered by chronological position)
     editions = sorted(_glob.glob("docs/archive/????-??-??.html"))
     links = "\n".join(
-        f'<li style="padding:10px 0;border-top:1px solid #000;"><a style="color:#000;font-weight:700;text-decoration:none;" href="{os.path.basename(p)}">No. {i:03d}<span style="color:#6b6b6b;font-weight:400;"> &nbsp;&middot;&nbsp; {os.path.basename(p)[:-5]}</span></a></li>'
+        f'<li style="padding:10px 0;border-top:1px solid #000;"><a style="color:#000;font-weight:700;text-decoration:none;" href="{os.path.basename(p)}">{i:03d}<span style="color:#6b6b6b;font-weight:400;"> &nbsp;&middot;&nbsp; {os.path.basename(p)[:-5]}</span></a></li>'
         for i, p in reversed(list(enumerate(editions, 1)))
     )
     with open("docs/archive/index.html", "w") as f:
