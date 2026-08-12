@@ -1261,7 +1261,7 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
     font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
     font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
   }
-  .mast .id{font-weight:500;white-space:nowrap;}
+  .mast .id{font-weight:500;white-space:nowrap;color:var(--ink);text-decoration:none;}
   .mast nav{display:flex;gap:24px;flex-wrap:wrap;}
   .mast nav a{color:var(--mute);text-decoration:none;white-space:nowrap;letter-spacing:.12em;}
   .mast nav a:hover{color:var(--ink);}
@@ -1441,12 +1441,11 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
 <body>
 
   <div class="mast">
-    <span class="id">FOOUND &mdash; &#8470; 001</span>
+    <a class="id" href="foound.html">FOOUND &mdash; &#8470; 001</a>
     <nav>
       <a class="here" href="index.html">Today</a>
       <a href="cv.html">Candidate</a>
       <a href="memory.html">Memory</a>
-      <a href="foound.html">FOOUND</a>
       <a href="request.html">FOOUND for me &rarr;</a>
     </nav>
   </div>
