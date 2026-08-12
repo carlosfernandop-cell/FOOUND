@@ -205,8 +205,12 @@ def format_age(posted_at) -> str:
 def dedup_key(title: str, company: str) -> str:
     return f"{title.lower().strip()}|{company.lower().strip()}"
 
+FIRST_SEEN_DATES = {}  # dedup_key -> ISO date FOOUND first saved the role (Notion "Date Found")
+
 def get_existing_keys() -> set:
-    """Read every (title, company) pair already saved in Notion."""
+    """Read every (title, company) pair already saved in Notion.
+    Side effect: fills FIRST_SEEN_DATES so freshness can fall back to
+    first-seen when a source exposes no posting date (Apple, Greenhouse)."""
     url = f"https://api.notion.com/v1/databases/{NOTION_DB_ID}/query"
     existing = set()
     cursor = None
@@ -225,7 +229,11 @@ def get_existing_keys() -> set:
             title = parts[0].get("plain_text", "") if parts else ""
             company = (props.get("Company", {}).get("select") or {}).get("name", "")
             if title:
-                existing.add(dedup_key(title, company))
+                k = dedup_key(title, company)
+                existing.add(k)
+                found = ((props.get("Date Found", {}) or {}).get("date") or {}).get("start")
+                if found:
+                    FIRST_SEEN_DATES[k] = found[:10]
         if not data.get("has_more"):
             break
         cursor = data.get("next_cursor")
@@ -1670,6 +1678,19 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
             if pa.tzinfo is None:
                 pa = pa.replace(tzinfo=timezone.utc)
             fresh = (datetime.now(timezone.utc) - pa).days <= 3
+        else:
+            # No posting date on the source (Apple, Greenhouse boards).
+            # FOOUND reads these companies every weekday, so first-seen
+            # is the honest proxy for freshly posted.
+            if key in new_keys:
+                fresh = True
+            else:
+                seen_on = FIRST_SEEN_DATES.get(key)
+                if seen_on:
+                    try:
+                        fresh = (date.today() - date.fromisoformat(seen_on)).days <= 3
+                    except ValueError:
+                        pass
         return (SHORTLIST_ENTRY
             .replace("__LEAD__", " lead" if lead else "")
             .replace("__OPEN__", " open" if lead else "")
