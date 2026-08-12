@@ -1095,6 +1095,8 @@ def write_brief(n: int, total_fetched: int, n_companies: int, ranked: list, new_
                 except Exception:
                     pass
             t = text.strip().strip("`").strip()
+            if t.startswith("{") or '"line"' in t:
+                return None   # truncated JSON — never let a fragment reach the page
             if t and "\n" not in t and len(t) < 200:
                 return t.strip('"').strip()
             return None
@@ -1109,7 +1111,7 @@ def write_brief(n: int, total_fetched: int, n_companies: int, ranked: list, new_
                 },
                 json={
                     "model": CLAUDE_MODEL,
-                    "max_tokens": 300,
+                    "max_tokens": 500,
                     "messages": [{"role": "user", "content": prompt}],
                 },
                 timeout=60,
@@ -1244,7 +1246,8 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>THE SHORTLIST — __DATELONG__</title>
+<title>FOOUND — __DATELONG__</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 fill=%27white%27/%3E%3Ccircle cx=%2710%27 cy=%2716%27 r=%276%27 fill=%27black%27/%3E%3Ccircle cx=%2723.5%27 cy=%2716%27 r=%275.4%27 fill=%27none%27 stroke=%27black%27 stroke-width=%271.2%27/%3E%3C/svg%3E">
 <style>
   :root{--ink:#000;--paper:#fff;--mute:#6b6b6b;}
   *{margin:0;padding:0;box-sizing:border-box;}
@@ -1438,7 +1441,7 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
 <body>
 
   <div class="mast">
-    <span class="id">Career Agent &mdash; &#8470; 001</span>
+    <span class="id">FOOUND &mdash; &#8470; 001</span>
     <nav>
       <a class="here" href="index.html">Today</a>
       <a href="cv.html">Candidate</a>
@@ -1558,9 +1561,14 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
     datelong = now.strftime("%A, %B %d, %Y").replace(" 0", " ")
 
     ranked_all, used_ai = rank_with_fit(matches, new_keys)
-    ranked = ranked_all[:11]
-    for j in ranked_all[11:]:
-        if j["company"] in PRIORITY_COMPANIES and (j.get("fit") or 0) >= 60 and j not in ranked:
+    FOOUND_FLOOR = 60
+    if used_ai:
+        cleared = [j for j in ranked_all if (j.get("fit") or 0) >= FOOUND_FLOOR]
+    else:
+        cleared = list(ranked_all)   # heuristic day: no scores, no floor
+    ranked = cleared[:11]
+    for j in cleared[11:]:
+        if j["company"] in PRIORITY_COMPANIES and j not in ranked:
             for k in range(len(ranked) - 1, -1, -1):
                 if ranked[k]["company"] not in PRIORITY_COMPANIES:
                     ranked[k] = j
@@ -1586,7 +1594,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         cascade_lines.append("Nothing cleared the bar today.")
     else:
         cascade_lines.append(f"I searched {total_fetched:,} jobs overnight.")
-        cascade_lines.append(f"{n} are worth your attention.")
+        cascade_lines.append(f"FOOUND {n} for you.")
         if n_strong >= 2:
             cascade_lines.append(f"{n_strong} are unusually strong.")
         if has_standout:
@@ -1704,8 +1712,11 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
 
     # ---- what I passed on: the judged-and-declined, at footnote scale ----
     seen_pass = set()
+    shown_ids = {id(j) for j in ranked}
     rejects = []
-    for j in ranked_all[11:]:
+    for j in ranked_all:
+        if id(j) in shown_ids:
+            continue
         k = (j["company"], j["title"])
         if k in seen_pass:
             continue
@@ -1730,7 +1741,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
                     '        </div></div>\n'
                     '      </div>\n')
             passed_html = (
-                '\n    <div class="seclabel pass">What I passed on</div>\n'
+                '\n    <div class="seclabel pass">Nearly foound</div>\n'
                 f'    <p class="passintro">{len(rejects)} more read in full and declined. '
                 f'The {COUNT_WORDS[len(shown)].lower()} nearest {word}, and why they failed:</p>\n'
                 '    <div class="passed">\n' + "".join(items) + '    </div>\n')
