@@ -1446,7 +1446,8 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
       <a class="here" href="index.html">Today</a>
       <a href="cv.html">Candidate</a>
       <a href="memory.html">Memory</a>
-      <a href="request.html">Request your agent</a>
+      <a href="foound.html">FOOUND</a>
+      <a href="request.html">FOOUND for me &rarr;</a>
     </nav>
   </div>
 
@@ -1478,7 +1479,7 @@ __ENTRIES____PASSED__  </div>
       <div class="val">out of the oven &mdash; posted in the last 3 days</div>
     </div>
     <div class="col">
-      <div class="lab">Request your agent</div>
+      <div class="lab">FOOUND for me</div>
       <div class="val"><a href="request.html">&#8470; 002 &mdash; open</a></div>
     </div>
     <div class="num">__FRACTION__</div>
@@ -1773,6 +1774,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         .replace('href="cv.html"', 'href="../cv.html"')
         .replace('href="cv.html#', 'href="../cv.html#')
         .replace('href="memory.html"', 'href="../memory.html"')
+        .replace('href="foound.html"', 'href="../foound.html"')
         .replace('href="request.html"', 'href="../request.html"')
         .replace('href="index.html"', 'href="../"'))
     with open(today_file, "w") as f:
