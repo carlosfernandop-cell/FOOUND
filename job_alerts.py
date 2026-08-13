@@ -1328,7 +1328,7 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>FOOUND · __DATELONG__</title>
-<script>try{if(location.pathname==="/"&&matchMedia("(max-width:700px)").matches&&!localStorage.getItem("foound_seen")){localStorage.setItem("foound_seen","1");location.replace("/foound/");}}catch(e){}</script>
+<script>try{if(location.pathname==="/"&&!localStorage.getItem("foound_seen")){localStorage.setItem("foound_seen","1");location.replace("/foound/");}}catch(e){}</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 fill=%27white%27/%3E%3Ccircle cx=%2710%27 cy=%2716%27 r=%276%27 fill=%27black%27/%3E%3Ccircle cx=%2723.5%27 cy=%2716%27 r=%275.4%27 fill=%27none%27 stroke=%27black%27 stroke-width=%271.2%27/%3E%3C/svg%3E">
 <meta property="og:title" content="FOOUND">
 <meta property="og:description" content="To find what matters. A career agent that works for one person. New edition every weekday.">
