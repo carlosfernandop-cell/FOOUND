@@ -971,7 +971,7 @@ def score_fit(profile: str, job: dict, jd_text: str):
     and the honest case against. Returns (score, why, pause) or (None, None, None)."""
     try:
         prompt = (
-            "You are the personal career agent of one senior creative director. "
+            "You are the personal career agent of one senior creative director. Write plainly. Never use em dashes or long dashes anywhere; use commas, colons, or periods instead. "
             "You are judging ONE role for HIM specifically, and you will present "
             "your reasoning to him directly.\n\n"
             f"CANDIDATE PROFILE:\n{profile}\n\n"
@@ -1063,7 +1063,7 @@ def deep_look(job, profile: str):
         return None
     try:
         prompt = (
-            "You are FOOUND, the personal career agent of one senior creative director. "
+            "You are FOOUND, the personal career agent of one senior creative director. Write plainly. Never use em dashes or long dashes anywhere; use commas, colons, or periods instead. "
             "Today your lead recommendation is:\n"
             f"ROLE: {job['title']} at {job['company']} — {job.get('location','')}\n"
             f"URL: {job.get('url','')}\n"
@@ -1077,7 +1077,7 @@ def deep_look(job, profile: str):
             '{"role": "finding, max 130 chars", "moment": "finding, max 130 chars", '
             '"leadership": "finding, max 130 chars", "signal": "finding, max 130 chars", '
             '"question": "the unresolved risk, max 130 chars", '
-            '"fit_after": 0, "verdict": "max 55 chars, e.g. My view changed: 82 -> 86. or Still 82. The risk is real."}\n'
+            '"fit_after": 0, "verdict": "max 55 chars, e.g. My view changed: 82 to 86. or Still 82. The risk is real."}\n'
             "fit_after is your revised integer score after research — it MAY be lower than the current score. "
             "Be honest; the research earns nothing if it can only agree."
         )
@@ -1153,7 +1153,7 @@ def write_brief(n: int, total_fetched: int, n_companies: int, ranked: list, new_
             )
         n_new = sum(1 for j in ranked if dedup_key(j["title"], j["company"]) in new_keys)
         prompt = (
-            "You are the personal career agent behind THE SHORTLIST. You just finished this "
+            "Write plainly. Never use em dashes or long dashes anywhere; use commas, colons, or periods instead. You are the personal career agent behind THE SHORTLIST. You just finished this "
             "morning's run for your one client, a senior creative director. The page already "
             "reports the numbers — your job is ONE short observation, if the data earns it.\n\n"
             "RUN DATA (real, this morning):\n"
@@ -1229,25 +1229,25 @@ COUNT_WORDS = ["Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven",
 BLURBS = {
     "Anthropic":    "Shape how the most safety-minded frontier lab speaks to the world.",
     "OpenAI":       "The most-watched brand in technology, still deciding what it looks like.",
-    "DeepMind":     "Google's AI vanguard — science-grade substance in need of story.",
-    "Mistral":      "Own how Europe's frontier AI lab shows up in the world — brand, campaigns, culture.",
+    "DeepMind":     "Google's AI vanguard: science-grade substance in need of story.",
+    "Mistral":      "Own how Europe's frontier AI lab shows up in the world: brand, campaigns, culture.",
     "Perplexity":   "The challenger answer engine building a brand on speed and candor.",
-    "xAI":          "Maximum velocity, maximum attention — a brand built in public.",
-    "ElevenLabs":   "One identity stretched across voice, music, and agents — a brand-architecture brief.",
+    "xAI":          "Maximum velocity, maximum attention. A brand built in public.",
+    "ElevenLabs":   "One identity stretched across voice, music, and agents: a brand-architecture brief.",
     "Cohere":       "Enterprise AI from Toronto that must feel trustworthy before it feels exciting.",
     "Scale AI":     "The data backbone of the AI boom, largely unbranded territory.",
     "Runway":       "Define the creative voice of the tool redefining filmmaking.",
     "Netflix":      "Shape how the world's biggest entertainment brand publishes culture.",
     "Nvidia":       "The most valuable company on earth, with an enterprise brand to grow into.",
     "Apple":        "The reference point. Craft as religion.",
-    "Figma":        "Design's home field — an audience that judges every pixel professionally.",
+    "Figma":        "Design's home field: an audience that judges every pixel professionally.",
     "Airbnb":       "Brand-led to its core; creative leadership reports to the very top.",
     "Spotify":      "The brand that turned data into pop culture. Wrapped, but all year.",
     "Snap":         "A global brand that still knows how to play.",
     "Canva":        "Design for 200M people, with a taste for big swings.",
     "Adobe":        "The tools creativity runs on, mid-reinvention for the AI era.",
-    "GitHub":       "The home of 100M developers — brand, film, campaigns, and craft in-house.",
-    "Cleo":         "Fintech with a voice — an AI that talks money like a friend.",
+    "GitHub":       "The home of 100M developers: brand, film, campaigns, and craft in-house.",
+    "Cleo":         "Fintech with a voice: an AI that talks money like a friend.",
     "Stripe":       "Lead brand moments for the company that set the bar for craft in tech.",
     "Duolingo":     "The loudest, most awarded brand voice in consumer tech.",
     "Squarespace":  "An in-house agency with Super Bowl reps and design awards to defend.",
@@ -1255,19 +1255,19 @@ BLURBS = {
     "Discord":      "Playful, distinctive brand craft for the internet's living room.",
     "Webflow":      "Design-native product, visual-first audience.",
     "Synthesia":    "The AI-video leader, London-built, making enterprise feel cinematic.",
-    "Suno":         "Build the campaign language for AI-made music — a brand still wet on the canvas.",
+    "Suno":         "Build the campaign language for AI-made music, a brand still wet on the canvas.",
     "Harvey":       "Make an $11B legal-AI company feel inevitable to the most skeptical audience in business.",
     "Sierra":       "Bret Taylor's $15B bet on conversational AI, polishing an enterprise identity.",
-    "Decagon":      "AI agents for customer support — fast-growing, identity still forming.",
+    "Decagon":      "AI agents for customer support. Fast-growing, identity still forming.",
     "Cursor":       "The fastest-growing dev tool in history, whose editor is its brand.",
-    "Cognition":    "Maker of Devin — foundational brand work, wide open.",
+    "Cognition":    "Maker of Devin. Foundational brand work, wide open.",
     "Hugging Face": "The beloved open-source home of AI, scrappy by design.",
     "Preacher":     "Austin's most decorated creative shop. Brand-led, craft-obsessed, hometown advantage.",
     "Johannes Leonardo": "The agency that made adidas and Volkswagen feel inevitable again.",
     "Wolff Olins":  "The identity house whose rebrands the rest of the industry studies.",
-    "DesignStudio": "Where Airbnb's Bélo was born — rebrands that become case studies.",
+    "DesignStudio": "Where Airbnb's Bélo was born. Rebrands that become case studies.",
     "Koto":         "Joy and rigor for modern tech brands, London to LA.",
-    "Framestore":   "Oscar-winning craft — the people who make the impossible photoreal.",
+    "Framestore":   "Oscar-winning craft: the people who make the impossible photoreal.",
 }
 
 def _seniority_score(title: str) -> int:
@@ -1327,17 +1327,17 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>FOOUND — __DATELONG__</title>
+<title>FOOUND · __DATELONG__</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 fill=%27white%27/%3E%3Ccircle cx=%2710%27 cy=%2716%27 r=%276%27 fill=%27black%27/%3E%3Ccircle cx=%2723.5%27 cy=%2716%27 r=%275.4%27 fill=%27none%27 stroke=%27black%27 stroke-width=%271.2%27/%3E%3C/svg%3E">
 <meta property="og:title" content="FOOUND">
-<meta property="og:description" content="verb — to find what matters. A career agent that works for one person. New edition every weekday.">
+<meta property="og:description" content="verb. To find what matters. A career agent that works for one person. New edition every weekday.">
 <meta property="og:url" content="https://foound.ai/">
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://foound.ai/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="description" content="verb — to find what matters. A career agent that works for one person. New edition every weekday.">
+<meta name="description" content="verb. To find what matters. A career agent that works for one person. New edition every weekday.">
 <script data-goatcounter="https://foound.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
 <style>
   :root{--ink:#000;--paper:#fff;--mute:#6b6b6b;}
@@ -1464,9 +1464,9 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
     color:var(--mute);padding:0 0 2px;border-bottom:2px solid transparent;
   }
   button.mark:hover{color:var(--ink);}
-  /* fresh — posted in the last 3 days */
+  /* fresh: posted in the last 3 days */
   .fresh{font-size:.5em;align-self:flex-start;transform:translateY(.18em);margin-left:.08em;}
-  /* applied — struck from the list, kept for the record */
+  /* applied: struck from the list, kept for the record */
   .item.applied .co{color:#b9b9b9;text-decoration:line-through;text-decoration-thickness:.045em;}
   .item.applied:not(.open) .marker{background:none;border:.028em solid #b9b9b9;}
   .item.applied .marker span{color:#b9b9b9;}
@@ -1551,7 +1551,7 @@ __ENTRIES____PASSED__  </div>
 
   <footer>
     <div class="col">
-      <div class="lab">The Shortlist&mdash;Daily Selection</div>
+      <div class="lab">The Shortlist &middot; Daily Selection</div>
       <div class="val">__DATELONG__</div>
     </div>
     <div class="col">
@@ -1568,11 +1568,11 @@ __ENTRIES____PASSED__  </div>
     </div>
     <div class="col">
       <div class="lab star">*</div>
-      <div class="val">out of the oven &mdash; posted in the last 3 days</div>
+      <div class="val">out of the oven: posted in the last 3 days</div>
     </div>
     <div class="col">
       <div class="lab">FOOUND for me</div>
-      <div class="val"><a href="/me/">&#8470; 002 &mdash; open</a></div>
+      <div class="val"><a href="/me/">&#8470; 002 open</a></div>
     </div>
     <div class="num">__FRACTION__</div>
   </footer>
@@ -1620,7 +1620,7 @@ function fitRows(){
 var fitT; window.addEventListener("resize", function(){ clearTimeout(fitT); fitT = setTimeout(fitRows, 120); });
 fitRows();
 
-/* applied tracking — remembered by this browser across editions */
+/* applied tracking: remembered by this browser across editions */
 var AP_KEY = "shortlist_applied";
 function apLoad(){ try{ return JSON.parse(localStorage.getItem(AP_KEY) || "[]"); }catch(e){ return []; } }
 function apSave(a){ try{ localStorage.setItem(AP_KEY, JSON.stringify(a)); }catch(e){} }
@@ -1631,7 +1631,7 @@ document.querySelectorAll(".item[data-key]").forEach(function(it){
   function sync(){
     var on = apList.indexOf(k) >= 0;
     it.classList.toggle("applied", on);
-    if(btn) btn.textContent = on ? "Applied ✓ — undo" : "Mark applied";
+    if(btn) btn.textContent = on ? "Applied ✓ · undo" : "Mark applied";
   }
   sync();
   if(btn) btn.addEventListener("click", function(e){
@@ -1726,7 +1726,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         blocks = []
         fit = j.get("fit")
         if fit is not None:
-            blocks.append(f'        <div class="scoreline">{fit} &mdash; {fit_tier(fit)}</div>\n')
+            blocks.append(f'        <div class="scoreline">{fit} &middot; {fit_tier(fit)}</div>\n')
         why = j.get("ai_why") or BLURBS.get(j["company"], "A senior creative seat at a company worth watching.")
         blocks.append('        <div class="plabel">Why I chose it</div>\n')
         blocks.append(f'        <p class="ptext">{_evidence_links(_html.escape(why))}</p>\n')
@@ -1763,7 +1763,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
                            ("signal", "Signal"), ("question", "Question")):
                 v = dl.get(k)
                 if v:
-                    rows.append(f"<b>{lab}</b> &mdash; {_html.escape(v)}")
+                    rows.append(f"<b>{lab}</b> &middot; {_html.escape(v)}")
             blocks.append('        <p class="ptext">' + "<br>".join(rows) + '</p>\n')
             v = dl.get("verdict")
             if v:
@@ -1905,7 +1905,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         for i, p in reversed(list(enumerate(editions, 1)))
     )
     with open("docs/archive/index.html", "w") as f:
-        f.write(f'<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>THE SHORTLIST — Archive</title></head><body style="font-family:\'Helvetica Neue\',Helvetica,Arial,sans-serif;max-width:680px;margin:0 auto;padding:72px 24px;"><div style="font-size:13px;font-weight:700;letter-spacing:.14em;">THE SHORTLIST <span style="color:#6b6b6b;font-weight:400;">&middot; ARCHIVE</span></div><ol style="list-style:none;margin-top:48px;">{links}</ol><p style="margin-top:48px;font-size:13px;"><a href="../" style="color:#000;">&larr; Latest edition</a></p></body></html>')
+        f.write(f'<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>THE SHORTLIST · Archive</title></head><body style="font-family:\'Helvetica Neue\',Helvetica,Arial,sans-serif;max-width:680px;margin:0 auto;padding:72px 24px;"><div style="font-size:13px;font-weight:700;letter-spacing:.14em;">THE SHORTLIST <span style="color:#6b6b6b;font-weight:400;">&middot; ARCHIVE</span></div><ol style="list-style:none;margin-top:48px;">{links}</ol><p style="margin-top:48px;font-size:13px;"><a href="../" style="color:#000;">&larr; Latest edition</a></p></body></html>')
 
     print(f"Shortlist: edition No. {edition:03d} built with {n} role(s).")
     return edition
