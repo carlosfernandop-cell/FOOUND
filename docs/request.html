@@ -100,6 +100,20 @@
   .sent{display:none;}
   .sent.show{display:block;}
 
+  /* ---- the received state: the celebration, in the system's own grammar ---- */
+  .received{display:none;}
+  .received.show{display:block;}
+  .moment{
+    display:flex;align-items:center;gap:.38em;
+    margin:7vh 0 5vh;
+    font-size:clamp(44px,9.5vw,132px);
+    font-weight:500;letter-spacing:-.035em;line-height:1.05;white-space:nowrap;
+  }
+  .moment .dot{flex:none;width:.62em;height:.62em;border-radius:50%;background:var(--ink);}
+  @media (max-width:560px){
+    .moment{margin:5vh 0 4vh;font-size:clamp(38px,12.5vw,60px);}
+  }
+
   footer{
     display:flex;align-items:flex-end;
     padding:11vh 5vw 5vh;
@@ -189,7 +203,12 @@
       <button class="request" type="submit">FOOUND for me &rarr;</button>
     </form>
 
-    <p class="after">Between you and your FOOUND. Never shared.</p>
+    <p class="after" id="trustline">Between you and your FOOUND. Never shared.</p>
+
+    <div class="received" id="received">
+      <div class="moment"><span class="dot"></span>FOOUND you.</div>
+      <p class="brief">That&rsquo;s everything I need to begin.<br>I&rsquo;m reading what you gave me now &mdash; the work, the history, the bar.<br><br>Next I show you what I understood, and you correct me.<br>Then I go to work.<br><br><span class="dim">You&rsquo;ll hear from me soon.</span></p>
+    </div>
 
     <p class="after sent" id="sentnote">Your mail app has opened with the request &mdash; send it, and it reaches the desk of &#8470; 001. It will be read personally.</p>
 
@@ -271,10 +290,12 @@ document.getElementById("reqform").addEventListener("submit", function(e){
       body: JSON.stringify({now:f.now.value, move:f.move.value, worth:f.worth.value, where:f.where.value, link:f.link.value, email:f.email.value, feed:f.feed.value, _subject:"FOOUND \u2014 request for \u2116 002", _gotcha:f._gotcha.value})
     }).then(function(r){
       if(!r.ok){ throw new Error("formspree " + r.status); }
-      document.getElementById("sentnote").textContent = "Received. FOOUND is reading what you gave it. Next: it shows you what it understood \u2014 you correct it \u2014 and it goes to work.";
-      document.getElementById("sentnote").classList.add("show");
-      document.getElementById("afternote").style.display = "none";
       f.style.display = "none";
+      document.getElementById("afternote").style.display = "none";
+      document.getElementById("trustline").style.display = "none";
+      document.querySelector("footer").style.display = "none";
+      document.getElementById("received").classList.add("show");
+      window.scrollTo(0, 0);
     }).catch(function(){
       var mail = "mailto:carlosfernandop@gmail.com"
         + "?subject=" + encodeURIComponent("FOOUND \u2014 request for \u2116 002")
@@ -295,7 +316,7 @@ document.getElementById("reqform").addEventListener("submit", function(e){
 
 /* long-name guard: a row that cannot fit steps down deliberately, alone */
 function fitRows(){
-  document.querySelectorAll(".row, .srow, .krow, .nm").forEach(function(r){
+  document.querySelectorAll(".row, .srow, .krow, .nm, .moment").forEach(function(r){
     r.style.fontSize = "";
     var guard = 0;
     while (r.scrollWidth > r.clientWidth + 1 && guard < 4){
