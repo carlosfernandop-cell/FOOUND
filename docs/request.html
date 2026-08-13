@@ -134,7 +134,6 @@
 
     <p class="brief" id="afternote">Start building your own FOOUND agent.</p>
 
-    <div class="seclabel">Tell me what your next move needs to be</div>
 
     <form id="reqform" novalidate>
       <div class="item fq">
@@ -179,8 +178,18 @@
           <input id="f6" name="email" type="email" autocomplete="email">
         </div></div>
       </div>
+      <div class="item fq">
+        <button class="row" type="button" aria-expanded="false"><span class="marker"></span>Show me</button>
+        <div class="panel"><div class="panel-inner">
+          <label class="qlabel" for="f7">Anything that represents you &mdash; LinkedIn, portfolio, GitHub, a role you&rsquo;d leave for, one you&rsquo;d never take</label>
+          <textarea id="f7" name="feed" rows="4"></textarea>
+        </div></div>
+      </div>
+      <input type="text" name="_gotcha" style="display:none" tabindex="-1" autocomplete="off" aria-hidden="true">
       <button class="request" type="submit">FOOUND for me &rarr;</button>
     </form>
+
+    <p class="after">Between you and your FOOUND. Never shared.</p>
 
     <p class="after sent" id="sentnote">Your mail app has opened with the request &mdash; send it, and it reaches the desk of &#8470; 001. It will be read personally.</p>
 
@@ -242,7 +251,7 @@ document.querySelectorAll(".fq input, .fq textarea").forEach(function(field){
   });
 });
 
-var FORM_ENDPOINT = "";
+var FORM_ENDPOINT = "https://formspree.io/f/xjybraaz";
 document.getElementById("reqform").addEventListener("submit", function(e){
   e.preventDefault();
   var f = e.target;
@@ -252,22 +261,31 @@ document.getElementById("reqform").addEventListener("submit", function(e){
     "What would make it worth leaving for: " + f.worth.value,
     "Where I can work: " + f.where.value,
     "LinkedIn / portfolio: " + f.link.value,
-    "Email: " + f.email.value
+    "Email: " + f.email.value,
+    "Feed: " + f.feed.value
   ];
   if (FORM_ENDPOINT) {
     fetch(FORM_ENDPOINT, {
       method:"POST",
       headers:{"Content-Type":"application/json","Accept":"application/json"},
-      body: JSON.stringify({now:f.now.value, move:f.move.value, worth:f.worth.value, where:f.where.value, link:f.link.value, email:f.email.value})
-    }).then(function(){
-      document.getElementById("sentnote").textContent = "Received. It will be read personally.";
+      body: JSON.stringify({now:f.now.value, move:f.move.value, worth:f.worth.value, where:f.where.value, link:f.link.value, email:f.email.value, feed:f.feed.value, _subject:"FOOUND \u2014 request for \u2116 002", _gotcha:f._gotcha.value})
+    }).then(function(r){
+      if(!r.ok){ throw new Error("formspree " + r.status); }
+      document.getElementById("sentnote").textContent = "Received. FOOUND is reading what you gave it. Next: it shows you what it understood \u2014 you correct it \u2014 and it goes to work.";
       document.getElementById("sentnote").classList.add("show");
       document.getElementById("afternote").style.display = "none";
       f.style.display = "none";
+    }).catch(function(){
+      var mail = "mailto:carlosfernandop@gmail.com"
+        + "?subject=" + encodeURIComponent("FOOUND \u2014 request for \u2116 002")
+        + "&body=" + encodeURIComponent(lines.join("\n"));
+      window.location.href = mail;
+      document.getElementById("sentnote").classList.add("show");
+      document.getElementById("afternote").style.display = "none";
     });
   } else {
     var mail = "mailto:carlosfernandop@gmail.com"
-      + "?subject=" + encodeURIComponent("Career Agent — request for № 002")
+      + "?subject=" + encodeURIComponent("FOOUND — request for № 002")
       + "&body=" + encodeURIComponent(lines.join("\n"));
     window.location.href = mail;
     document.getElementById("sentnote").classList.add("show");
