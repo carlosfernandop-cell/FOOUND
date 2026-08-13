@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>FOOUND</title>
+<script>try{localStorage.setItem("foound_seen","1");}catch(e){}</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 fill=%27white%27/%3E%3Ccircle cx=%2710%27 cy=%2716%27 r=%276%27 fill=%27black%27/%3E%3Ccircle cx=%2723.5%27 cy=%2716%27 r=%275.4%27 fill=%27none%27 stroke=%27black%27 stroke-width=%271.2%27/%3E%3C/svg%3E">
 <meta property="og:title" content="FOOUND">
 <meta property="og:description" content="To find what matters. FOOUND searches broadly, reads selectively, and judges everything against one person.">
@@ -85,6 +86,7 @@
   }
   .closing b{font-weight:500;}
 
+  a.act-today{display:none;}
   a.act{
     display:inline-block;margin-top:9vh;margin-bottom:8vh;
     font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
@@ -118,6 +120,44 @@
     footer{flex-wrap:wrap;gap:14px 0;padding:10vh 5vw 5vh;}
     footer .col{margin-right:9vw;}
   }
+
+  /* ---- mobile: the room system ---- */
+  @view-transition{navigation:auto;}
+  .mast-act{display:none;}
+  .roombar{display:none;}
+  html.restoring .panel{transition:none!important;}
+  @media (prefers-reduced-motion:reduce){.panel{transition:none!important;}}
+  @media (max-width:700px){
+    .mast{flex-direction:row;align-items:baseline;gap:12px;padding:14px 20px 0;}
+    .mast nav{display:none;}
+    .mast-act{display:inline;color:var(--mute);text-decoration:none;white-space:nowrap;
+      font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+      font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;}
+    .mast-act.here{color:var(--ink);}
+    body{padding-bottom:calc(60px + env(safe-area-inset-bottom));}
+    .roombar{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:50;
+      background:var(--paper);border-top:1px solid var(--ink);
+      padding-bottom:env(safe-area-inset-bottom);}
+    .roombar a{flex:1;display:flex;align-items:center;justify-content:center;gap:7px;
+      height:52px;color:var(--mute);text-decoration:none;
+      font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+      font-size:11px;letter-spacing:.14em;text-transform:uppercase;}
+    .roombar a .rdot{width:7px;height:7px;border-radius:50%;background:var(--ink);display:none;}
+    .roombar a.here{color:var(--ink);}
+    .roombar a.here .rdot{display:block;}
+    .plate{padding:0 20px;}
+    .wordmark{margin-top:64px;}
+    .definition{font-size:17px;}
+    .statement{margin-top:76px;font-size:17px;line-height:1.5;}
+    .kicker{font-size:17px;margin-top:1.4em;}
+    .principles{margin-top:84px;}
+    .closing{margin-top:88px;}
+    a.act{margin-top:44px;margin-bottom:24px;display:flex;align-items:center;min-height:48px;width:max-content;}
+    a.act-me{display:none;}
+    a.act-today{display:flex;}
+    footer{padding:56px 20px 28px;}
+  }
+  @media (max-width:360px){.roombar a{font-size:10px;letter-spacing:.1em;gap:6px;}}
 </style>
 </head>
 <body>
@@ -125,11 +165,12 @@
   <div class="mast">
     <a class="id" href="/foound/">FOOUND</a>
     <nav>
-      <a href="/">Today</a>
+      <a href="/">FOOUND agent</a>
       <a href="/candidate/">Candidate</a>
       <a href="/memory/">Memory</a>
       <a href="/me/">FOOUND for me &rarr;</a>
     </nav>
+    <a class="mast-act" href="/me/">FOOUND for me &rarr;</a>
   </div>
 
   <div class="plate">
@@ -150,7 +191,8 @@
 
     <p class="closing"><b>FOOUND</b> what is worth finding.</p>
 
-    <a class="act" href="/me/">FOOUND for me &rarr;</a>
+    <a class="act act-today" href="/">See what I FOOUND &rarr;</a>
+    <a class="act act-me" href="/me/">FOOUND for me &rarr;</a>
 
   </div>
 
@@ -167,7 +209,7 @@
       <div class="lab">FOOUND for me</div>
       <div class="val"><a href="/me/">&#8470; 002 open</a></div>
     </div>
-    <div class="num"><a href="/">&larr; Today&rsquo;s edition</a></div>
+    <div class="num"><a href="/">&larr; FOOUND agent</a></div>
   </footer>
 
 <script>
@@ -187,5 +229,24 @@ var fitT; window.addEventListener("resize", function(){ clearTimeout(fitT); fitT
 fitRows();
 </script>
 
+
+  <nav class="roombar" aria-label="Rooms">
+    <a href="/"><span class="rdot"></span>FOOUND agent</a>
+    <a href="/candidate/"><span class="rdot"></span>Candidate</a>
+    <a href="/memory/"><span class="rdot"></span>Memory</a>
+  </nav>
+
+<script>
+/* the room remembers where you were */
+document.documentElement.classList.add("restoring");
+(function(){
+  var KEY = "foound-scroll:" + location.pathname;
+  addEventListener("pagehide", function(){ try{ sessionStorage.setItem(KEY, String(Math.round(scrollY))); }catch(e){} });
+  try{ var s = sessionStorage.getItem(KEY);
+    if (s && !location.hash) scrollTo(0, parseInt(s, 10) || 0); }catch(e){}
+  requestAnimationFrame(function(){ requestAnimationFrame(function(){
+    document.documentElement.classList.remove("restoring"); }); });
+})();
+</script>
 </body>
 </html>
