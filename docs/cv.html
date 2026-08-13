@@ -77,6 +77,12 @@
     opacity:0;transition:opacity .25s ease .1s;
   }
   .item.open .anno{opacity:1;}
+  .anno.on{opacity:1;}
+  a.wrow{text-decoration:none;}
+  @media (hover:hover){
+    .wrow:hover .marker{background:none;}
+    .wrow:hover .marker::after{display:block;}
+  }
   @media (hover:hover){
     .item:not(.open) .row:hover .marker{background:none;}
     .item:not(.open) .row:hover .marker::after{display:block;}
@@ -302,6 +308,10 @@
       </div>
 
     </div>
+
+    <div class="seclabel">The work</div>
+
+    <a class="row wrow" href="https://www.carlospereznewwork.com" target="_blank" rel="noopener"><span class="marker"></span>Portfolio<span class="anno on">&#8599;</span></a>
 
     <div class="seclabel">Capabilities</div>
 
