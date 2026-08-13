@@ -1330,14 +1330,14 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
 <title>FOOUND · __DATELONG__</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 fill=%27white%27/%3E%3Ccircle cx=%2710%27 cy=%2716%27 r=%276%27 fill=%27black%27/%3E%3Ccircle cx=%2723.5%27 cy=%2716%27 r=%275.4%27 fill=%27none%27 stroke=%27black%27 stroke-width=%271.2%27/%3E%3C/svg%3E">
 <meta property="og:title" content="FOOUND">
-<meta property="og:description" content="verb. To find what matters. A career agent that works for one person. New edition every weekday.">
+<meta property="og:description" content="To find what matters. A career agent that works for one person. New edition every weekday.">
 <meta property="og:url" content="https://foound.ai/">
 <meta property="og:type" content="website">
 <meta property="og:image" content="https://foound.ai/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="description" content="verb. To find what matters. A career agent that works for one person. New edition every weekday.">
+<meta name="description" content="To find what matters. A career agent that works for one person. New edition every weekday.">
 <script data-goatcounter="https://foound.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
 <style>
   :root{--ink:#000;--paper:#fff;--mute:#6b6b6b;}
