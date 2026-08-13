@@ -1326,8 +1326,9 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>FOOUND · __DATELONG__</title>
+<script>try{if(location.pathname==="/"&&matchMedia("(max-width:700px)").matches&&!localStorage.getItem("foound_seen")){localStorage.setItem("foound_seen","1");location.replace("/foound/");}}catch(e){}</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 fill=%27white%27/%3E%3Ccircle cx=%2710%27 cy=%2716%27 r=%276%27 fill=%27black%27/%3E%3Ccircle cx=%2723.5%27 cy=%2716%27 r=%275.4%27 fill=%27none%27 stroke=%27black%27 stroke-width=%271.2%27/%3E%3C/svg%3E">
 <meta property="og:title" content="FOOUND">
 <meta property="og:description" content="To find what matters. A career agent that works for one person. New edition every weekday.">
@@ -1529,6 +1530,47 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
     footer{flex-wrap:wrap;gap:14px 0;padding:9vh 5vw 5vh;}
     footer .col{margin-right:9vw;}
   }
+
+  /* ---- mobile: the room system ---- */
+  @view-transition{navigation:auto;}
+  .mast-act{display:none;}
+  .roombar{display:none;}
+  html.restoring .panel,html.restoring .ppanel{transition:none!important;}
+  @media (prefers-reduced-motion:reduce){.panel,.ppanel{transition:none!important;}}
+  @media (max-width:700px){
+    .mast{flex-direction:row;align-items:baseline;gap:12px;padding:14px 20px 0;}
+    .mast nav{display:none;}
+    .mast-act{display:inline;color:var(--mute);text-decoration:none;white-space:nowrap;letter-spacing:.12em;}
+    body{padding-bottom:calc(60px + env(safe-area-inset-bottom));}
+    .roombar{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:50;
+      background:var(--paper);border-top:1px solid var(--ink);
+      padding-bottom:env(safe-area-inset-bottom);}
+    .roombar a{flex:1;display:flex;align-items:center;justify-content:center;gap:7px;
+      height:52px;color:var(--mute);text-decoration:none;
+      font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+      font-size:11px;letter-spacing:.14em;text-transform:uppercase;}
+    .roombar a .rdot{width:7px;height:7px;border-radius:50%;background:var(--ink);display:none;}
+    .roombar a.here{color:var(--ink);}
+    .roombar a.here .rdot{display:block;}
+    /* the voice steps up; the furniture recedes */
+    .plate{padding:20px 20px 0;}
+    .brief{font-size:15px;line-height:1.6;}
+    .cascade{font-size:15px;line-height:1.6;}
+    .statline{font-size:12px;line-height:1.6;}
+    .seclabel{margin:56px 0 20px;}
+    .role{font-size:19px;}
+    .scoreline{font-size:13px;}
+    .plabel{font-size:12px;}
+    .ptext{font-size:16px;line-height:1.5;}
+    .meta{font-size:13px;}
+    .panel-inner{padding:12px 0 8px;}
+    /* the hands: actions become rows, type stays delicate */
+    .actions{display:block;margin-top:20px;}
+    .actions .apply,.actions .mark{display:flex;align-items:center;justify-content:flex-start;
+      width:100%;min-height:52px;border-top:1px solid var(--ink);margin:0;padding:0;text-align:left;}
+    footer{padding:56px 20px 28px;}
+  }
+  @media (max-width:360px){.roombar a{font-size:10px;letter-spacing:.1em;gap:6px;}}
 </style>
 </head>
 <body>
@@ -1536,11 +1578,12 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   <div class="mast">
     <a class="id" href="/foound/">FOOUND</a>
     <nav>
-      <a class="here" href="/">Today</a>
+      <a class="here" href="/">FOOUND agent</a>
       <a href="/candidate/">Candidate</a>
       <a href="/memory/">Memory</a>
       <a href="/me/">FOOUND for me &rarr;</a>
     </nav>
+    <a class="mast-act" href="/me/">FOOUND for me &rarr;</a>
   </div>
 
   <div class="plate">
@@ -1577,12 +1620,31 @@ __ENTRIES____PASSED__  </div>
     <div class="num">__FRACTION__</div>
   </footer>
 
+
+  <nav class="roombar" aria-label="Rooms">
+    <a href="/" class="here"><span class="rdot"></span>FOOUND agent</a>
+    <a href="/candidate/"><span class="rdot"></span>Candidate</a>
+    <a href="/memory/"><span class="rdot"></span>Memory</a>
+  </nav>
+
 <script>
+/* the tapped row holds its place while panels trade height */
+function pinRow(btn){
+  var y0 = btn.getBoundingClientRect().top, t0 = performance.now();
+  function hold(now){
+    var d = btn.getBoundingClientRect().top - y0;
+    if (d) scrollBy(0, d);
+    if (now - t0 < 430) requestAnimationFrame(hold);
+  }
+  requestAnimationFrame(hold);
+}
 document.querySelectorAll(".item .row").forEach(function(btn){
   btn.addEventListener("click", function(){
     var item = btn.parentElement;
     var wasOpen = item.classList.contains("open");
-    document.querySelectorAll(".item.open").forEach(function(o){
+    var others = document.querySelectorAll(".item.open");
+    var hadOther = others.length > 1 || (others.length === 1 && others[0] !== item);
+    others.forEach(function(o){
       o.classList.remove("open");
       o.querySelector(".row").setAttribute("aria-expanded","false");
     });
@@ -1590,6 +1652,7 @@ document.querySelectorAll(".item .row").forEach(function(btn){
       item.classList.add("open");
       btn.setAttribute("aria-expanded","true");
     }
+    if(hadOther) pinRow(btn);
   });
 });
 
@@ -1642,6 +1705,35 @@ document.querySelectorAll(".item[data-key]").forEach(function(it){
     sync();
   });
 });
+
+/* the room remembers: which entry was open, and where you were */
+document.documentElement.classList.add("restoring");
+var OPEN_KEY = "foound-open:" + location.pathname;
+function saveOpen(){ var o = document.querySelector(".item.open");
+  try{ sessionStorage.setItem(OPEN_KEY, o ? (o.getAttribute("data-key") || "") : ""); }catch(e){} }
+document.querySelectorAll(".item .row").forEach(function(btn){
+  btn.addEventListener("click", function(){ setTimeout(saveOpen, 0); });
+});
+try{
+  var want = sessionStorage.getItem(OPEN_KEY);
+  if (want !== null){
+    var cur = document.querySelector(".item.open");
+    var target = null;
+    if (want){
+      document.querySelectorAll(".item[data-key]").forEach(function(it){
+        if (it.getAttribute("data-key") === want) target = it;
+      });
+    }
+    if (cur && target !== cur){ cur.classList.remove("open"); cur.querySelector(".row").setAttribute("aria-expanded","false"); }
+    if (target && target !== cur){ target.classList.add("open"); target.querySelector(".row").setAttribute("aria-expanded","true"); }
+  }
+}catch(e){}
+var SCROLL_KEY = "foound-scroll:" + location.pathname;
+addEventListener("pagehide", function(){ try{ sessionStorage.setItem(SCROLL_KEY, String(Math.round(scrollY))); }catch(e){} });
+try{ var sv = sessionStorage.getItem(SCROLL_KEY);
+  if (sv && !location.hash) scrollTo(0, parseInt(sv, 10) || 0); }catch(e){}
+requestAnimationFrame(function(){ requestAnimationFrame(function(){
+  document.documentElement.classList.remove("restoring"); }); });
 </script>
 
 </body>
@@ -1825,7 +1917,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         strong = [j for j in ranked[1:] if (j.get("fit") or 0) >= 80]
         rest = [j for j in ranked[1:] if (j.get("fit") or 0) < 80]
         entries.append(f'    <div class="seclabel" style="margin-top:5vh;">I&rsquo;d start with {_html.escape(lead_job["company"])}</div>\n')
-        entries.append(_entry(1, lead_job))
+        entries.append(_entry(1, lead_job, lead=True))
         idx = 2
         if strong:
             entries.append('    <div class="seclabel">Unusually strong</div>\n')
