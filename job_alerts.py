@@ -1897,7 +1897,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         strong = [j for j in ranked[1:] if (j.get("fit") or 0) >= 80]
         rest = [j for j in ranked[1:] if (j.get("fit") or 0) < 80]
         entries.append(f'    <div class="seclabel" style="margin-top:5vh;">I&rsquo;d start with {_html.escape(lead_job["company"])}</div>\n')
-        entries.append(_entry(1, lead_job, lead=True))
+        entries.append(_entry(1, lead_job))
         idx = 2
         if strong:
             entries.append('    <div class="seclabel">Unusually strong</div>\n')
