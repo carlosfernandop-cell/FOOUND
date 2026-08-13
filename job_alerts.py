@@ -1056,6 +1056,79 @@ def rank_with_fit(matches: list, new_keys: set):
         return sorted(matches, key=heuristic, reverse=True), False
     return sorted(candidates, key=lambda j: (j.get("fit", -1), heuristic(j)), reverse=True), True
 
+def deep_look(job, profile: str):
+    """Second pass on the day's lead: investigate with web search.
+    The research is allowed to lower the score. Returns dict or None; never raises."""
+    if not ANTHROPIC_KEY:
+        return None
+    try:
+        prompt = (
+            "You are FOOUND, the personal career agent of one senior creative director. "
+            "Today your lead recommendation is:\n"
+            f"ROLE: {job['title']} at {job['company']} — {job.get('location','')}\n"
+            f"URL: {job.get('url','')}\n"
+            f"Your current fit score: {job.get('fit')}/100. Your reasoning so far: {job.get('ai_why','')}\n"
+            f"Your stated concern: {job.get('ai_pause','')}\n\n"
+            f"CANDIDATE PROFILE (judge against HIM):\n{profile[:5000]}\n\n"
+            "Use web search to investigate: is this role new or a succession? What is the company's "
+            "brand/creative moment right now? Who would this likely report to? What recent hiring or "
+            "investment signals exist? What is the biggest unresolved risk?\n\n"
+            "Then return STRICT JSON only — one object, no prose before or after:\n"
+            '{"role": "finding, max 130 chars", "moment": "finding, max 130 chars", '
+            '"leadership": "finding, max 130 chars", "signal": "finding, max 130 chars", '
+            '"question": "the unresolved risk, max 130 chars", '
+            '"fit_after": 0, "verdict": "max 55 chars, e.g. My view changed: 82 -> 86. or Still 82. The risk is real."}\n'
+            "fit_after is your revised integer score after research — it MAY be lower than the current score. "
+            "Be honest; the research earns nothing if it can only agree."
+        )
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": CLAUDE_MODEL,
+                "max_tokens": 1400,
+                "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=240,
+        )
+        if not r.ok:
+            print(f"[deep look skipped: HTTP {r.status_code} {r.text[:200]}]")
+            return None
+        blocks = r.json().get("content", [])
+        text = ""
+        for b in reversed(blocks):
+            if b.get("type") == "text" and b.get("text", "").strip():
+                text = b["text"]
+                break
+        m = re.search(r"\{[^{}]*\}", text, re.S)
+        if not m:
+            print("[deep look skipped: no JSON in reply]")
+            return None
+        d = json.loads(m.group(0))
+        out = {}
+        for k in ("role", "moment", "leadership", "signal", "question"):
+            v = str(d.get(k, "")).strip()
+            if v:
+                out[k] = _cut(v, 150)
+        verdict = str(d.get("verdict", "")).strip()
+        if verdict:
+            out["verdict"] = _cut(verdict, 70)
+        try:
+            fa = int(d.get("fit_after"))
+            if 0 <= fa <= 100:
+                out["fit_after"] = fa
+        except Exception:
+            pass
+        return out if out.get("verdict") and len(out) >= 4 else None
+    except Exception as e:
+        print(f"[deep look skipped: {e}]")
+        return None
+
 def write_brief(n: int, total_fetched: int, n_companies: int, ranked: list, new_keys: set):
     """Ask Claude to write the one-line morning report from the run's real data.
     Returns the line, or None (caller falls back to the fixed template)."""
@@ -1256,6 +1329,16 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>FOOUND — __DATELONG__</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 fill=%27white%27/%3E%3Ccircle cx=%2710%27 cy=%2716%27 r=%276%27 fill=%27black%27/%3E%3Ccircle cx=%2723.5%27 cy=%2716%27 r=%275.4%27 fill=%27none%27 stroke=%27black%27 stroke-width=%271.2%27/%3E%3C/svg%3E">
+<meta property="og:title" content="FOOUND">
+<meta property="og:description" content="verb — to find what matters. A career agent that works for one person. New edition every weekday.">
+<meta property="og:url" content="https://foound.ai/">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://foound.ai/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="description" content="verb — to find what matters. A career agent that works for one person. New edition every weekday.">
+<script data-goatcounter="https://foound.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
 <style>
   :root{--ink:#000;--paper:#fff;--mute:#6b6b6b;}
   *{margin:0;padding:0;box-sizing:border-box;}
@@ -1349,6 +1432,7 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   .panel{overflow:hidden;max-height:0;transition:max-height .35s ease;}
   .panel-inner{padding:14px 0 40px;max-width:640px;}
   .item.open .panel{max-height:1100px;}
+  .item.lead.open .panel{max-height:1500px;}
   .role{font-size:clamp(18px,3.4vw,24px);font-weight:400;letter-spacing:-.005em;}
   .desc{margin-top:14px;font-size:15px;line-height:1.5;color:var(--mute);max-width:36em;}
   /* ---- the argument: score line + why / pause / why now ---- */
@@ -1450,12 +1534,12 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
 <body>
 
   <div class="mast">
-    <a class="id" href="foound.html">FOOUND</a>
+    <a class="id" href="/foound/">FOOUND</a>
     <nav>
-      <a class="here" href="index.html">Today</a>
-      <a href="cv.html">Candidate</a>
-      <a href="memory.html">Memory</a>
-      <a href="request.html">FOOUND for me &rarr;</a>
+      <a class="here" href="/">Today</a>
+      <a href="/candidate/">Candidate</a>
+      <a href="/memory/">Memory</a>
+      <a href="/me/">FOOUND for me &rarr;</a>
     </nav>
   </div>
 
@@ -1472,11 +1556,11 @@ __ENTRIES____PASSED__  </div>
     </div>
     <div class="col">
       <div class="lab">Edition</div>
-      <div class="val"><a href="archive/">__EDITION__</a></div>
+      <div class="val"><a href="/archive/">__EDITION__</a></div>
     </div>
     <div class="col">
       <div class="lab">Candidate</div>
-      <div class="val"><a href="cv.html">Carlos Perez Botero</a></div>
+      <div class="val"><a href="/candidate/">Carlos Perez Botero</a></div>
     </div>
     <div class="col">
       <div class="lab">Compiled</div>
@@ -1488,7 +1572,7 @@ __ENTRIES____PASSED__  </div>
     </div>
     <div class="col">
       <div class="lab">FOOUND for me</div>
-      <div class="val"><a href="request.html">&#8470; 002 &mdash; open</a></div>
+      <div class="val"><a href="/me/">&#8470; 002 &mdash; open</a></div>
     </div>
     <div class="num">__FRACTION__</div>
   </footer>
@@ -1610,6 +1694,13 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
             cascade_lines.append("1 stands apart.")
     cascade = "<br>".join(cascade_lines)
 
+    # ---- deep look: when the lead clears the bar, the agent keeps looking ----
+    if used_ai and n > 0 and ((ranked[0].get("fit") or 0) >= 80 or ranked[0].get("company") in PRIORITY_COMPANIES):
+        _dl = deep_look(ranked[0], load_profile())
+        if _dl:
+            ranked[0]["deep"] = _dl
+            print(f"Deep Look: {ranked[0]['company']} — {_dl.get('verdict','')}")
+
     read_closely = sum(1 for j in matches if j.get("fit") is not None) if used_ai else len(matches)
     statline = (f"{read_closely} read in full &middot; "
                 "everything else dismissed on sight.")
@@ -1619,9 +1710,9 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
             statline += " " + _html.escape(obs)
 
     # ---- entries, in three editorial ranks ----
-    _EV_MAP = [("MAL", "cv.html#c-mal"), ("Airbnb", "cv.html#c-airbnb"),
-               ("Publicis", "cv.html#c-publicis"), ("Ogilvy", "cv.html#c-ogilvy"),
-               ("AKQA", "cv.html#c-akqa")]
+    _EV_MAP = [("MAL", "/candidate/#c-mal"), ("Airbnb", "/candidate/#c-airbnb"),
+               ("Publicis", "/candidate/#c-publicis"), ("Ogilvy", "/candidate/#c-ogilvy"),
+               ("AKQA", "/candidate/#c-akqa")]
 
     def _evidence_links(escaped_text: str) -> str:
         """Wrap the first mention of each career anchor in a quiet evidence link."""
@@ -1664,6 +1755,19 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         whynow = whynow[0].upper() + whynow[1:]
         blocks.append('        <div class="plabel">Why now</div>\n')
         blocks.append(f'        <p class="ptext">{whynow}</p>\n')
+        dl = j.get("deep")
+        if dl:
+            blocks.append('        <div class="plabel">I kept looking</div>\n')
+            rows = []
+            for k, lab in (("role", "Role"), ("moment", "Moment"), ("leadership", "Leadership"),
+                           ("signal", "Signal"), ("question", "Question")):
+                v = dl.get(k)
+                if v:
+                    rows.append(f"<b>{lab}</b> &mdash; {_html.escape(v)}")
+            blocks.append('        <p class="ptext">' + "<br>".join(rows) + '</p>\n')
+            v = dl.get("verdict")
+            if v:
+                blocks.append(f'        <p class="ptext" style="color:var(--ink);font-weight:500;">{_html.escape(v)}</p>\n')
         return "".join(blocks)
 
     def _entry(i, j, lead=False):
@@ -1790,14 +1894,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
 
     with open("docs/index.html", "w") as f:
         f.write(page)
-    archive_page = (page
-        .replace('href="archive/"', 'href="./"')
-        .replace('href="cv.html"', 'href="../cv.html"')
-        .replace('href="cv.html#', 'href="../cv.html#')
-        .replace('href="memory.html"', 'href="../memory.html"')
-        .replace('href="foound.html"', 'href="../foound.html"')
-        .replace('href="request.html"', 'href="../request.html"')
-        .replace('href="index.html"', 'href="../"'))
+    archive_page = page.replace('href="/archive/"', 'href="./"')
     with open(today_file, "w") as f:
         f.write(archive_page)
 
