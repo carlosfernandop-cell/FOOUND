@@ -187,17 +187,17 @@
   }
   .preason{display:block;margin-top:5px;font-size:14px;line-height:1.5;color:var(--mute);max-width:36em;}
   footer{
-    display:flex;align-items:flex-end;
-    padding:11vh 5vw 5vh;
-    font-size:11px;font-weight:500;letter-spacing:.01em;line-height:1.45;
+    padding:12vh 5vw 6vh;
   }
-  footer .col{margin-right:6vw;}
-  footer .lab{text-transform:uppercase;}
-  footer .lab.star{font-size:17px;line-height:.7;}
-  footer .val{font-weight:400;color:var(--mute);}
-  footer .val a{color:inherit;text-decoration:none;}
-  footer .val a:hover{color:var(--ink);}
-  footer .num{margin-left:auto;font-weight:400;color:var(--mute);}
+  .colophon{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:11.5px;letter-spacing:.02em;line-height:1.9;color:var(--mute);
+  }
+  .colophon .nw{white-space:nowrap;}
+  .colophon a{color:inherit;text-decoration:none;}
+  .colophon a:hover{color:var(--ink);}
+  .colophon .backed{display:inline-block;margin-top:.5em;}
+  .colophon .cstar{font-size:15px;line-height:0;vertical-align:-.15em;}
   @media (max-width:560px){
     .row{font-size:clamp(30px,10.5vw,64px);}
     .panel-inner{padding:12px 0 34px;}
@@ -254,7 +254,7 @@
   <div class="mast">
     <a class="id" href="/foound/">FOOUND</a>
     <nav>
-      <a class="here" href="/">FOOUND agent</a>
+      <a class="here" href="/">At work</a>
       <a href="/candidate/">Candidate</a>
       <a href="/memory/">Memory</a>
       <a href="/me/">FOOUND for me &rarr;</a>
@@ -264,8 +264,8 @@
 
   <div class="plate">
     <p class="brief">Good afternoon, Carlos.</p>
-    <div class="cascade">I searched 6,225 jobs overnight.<br>FOOUND 9 for you.</div>
-    <p class="statline">24 read in full &middot; everything else dismissed on sight. Duolingo has two Creative Director openings on the list, one in London and one in New York.</p>
+    <div class="cascade">I searched 6,225 jobs overnight.<br>FOOUND 10 for you.</div>
+    <p class="statline">24 read in full &middot; everything else dismissed on sight. Harvey and Duolingo each landed two roles in today&#x27;s top ten.</p>
     <div class="seclabel" style="margin-top:5vh;">I&rsquo;d start with Mistral</div>
     <div class="item lead open" data-key="head of brand marketing|mistral">
       <button class="row" aria-expanded="true">
@@ -275,11 +275,11 @@
         <div class="role">Head of Brand Marketing</div>
         <div class="scoreline">78 &middot; Strong fit</div>
         <div class="plabel">Why I chose it</div>
-        <p class="ptext">Mistral is a brand still being defined for the AI era, the exact moment you look for, and Paris sits inside your natural map of cities.</p>
+        <p class="ptext">Mistral is a brand still being invented for the AI era, in Paris, one of your home cities; this is the build-from-zero pattern that drew you into <a class="ev" href="/candidate/#c-mal">MAL</a> and <a class="ev" href="/candidate/#c-airbnb">Airbnb</a>.</p>
         <div class="plabel">What gives me pause</div>
-        <p class="ptext">Posting is boilerplate with no real scope detail, and Head of Brand Marketing may skew toward marketing ops rather than creative leadership.</p>
+        <p class="ptext">Posting is essentially blank, so verify whether this sits over creative craft or is a marketing/comms function reporting elsewhere.</p>
         <div class="plabel">Why now</div>
-        <p class="ptext">Posted 21 days ago &middot; still open as of 8:00 AM ET</p>
+        <p class="ptext">Posted 22 days ago &middot; still open as of 8:00 AM ET</p>
         <div class="meta"><b>Paris, New York, London</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Jul 22</span></div>
         <div class="actions">
           <a class="apply" href="https://jobs.ashbyhq.com/mistral.ai/1211221e-5d2c-4335-b221-70934bb17337" target="_blank" rel="noopener">Apply &#8599;</a>
@@ -288,17 +288,57 @@
       </div></div>
     </div>
     <div class="seclabel">Worth your attention</div>
+    <div class="item" data-key="creative director, brand studio|github">
+      <button class="row" aria-expanded="false">
+        <span class="marker"><span>2</span></span><span class="co">GitHub</span><span class="anno">{fit&nbsp;76}</span>
+      </button>
+      <div class="panel"><div class="panel-inner">
+        <div class="role">Creative Director, Brand Studio</div>
+        <div class="scoreline">76 &middot; Strong fit</div>
+        <div class="plabel">Why I chose it</div>
+        <p class="ptext">GitHub sits at the center of the AI coding shift, and a Brand Studio Creative Director title matches the scope you&#x27;ve owned at <a class="ev" href="/candidate/#c-airbnb">Airbnb</a> and Samsung: brand craft over product UI.</p>
+        <div class="plabel">What gives me pause</div>
+        <p class="ptext">The posting itself came through empty of real content, so team size, reporting line, and true seniority still need verification.</p>
+        <div class="plabel">Why now</div>
+        <p class="ptext">Posted 65 days ago &middot; still open as of 8:00 AM ET</p>
+        <div class="meta"><b>United States</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Jun 8</span></div>
+        <div class="actions">
+          <a class="apply" href="https://careers-githubinc.icims.com/jobs/5431/login" target="_blank" rel="noopener">Apply &#8599;</a>
+          <button class="mark" type="button">Mark applied</button>
+        </div>
+      </div></div>
+    </div>
+    <div class="item" data-key="creative director, marketing|duolingo">
+      <button class="row" aria-expanded="false">
+        <span class="marker"><span>3</span></span><span class="co">Duolingo</span><span class="anno">{fit&nbsp;74}</span>
+      </button>
+      <div class="panel"><div class="panel-inner">
+        <div class="role">Creative Director, Marketing</div>
+        <div class="scoreline">74 &middot; Worth considering</div>
+        <div class="plabel">Why I chose it</div>
+        <p class="ptext">Duolingo built a brand voice from nothing into culture, the exact move you made at <a class="ev" href="/candidate/#c-mal">MAL</a> and <a class="ev" href="/candidate/#c-airbnb">Airbnb</a>, and NYC keeps you in a market you already run in.</p>
+        <div class="plabel">What gives me pause</div>
+        <p class="ptext">The posting itself is empty, so scope, team size, and seniority band against your Ogilvy and Publicis titles need direct verification.</p>
+        <div class="plabel">Why now</div>
+        <p class="ptext">Still open as of 8:00 AM ET</p>
+        <div class="meta"><b>New York, NY</b><span class="sep">/</span><span>Salary not posted</span></div>
+        <div class="actions">
+          <a class="apply" href="https://careers.duolingo.com/jobs/8442932002?gh_jid=8442932002" target="_blank" rel="noopener">Apply &#8599;</a>
+          <button class="mark" type="button">Mark applied</button>
+        </div>
+      </div></div>
+    </div>
     <div class="item" data-key="creative director, marketing campaigns|suno">
       <button class="row" aria-expanded="false">
-        <span class="marker"><span>2</span></span><span class="co">Suno</span><span class="anno">{fit&nbsp;76}</span>
+        <span class="marker"><span>4</span></span><span class="co">Suno</span><span class="anno">{fit&nbsp;72}</span>
       </button>
       <div class="panel"><div class="panel-inner">
         <div class="role">Creative Director, Marketing Campaigns</div>
-        <div class="scoreline">76 &middot; Strong fit</div>
+        <div class="scoreline">72 &middot; Worth considering</div>
         <div class="plabel">Why I chose it</div>
-        <p class="ptext">Suno is brand identity still being written in real time, the exact moment you walked into <a class="ev" href="/candidate/#c-mal">MAL</a> for Apple and <a class="ev" href="/candidate/#c-publicis">Publicis</a> for Infiniti. NYC, AI-native, campaigns as the craft.</p>
+        <p class="ptext">Suno is building a brand from scratch in the AI era, the exact moment you look for, and NYC is a city you already call home.</p>
         <div class="plabel">What gives me pause</div>
-        <p class="ptext">Posting is bare bones, verify whether this reports into a CCO or sits as a narrower campaign-execution seat under someone else&#x27;s vision.</p>
+        <p class="ptext">Posting is thin and the title reads narrower than Group or Executive CD, worth confirming true scope and team size.</p>
         <div class="plabel">Why now</div>
         <p class="ptext">Posted 22 days ago &middot; still open as of 8:00 AM ET</p>
         <div class="meta"><b>NYC</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Jul 21</span></div>
@@ -310,15 +350,15 @@
     </div>
     <div class="item" data-key="creative director, a/v, apple tv+ marketing|apple">
       <button class="row" aria-expanded="false">
-        <span class="marker"><span>3</span></span><span class="co">Apple</span><span class="fresh">*</span><span class="anno">{fit&nbsp;70}</span>
+        <span class="marker"><span>5</span></span><span class="co">Apple</span><span class="fresh">*</span><span class="anno">{fit&nbsp;70}</span>
       </button>
       <div class="panel"><div class="panel-inner">
         <div class="role">Creative Director, A/V, Apple TV+ Marketing</div>
         <div class="scoreline">70 &middot; Worth considering</div>
         <div class="plabel">Why I chose it</div>
-        <p class="ptext">This is Apple, the north star, but the lens narrows to entertainment marketing AV work rather than the global brand platforms you have led at Samsung, Infiniti, and Apple LATAM.</p>
+        <p class="ptext">This is Apple, the door you built once from Miami for LATAM and have called a north star since. A/V craft on Apple TV+ marketing is real brand storytelling, though narrower than the global remits you have run.</p>
         <div class="plabel">What gives me pause</div>
-        <p class="ptext">Posting is stripped to boilerplate, so scope, team size, and whether this owns brand vision or just AV execution for TV+ needs direct verification.</p>
+        <p class="ptext">Posting is just boilerplate, so scope, team size, and reporting line need verifying before you can judge seniority fit.</p>
         <div class="plabel">Why now</div>
         <p class="ptext">Still open as of 8:00 AM ET</p>
         <div class="meta"><b>Location not listed</b><span class="sep">/</span><span>Salary not posted</span></div>
@@ -328,17 +368,37 @@
         </div>
       </div></div>
     </div>
+    <div class="item" data-key="head of creative design|harvey">
+      <button class="row" aria-expanded="false">
+        <span class="marker"><span>6</span></span><span class="co">Harvey</span><span class="anno">{fit&nbsp;66}</span>
+      </button>
+      <div class="panel"><div class="panel-inner">
+        <div class="role">Head of Creative Design</div>
+        <div class="scoreline">66 &middot; Worth considering</div>
+        <div class="plabel">Why I chose it</div>
+        <p class="ptext">Harvey is building a brand identity from scratch in the AI era, the exact moment you&#x27;ve entered before at Apple and <a class="ev" href="/candidate/#c-airbnb">Airbnb</a>, and San Francisco is home turf.</p>
+        <div class="plabel">What gives me pause</div>
+        <p class="ptext">Posting gives almost nothing to verify against; title alone doesn&#x27;t confirm whether this owns brand and campaigns or sits inside product design.</p>
+        <div class="plabel">Why now</div>
+        <p class="ptext">Posted 27 days ago &middot; still open as of 8:00 AM ET</p>
+        <div class="meta"><b>San Francisco</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Jul 16</span></div>
+        <div class="actions">
+          <a class="apply" href="https://jobs.ashbyhq.com/harvey/2b35e24d-72bc-4588-b823-50e514c3d430" target="_blank" rel="noopener">Apply &#8599;</a>
+          <button class="mark" type="button">Mark applied</button>
+        </div>
+      </div></div>
+    </div>
     <div class="item" data-key="director, creative strategy &amp; ai innovation|adobe">
       <button class="row" aria-expanded="false">
-        <span class="marker"><span>4</span></span><span class="co">Adobe</span><span class="anno">{fit&nbsp;68}</span>
+        <span class="marker"><span>7</span></span><span class="co">Adobe</span><span class="anno">{fit&nbsp;66}</span>
       </button>
       <div class="panel"><div class="panel-inner">
         <div class="role">Director, Creative Strategy &amp; AI Innovation</div>
-        <div class="scoreline">68 &middot; Worth considering</div>
+        <div class="scoreline">66 &middot; Worth considering</div>
         <div class="plabel">Why I chose it</div>
-        <p class="ptext">Director-level, AI innovation plus creative strategy sits right in your lane of building operating models before they exist, but Adobe isn&#x27;t a brand you&#x27;ve shaped and the title reads more platform than brand craft.</p>
+        <p class="ptext">Adobe is design-led tech with real craft, and AI Innovation in the title lines up directly with the operating model you built at <a class="ev" href="/candidate/#c-airbnb">Airbnb</a> for creative.</p>
         <div class="plabel">What gives me pause</div>
-        <p class="ptext">No job description to verify: title alone doesn&#x27;t confirm brand-led scope or team size, and Director may sit below your ECD-equivalent seniority.</p>
+        <p class="ptext">No job description to confirm if this sits in brand and campaigns or drifts into product marketing and internal tooling.</p>
         <div class="plabel">Why now</div>
         <p class="ptext">Still open as of 8:00 AM ET</p>
         <div class="meta"><b>3 Locations</b><span class="sep">/</span><span>Salary not posted</span></div>
@@ -350,15 +410,15 @@
     </div>
     <div class="item" data-key="creative director, marketing|duolingo">
       <button class="row" aria-expanded="false">
-        <span class="marker"><span>5</span></span><span class="co">Duolingo</span><span class="anno">{fit&nbsp;68}</span>
+        <span class="marker"><span>8</span></span><span class="co">Duolingo</span><span class="anno">{fit&nbsp;66}</span>
       </button>
       <div class="panel"><div class="panel-inner">
         <div class="role">Creative Director, Marketing</div>
-        <div class="scoreline">68 &middot; Worth considering</div>
+        <div class="scoreline">66 &middot; Worth considering</div>
         <div class="plabel">Why I chose it</div>
-        <p class="ptext">Duolingo is a brand still inventing itself for the AI era, the exact moment you look for, and London fits the map of cities you already call home.</p>
+        <p class="ptext">Duolingo is a brand still sharpening its voice for the AI era, the kind of open terrain where you have built teams and standards from zero at <a class="ev" href="/candidate/#c-mal">MAL</a> and <a class="ev" href="/candidate/#c-airbnb">Airbnb</a>. London sits inside your map of home cities.</p>
         <div class="plabel">What gives me pause</div>
-        <p class="ptext">Title reads as a step down from your ECD/GCD track, and the posting is too thin to confirm global remit or team size.</p>
+        <p class="ptext">Posting is a blank shell; title reads as marketing-campaign level, a step below the Group/Executive CD scope you have held since 2020.</p>
         <div class="plabel">Why now</div>
         <p class="ptext">Still open as of 8:00 AM ET</p>
         <div class="meta"><b>London, England</b><span class="sep">/</span><span>Salary not posted</span></div>
@@ -368,57 +428,17 @@
         </div>
       </div></div>
     </div>
-    <div class="item" data-key="creative director, brand studio|github">
-      <button class="row" aria-expanded="false">
-        <span class="marker"><span>6</span></span><span class="co">GitHub</span><span class="anno">{fit&nbsp;68}</span>
-      </button>
-      <div class="panel"><div class="panel-inner">
-        <div class="role">Creative Director, Brand Studio</div>
-        <div class="scoreline">68 &middot; Worth considering</div>
-        <div class="plabel">Why I chose it</div>
-        <p class="ptext">GitHub is brand craft inside an AI-native platform, close to the build-from-zero pattern you know from <a class="ev" href="/candidate/#c-mal">MAL</a> and <a class="ev" href="/candidate/#c-airbnb">Airbnb</a>, and Brand Studio suggests ownership of output, not just support work.</p>
-        <div class="plabel">What gives me pause</div>
-        <p class="ptext">Posting is stripped of real detail, so seniority, team size, and whether this reports high enough to shape brand direction all need verifying.</p>
-        <div class="plabel">Why now</div>
-        <p class="ptext">Posted 65 days ago &middot; still open as of 8:00 AM ET</p>
-        <div class="meta"><b>United States</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Jun 8</span></div>
-        <div class="actions">
-          <a class="apply" href="https://careers-githubinc.icims.com/jobs/5431/login" target="_blank" rel="noopener">Apply &#8599;</a>
-          <button class="mark" type="button">Mark applied</button>
-        </div>
-      </div></div>
-    </div>
-    <div class="item" data-key="head of creative design|harvey">
-      <button class="row" aria-expanded="false">
-        <span class="marker"><span>7</span></span><span class="co">Harvey</span><span class="anno">{fit&nbsp;64}</span>
-      </button>
-      <div class="panel"><div class="panel-inner">
-        <div class="role">Head of Creative Design</div>
-        <div class="scoreline">64 &middot; Worth considering</div>
-        <div class="plabel">Why I chose it</div>
-        <p class="ptext">Harvey is building brand identity in real time as AI reshapes a whole industry, the exact moment you&#x27;ve entered at Apple, Samsung, and <a class="ev" href="/candidate/#c-airbnb">Airbnb</a> before the story was fixed.</p>
-        <div class="plabel">What gives me pause</div>
-        <p class="ptext">Posting is a blank shell, title reads product-design-adjacent, so scope and whether this owns brand or just UI needs verifying before this goes further.</p>
-        <div class="plabel">Why now</div>
-        <p class="ptext">Posted 27 days ago &middot; still open as of 8:00 AM ET</p>
-        <div class="meta"><b>San Francisco</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Jul 16</span></div>
-        <div class="actions">
-          <a class="apply" href="https://jobs.ashbyhq.com/harvey/2b35e24d-72bc-4588-b823-50e514c3d430" target="_blank" rel="noopener">Apply &#8599;</a>
-          <button class="mark" type="button">Mark applied</button>
-        </div>
-      </div></div>
-    </div>
     <div class="item" data-key="executive creative director, north america|canva">
       <button class="row" aria-expanded="false">
-        <span class="marker"><span>8</span></span><span class="co">Canva</span><span class="anno">{fit&nbsp;64}</span>
+        <span class="marker"><span>9</span></span><span class="co">Canva</span><span class="anno">{fit&nbsp;64}</span>
       </button>
       <div class="panel"><div class="panel-inner">
         <div class="role">Executive Creative Director, North America</div>
         <div class="scoreline">64 &middot; Worth considering</div>
         <div class="plabel">Why I chose it</div>
-        <p class="ptext">Canva is design-led tech reinventing its category, and San Francisco is home turf, but this remit sits inside performance advertising, not the brand-defining work you built at Apple or <a class="ev" href="/candidate/#c-airbnb">Airbnb</a>.</p>
+        <p class="ptext">Canva is design-led tech at the scale you gravitate toward, and building the US creative team alongside Sydney and Manila echoes the from-zero builds at <a class="ev" href="/candidate/#c-mal">MAL</a> and <a class="ev" href="/candidate/#c-airbnb">Airbnb</a>.</p>
         <div class="plabel">What gives me pause</div>
-        <p class="ptext">Heavy emphasis on always-on testing, performance channels, and hands-on execution suggests a narrower, more tactical remit than your track record commands.</p>
+        <p class="ptext">The remit leans hard into always-on performance and testing at scale, which sits closer to execution than the brand-building craft you&#x27;re known for.</p>
         <div class="plabel">Why now</div>
         <p class="ptext">Posted 37 days ago &middot; still open as of 8:00 AM ET</p>
         <div class="meta"><b>San Francisco, us</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Jul 6</span></div>
@@ -428,99 +448,79 @@
         </div>
       </div></div>
     </div>
-    <div class="item" data-key="creative director, marketing|duolingo">
+    <div class="item" data-key="head of brand campaigns|harvey">
       <button class="row" aria-expanded="false">
-        <span class="marker"><span>9</span></span><span class="co">Duolingo</span><span class="anno">{fit&nbsp;62}</span>
+        <span class="marker"><span class="d2">10</span></span><span class="co">Harvey</span><span class="anno">{fit&nbsp;64}</span>
       </button>
       <div class="panel"><div class="panel-inner">
-        <div class="role">Creative Director, Marketing</div>
-        <div class="scoreline">62 &middot; Worth considering</div>
+        <div class="role">Head of Brand Campaigns</div>
+        <div class="scoreline">64 &middot; Worth considering</div>
         <div class="plabel">Why I chose it</div>
-        <p class="ptext">Duolingo&#x27;s brand voice is the kind of cultural fluency you built at <a class="ev" href="/candidate/#c-mal">MAL</a> and <a class="ev" href="/candidate/#c-airbnb">Airbnb</a>, and New York is home turf for you.</p>
+        <p class="ptext">Harvey is inventing its brand in real time inside legal AI, the kind of ground-zero build you&#x27;ve done at <a class="ev" href="/candidate/#c-mal">MAL</a> and <a class="ev" href="/candidate/#c-airbnb">Airbnb</a>, now in New York.</p>
         <div class="plabel">What gives me pause</div>
-        <p class="ptext">Posting is boilerplate with no real detail on scope, team size, or whether this sits above or below your global remit level.</p>
+        <p class="ptext">Posting is just boilerplate; title reads narrower than your usual remit, worth confirming this owns brand vision and not just campaign execution.</p>
         <div class="plabel">Why now</div>
-        <p class="ptext">Still open as of 8:00 AM ET</p>
-        <div class="meta"><b>New York, NY</b><span class="sep">/</span><span>Salary not posted</span></div>
+        <p class="ptext">Posted 44 days ago &middot; still open as of 8:00 AM ET</p>
+        <div class="meta"><b>New York</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Jun 29</span></div>
         <div class="actions">
-          <a class="apply" href="https://careers.duolingo.com/jobs/8442932002?gh_jid=8442932002" target="_blank" rel="noopener">Apply &#8599;</a>
+          <a class="apply" href="https://jobs.ashbyhq.com/harvey/4b57fc7f-3b29-4501-b41d-b700f4e3d6c6" target="_blank" rel="noopener">Apply &#8599;</a>
           <button class="mark" type="button">Mark applied</button>
         </div>
       </div></div>
     </div>
 
     <div class="seclabel pass">Nearly foound</div>
-    <p class="passintro">10 more read in full and declined. The five nearest misses, and why they failed:</p>
+    <p class="passintro">9 more read in full and declined. The five nearest misses, and why they failed:</p>
     <div class="passed">
       <div class="pitem">
-        <button class="prow" aria-expanded="false"><span class="pdot"></span>Harvey</button>
-        <div class="ppanel"><div class="ppanel-inner">
-          <div class="pline">Head of Brand Campaigns<span class="pfit">{fit&nbsp;58}</span></div>
-          <span class="preason">Title says Campaigns specifically, not full brand or creative leadership, and the posting gives almost nothing to confirm real scope or seniority.</span>
-        </div></div>
-      </div>
-      <div class="pitem">
         <button class="prow" aria-expanded="false"><span class="pdot"></span>Netflix</button>
         <div class="ppanel"><div class="ppanel-inner">
-          <div class="pline">Creative Director, Creative Publishing<span class="pfit">{fit&nbsp;42}</span></div>
-          <span class="preason">Title says Creative Director but the posting&#x27;s actual scope, campaign leadership versus asset production at scale, needs verifying before this is a real fit.</span>
-        </div></div>
-      </div>
-      <div class="pitem">
-        <button class="prow" aria-expanded="false"><span class="pdot"></span>Netflix</button>
-        <div class="ppanel"><div class="ppanel-inner">
-          <div class="pline">Studio Creative Director<span class="pfit">{fit&nbsp;42}</span></div>
-          <span class="preason">Helsinki sits outside your stated markets, and the posting gives no real scope detail beyond boilerplate, so verify seniority and brand versus production remit…</span>
+          <div class="pline">Creative Director, Creative Publishing<span class="pfit">{fit&nbsp;52}</span></div>
+          <span class="preason">Title reads a level below your current Senior CD scope, and Creative Publishing likely means social and title-launch content, not the integrated brand…</span>
         </div></div>
       </div>
       <div class="pitem">
         <button class="prow" aria-expanded="false"><span class="pdot"></span>Snap</button>
         <div class="ppanel"><div class="ppanel-inner">
-          <div class="pline">Director, Global Brand Experience (Events)<span class="pfit">{fit&nbsp;38}</span></div>
-          <span class="preason">Title reads as execution and production of live experiences, not the brand-owning creative leadership role you&#x27;d want next.</span>
+          <div class="pline">Director, Global Brand Experience (Events)<span class="pfit">{fit&nbsp;42}</span></div>
+          <span class="preason">Title says Director but scope reads as execution-level event production, not creative or brand leadership; verify reporting line and creative authority.</span>
         </div></div>
       </div>
       <div class="pitem">
         <button class="prow" aria-expanded="false"><span class="pdot"></span>Canva</button>
         <div class="ppanel"><div class="ppanel-inner">
-          <div class="pline">Creative Director, AI Photography &amp; Video<span class="pfit">{fit&nbsp;32}</span></div>
-          <span class="preason">Sydney or Melbourne sits outside your stated map, and the remit is content-library craft at scale, narrower than the brand leadership you&#x27;re built for.</span>
+          <div class="pline">Creative Director, AI Photography &amp; Video<span class="pfit">{fit&nbsp;40}</span></div>
+          <span class="preason">Sydney or Melbourne base sits outside your stated hubs, and the scope is content-library production, not the brand-led campaign work that defines your track…</span>
+        </div></div>
+      </div>
+      <div class="pitem">
+        <button class="prow" aria-expanded="false"><span class="pdot"></span>Spotify</button>
+        <div class="ppanel"><div class="ppanel-inner">
+          <div class="pline">Creative Lead, Visual Merchandising<span class="pfit">{fit&nbsp;40}</span></div>
+          <span class="preason">Title and scope are narrower than your track record: visual merchandising artwork systems under a Design Systems/Platform org, not campaign or brand leadership.</span>
+        </div></div>
+      </div>
+      <div class="pitem">
+        <button class="prow" aria-expanded="false"><span class="pdot"></span>Netflix</button>
+        <div class="ppanel"><div class="ppanel-inner">
+          <div class="pline">Studio Creative Director<span class="pfit">{fit&nbsp;38}</span></div>
+          <span class="preason">The posting is nearly content-free and Helsinki falls outside your stated hubs, so scope and relocation terms need direct verification.</span>
         </div></div>
       </div>
     </div>
   </div>
 
   <footer>
-    <div class="col">
-      <div class="lab">The Shortlist &middot; Daily Selection</div>
-      <div class="val">Thursday, August 13, 2026</div>
+    <div class="colophon">
+      <div>FOOUND AT WORK &middot; <a href="/archive/">Edition 005</a> &middot; <span class="nw">Thursday, August 13, 2026</span></div>
+      <div>Compiled 8:00 AM ET &middot; 41 companies watched &middot; <span class="nw"><span class="cstar">*</span> posted in the last 3 days</span></div>
+      <div><a class="backed" href="/archive/">Back editions &rarr;</a></div>
     </div>
-    <div class="col">
-      <div class="lab">Edition</div>
-      <div class="val"><a href="/archive/">005</a></div>
-    </div>
-    <div class="col">
-      <div class="lab">Candidate</div>
-      <div class="val"><a href="/candidate/">Carlos Perez Botero</a></div>
-    </div>
-    <div class="col">
-      <div class="lab">Compiled</div>
-      <div class="val">8:00 AM ET &middot; 41 companies</div>
-    </div>
-    <div class="col">
-      <div class="lab star">*</div>
-      <div class="val">out of the oven: posted in the last 3 days</div>
-    </div>
-    <div class="col">
-      <div class="lab">FOOUND for me</div>
-      <div class="val"><a href="/me/">&#8470; 002 open</a></div>
-    </div>
-    <div class="num">009/6,225</div>
   </footer>
 
 
   <nav class="roombar" aria-label="Rooms">
-    <a href="/" class="here"><span class="rdot"></span>FOOUND agent</a>
+    <a href="/" class="here"><span class="rdot"></span>At work</a>
     <a href="/candidate/"><span class="rdot"></span>Candidate</a>
     <a href="/memory/"><span class="rdot"></span>Memory</a>
   </nav>
