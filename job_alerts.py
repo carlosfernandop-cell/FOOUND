@@ -1511,17 +1511,17 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   }
   .preason{display:block;margin-top:5px;font-size:14px;line-height:1.5;color:var(--mute);max-width:36em;}
   footer{
-    display:flex;align-items:flex-end;
-    padding:11vh 5vw 5vh;
-    font-size:11px;font-weight:500;letter-spacing:.01em;line-height:1.45;
+    padding:12vh 5vw 6vh;
   }
-  footer .col{margin-right:6vw;}
-  footer .lab{text-transform:uppercase;}
-  footer .lab.star{font-size:17px;line-height:.7;}
-  footer .val{font-weight:400;color:var(--mute);}
-  footer .val a{color:inherit;text-decoration:none;}
-  footer .val a:hover{color:var(--ink);}
-  footer .num{margin-left:auto;font-weight:400;color:var(--mute);}
+  .colophon{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:11.5px;letter-spacing:.02em;line-height:1.9;color:var(--mute);
+  }
+  .colophon .nw{white-space:nowrap;}
+  .colophon a{color:inherit;text-decoration:none;}
+  .colophon a:hover{color:var(--ink);}
+  .colophon .backed{display:inline-block;margin-top:.5em;}
+  .colophon .cstar{font-size:15px;line-height:0;vertical-align:-.15em;}
   @media (max-width:560px){
     .row{font-size:clamp(30px,10.5vw,64px);}
     .panel-inner{padding:12px 0 34px;}
@@ -1578,7 +1578,7 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   <div class="mast">
     <a class="id" href="/foound/">FOOUND</a>
     <nav>
-      <a class="here" href="/">FOOUND agent</a>
+      <a class="here" href="/">At work</a>
       <a href="/candidate/">Candidate</a>
       <a href="/memory/">Memory</a>
       <a href="/me/">FOOUND for me &rarr;</a>
@@ -1593,36 +1593,16 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
 __ENTRIES____PASSED__  </div>
 
   <footer>
-    <div class="col">
-      <div class="lab">The Shortlist &middot; Daily Selection</div>
-      <div class="val">__DATELONG__</div>
+    <div class="colophon">
+      <div>FOOUND AT WORK &middot; <a href="/archive/">Edition __EDITION__</a> &middot; <span class="nw">__DATELONG__</span></div>
+      <div>Compiled 8:00 AM ET &middot; __NCOMPANIES__ companies watched &middot; <span class="nw"><span class="cstar">*</span> posted in the last 3 days</span></div>
+      <div><a class="backed" href="/archive/">Back editions &rarr;</a></div>
     </div>
-    <div class="col">
-      <div class="lab">Edition</div>
-      <div class="val"><a href="/archive/">__EDITION__</a></div>
-    </div>
-    <div class="col">
-      <div class="lab">Candidate</div>
-      <div class="val"><a href="/candidate/">Carlos Perez Botero</a></div>
-    </div>
-    <div class="col">
-      <div class="lab">Compiled</div>
-      <div class="val">8:00 AM ET &middot; __NCOMPANIES__ companies</div>
-    </div>
-    <div class="col">
-      <div class="lab star">*</div>
-      <div class="val">out of the oven: posted in the last 3 days</div>
-    </div>
-    <div class="col">
-      <div class="lab">FOOUND for me</div>
-      <div class="val"><a href="/me/">&#8470; 002 open</a></div>
-    </div>
-    <div class="num">__FRACTION__</div>
   </footer>
 
 
   <nav class="roombar" aria-label="Rooms">
-    <a href="/" class="here"><span class="rdot"></span>FOOUND agent</a>
+    <a href="/" class="here"><span class="rdot"></span>At work</a>
     <a href="/candidate/"><span class="rdot"></span>Candidate</a>
     <a href="/memory/"><span class="rdot"></span>Memory</a>
   </nav>
