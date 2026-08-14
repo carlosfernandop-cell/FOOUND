@@ -158,7 +158,29 @@ class AgentRunReport:
             parts.append(f"{self.market_fetched:,}/{self.foound}")
         if self.detail:
             parts.append(repr(self.detail))
+        parts.append(f"outcome={self.outcome()}")
         return "[operator] " + " · ".join(parts)
+
+    def outcome(self) -> str:
+        """PERMANENT INVARIANT — never ambiguous green.
+
+        Every per-agent run resolves to exactly one of four states:
+          delivered           — built, published, nothing degraded
+          degraded-delivered  — published, but on stale/unconfigured state or
+                                heuristic ranking; green in CI, loud in logs
+          failed              — built nothing, or built and could not publish
+          skipped             — deliberately not built (protective skip)
+        The exit gate turns failed and skipped into RED runs. As FOOUND grows
+        to ten agents, each matrix leg resolves to one of these four — a green
+        fleet means every person actually received their morning.
+        """
+        if self.edition == "skipped":
+            return "skipped"
+        if self.edition != "built" or not self.delivered:
+            return "failed"
+        if self.state in ("stale", "unconfigured") or self.engine != "ai":
+            return "degraded-delivered"
+        return "delivered"
 
     # Kept for machine consumption; the same fields insert straight into a
     # `runs` table when logs stop being enough.
@@ -169,7 +191,7 @@ class AgentRunReport:
                 "snapshot_age_days": self.snapshot_age_days,
                 "last_live_read": self.last_live_read, "last_good": self.last_good,
                 "market_fetched": self.market_fetched, "foound": self.foound,
-                "detail": self.detail}
+                "detail": self.detail, "outcome": self.outcome()}
 
     def emit(self) -> str:
         line = self.line()

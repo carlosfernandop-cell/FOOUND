@@ -1965,11 +1965,16 @@ def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
     print(f"Shortlist: edition No. {edition:03d} built with {n} role(s).")
     return edition
 
-def publish_shortlist(agent):
-    """Publish the public showroom edition from inside GitHub Actions."""
+def publish_shortlist(agent) -> bool:
+    """Publish the public showroom edition from inside GitHub Actions.
+
+    Returns True only if the intended edition is actually in place — freshly
+    pushed, or already identical. Returns False on any publish failure, and
+    the caller turns that into a RED run: green must mean delivered.
+    """
     if os.environ.get("GITHUB_ACTIONS") != "true":
         print("Shortlist: not in GitHub Actions, skipping publish.")
-        return
+        return True          # local/dev: nothing to publish was the correct outcome
     try:
         _sub.run(["git", "config", "user.name", "shortlist-bot"], check=True)
         _sub.run(["git", "config", "user.email", "actions@users.noreply.github.com"], check=True)
@@ -1977,12 +1982,14 @@ def publish_shortlist(agent):
         diff = _sub.run(["git", "diff", "--staged", "--quiet"])
         if diff.returncode == 0:
             print("Shortlist: no changes to publish.")
-            return
+            return True      # the intended artifact is already published
         _sub.run(["git", "commit", "-m", f"The Shortlist — {date.today().isoformat()}"], check=True)
         _sub.run(["git", "push"], check=True)
         print("Shortlist: published.")
+        return True
     except Exception as e:
         print(f"Shortlist publish failed: {e}")
+        return False
 
 # ======================================================================
 # Main
@@ -2026,7 +2033,12 @@ def main():
         # One agent's failure is one agent's failure. Yesterday's edition stays
         # readable; we do not publish one that contradicts stored decisions.
         print(f"[state] ABORT for agent {agent.agent_id}: {e}")
-        return
+        _fstate.AgentRunReport(agent_no=agent.agent_no, agent_id=agent.agent_id,
+                               state="unavailable", edition="skipped",
+                               detail=str(e)[:120]).emit()
+        # A skipped edition must never look like a healthy morning. Red run;
+        # in the future per-agent matrix this reddens one leg, not the fleet.
+        sys.exit(1)
     report = _fstate.AgentRunReport.from_state(state)
 
     existing = get_existing_keys()
@@ -2083,8 +2095,7 @@ def main():
         build_shortlist(agent, filtered, new_keys, len(raw),
                         state=state, report=report)
         report.edition = "built"
-        publish_shortlist(agent)
-        report.delivered = True
+        report.delivered = publish_shortlist(agent)
     except Exception as e:
         report.edition = "failed"
         report.detail = str(e)[:120]
@@ -2095,6 +2106,17 @@ def main():
     report.emit()
 
     print(f"\nDone - {len(added)}/{len(new_jobs)} new role(s) saved to Notion.")
+
+    # GREEN MUST MEAN DELIVERED. A run that built nothing, or built an edition
+    # and failed to publish it, exits red so the failure is visible in the
+    # Actions list — never only in a log nobody reads. Degraded-but-delivered
+    # states (stale private state, heuristic engine) remain green: they are
+    # logged loudly above and the person still got their morning.
+    if report.outcome() in ("failed", "skipped"):
+        print("[operator] RED: edition was not published — "
+              f"outcome={report.outcome()} edition={report.edition} "
+              f"delivered={report.delivered}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     if TEST_MODE:
