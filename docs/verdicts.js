@@ -17,7 +17,8 @@
   "use strict";
 
   var CFG = window.FOOUND_CFG || {};
-  var REASONS = ["seniority", "function", "compensation", "location", "company", "scope"];
+  /* "other" is deliberately neutral: it removes the role and teaches nothing */
+  var REASONS = ["seniority", "function", "compensation", "location", "company", "scope", "other"];
   var sb = null, agentId = null, authed = false;
   var active = {};          /* role_key -> signal row (state=active) */
 
