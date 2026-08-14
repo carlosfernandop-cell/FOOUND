@@ -512,7 +512,11 @@ def assert_no_private_leak(near_misses: list[dict], state: PrivateState, key_fn)
 LEARNING_BEARING_REASONS = {
     "seniority", "function", "compensation", "location", "company", "scope",
 }
-DECISION_ONLY_REASONS: set[str] = set()      # e.g. {"timing"} when it lands
+# "other" is the NEUTRAL pass — requested by Carlos on day one of real use,
+# for the case that proved the class: two near-identical Duolingo roles,
+# apply to one, pass the twin. The pass removes the role and teaches nothing;
+# no signal about the job, the company, or the location reaches the ranker.
+DECISION_ONLY_REASONS: set[str] = {"other"}   # {"timing"} likely joins later
 
 
 def is_learning_bearing(reason: str | None) -> bool:
