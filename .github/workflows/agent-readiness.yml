@@ -1,0 +1,61 @@
+name: Agent readiness
+
+# Permanent regression guard, not a one-time migration script.
+#
+# Protects the two kinds of correctness separately:
+#   structural — no one-person literals in the per-agent path, private-state
+#                logic behaves, orchestration wiring works end to end
+#   fidelity   — the published edition did not change structurally
+#
+# Cheap (no network, no secrets, one pip install), so it runs on every push.
+
+on:
+  push:
+    paths:
+      - "job_alerts.py"
+      - "foound_agent.py"
+      - "foound_state.py"
+      - "test_*.py"
+      - "render_edition.py"
+      - "tests/**"
+      - "golden_edition.html"
+      - ".github/workflows/agent-readiness.yml"
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Everything compiles
+        run: python3 -m py_compile job_alerts.py foound_agent.py foound_state.py
+
+      - name: No one-person literals in the per-agent path
+        run: python3 test_no_agent_literals.py job_alerts.py
+
+      - name: Private-state module behaves
+        run: python3 test_foound_state.py
+
+      - name: Orchestration works end to end
+        run: python3 test_main_endtoend.py
+
+      - name: Edition structure unchanged
+        run: |
+          python3 render_edition.py job_alerts.py /tmp/current.html --normalize
+          GOLDEN=""
+          [ -f tests/golden_edition.html ] && GOLDEN=tests/golden_edition.html
+          [ -f golden_edition.html ] && GOLDEN=golden_edition.html
+          if [ -n "$GOLDEN" ]; then
+            diff -u "$GOLDEN" /tmp/current.html \
+              || { echo "::error::The published edition changed structurally. If intentional, update $GOLDEN."; exit 1; }
+          else
+            echo "::notice::No golden fixture — commit golden_edition.html to enable this guard."
+          fi
