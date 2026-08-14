@@ -1275,7 +1275,7 @@ def _et_now():
     except Exception:
         return datetime.now()
 
-SHORTLIST_ENTRY = """    <div class="item__LEAD____OPEN__" data-key="__KEY__">
+SHORTLIST_ENTRY = """    <div class="item__LEAD____OPEN__" data-key="__KEY__" data-title="__DT_TITLE__" data-company="__DT_CO__" data-url="__DT_URL__" data-location="__DT_LOC__" data-fit="__DT_FIT__" data-why="__DT_WHY__" data-pause="__DT_PAUSE__">
       <button class="row" aria-expanded="__EXP__">
         <span class="marker"><span__D2__>__NUM__</span></span><span class="co">__COMPANY__</span>__FRESH__<span class="anno">__ANNO__</span>
       </button>
@@ -1296,7 +1296,7 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>FOOUND · __DATELONG__</title>
-<script>try{if(location.pathname==="/"&&!localStorage.getItem("foound_seen")){localStorage.setItem("foound_seen","1");location.replace("/foound/");}}catch(e){}</script>
+<script>try{if(location.pathname==="/"&&!localStorage.getItem("foound_seen")&&location.search.indexOf("me")===-1&&location.hash.indexOf("access_token")===-1&&location.hash.indexOf("error")===-1){localStorage.setItem("foound_seen","1");location.replace("/foound/");}}catch(e){}</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 fill=%27white%27/%3E%3Ccircle cx=%2710%27 cy=%2716%27 r=%276%27 fill=%27black%27/%3E%3Ccircle cx=%2723.5%27 cy=%2716%27 r=%275.4%27 fill=%27none%27 stroke=%27black%27 stroke-width=%271.2%27/%3E%3C/svg%3E">
 <meta property="og:title" content="FOOUND">
 <meta property="og:description" content="To find what matters. A career agent that works for one person. New edition every weekday.">
@@ -1499,6 +1499,74 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
     footer .col{margin-right:9vw;}
   }
 
+  /* ---- the owner's hands: verdicts. invisible until signed in ---- */
+  .vpass{display:none;}
+  body.owner .vpass{display:inline-block;}
+  .vwrap{max-width:640px;}
+  .vchips{display:none;margin-top:18px;flex-wrap:wrap;align-items:baseline;gap:10px 18px;}
+  .vchips.on{display:flex;}
+  .vchips-label{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--mute);
+  }
+  .vchip{
+    background:none;border:none;cursor:pointer;font-family:inherit;
+    font-size:12.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--mute);padding:0 0 2px;border-bottom:2px solid transparent;
+  }
+  @media (hover:hover){.vchip:hover{color:var(--ink);border-bottom-color:var(--ink);}}
+  .vchip-just{color:var(--ink);}
+  .vchip-cancel{font-weight:400;letter-spacing:.08em;}
+  .vstate{display:none;margin-top:22px;align-items:baseline;gap:24px;flex-wrap:wrap;}
+  .vstate.on{display:flex;}
+  .vword{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+  }
+  .verr{color:var(--mute);}
+  .vundo{
+    background:none;border:none;cursor:pointer;font-family:inherit;
+    font-size:12.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink);padding:0 0 2px;border-bottom:2px solid var(--ink);
+  }
+  @media (hover:hover){.vundo:hover{background:var(--ink);color:var(--paper);}}
+  .actions.vhidden{display:none;}
+  /* passed: ghosted, distinct from applied's strikethrough */
+  .item.vpassed .co{color:#b9b9b9;}
+  .item.vpassed:not(.open) .marker{background:none;border:.028em solid #b9b9b9;}
+  .item.vpassed .marker span{color:#b9b9b9;}
+  .item.vpassed .marker::after{border-color:#b9b9b9;}
+  .item.vpassed .anno,.item.vpassed .fresh{color:#b9b9b9;}
+  .item.vsaving .vword{color:var(--mute);}
+  /* the owner's door, ?me */
+  #vsheet{position:fixed;left:0;right:0;bottom:0;z-index:80;background:var(--paper);
+    border-top:1px solid var(--ink);padding:22px 5vw calc(26px + env(safe-area-inset-bottom));}
+  .vsheet-inner{max-width:640px;display:flex;flex-wrap:wrap;align-items:baseline;gap:14px 22px;}
+  .vsheet-label{flex-basis:100%;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--mute);}
+  #vemail{flex:1 1 220px;background:none;border:none;border-bottom:1px solid var(--ink);
+    font-family:inherit;font-size:16px;padding:6px 0;border-radius:0;color:var(--ink);}
+  #vemail:focus{outline:none;border-bottom-width:2px;}
+  .vsend{background:none;border:none;cursor:pointer;font-family:inherit;
+    font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--ink);padding:0 0 2px;border-bottom:2px solid var(--ink);}
+  @media (hover:hover){.vsend:hover{background:var(--ink);color:var(--paper);}}
+  .vsend:disabled{color:var(--mute);border-color:var(--mute);}
+  .vsheet-msg{flex-basis:100%;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:11px;letter-spacing:.06em;color:var(--mute);min-height:1em;}
+  @media (max-width:700px){
+    .vchips{gap:0;display:none;}
+    .vchips.on{display:block;}
+    .vchips-label{display:flex;align-items:center;min-height:44px;border-top:1px solid var(--ink);}
+    .vchip{display:flex;align-items:center;width:100%;min-height:48px;
+      border-top:1px solid #e3e3e3;padding:0;text-align:left;}
+    .vstate.on{display:block;}
+    .vstate .vword{display:flex;align-items:center;min-height:48px;border-top:1px solid var(--ink);}
+    .vstate .vundo{display:flex;align-items:center;width:100%;min-height:52px;
+      border-top:1px solid var(--ink);border-bottom:none;margin:0;padding:0;text-align:left;}
+  }
   /* ---- mobile: the room system ---- */
   @view-transition{navigation:auto;}
   .mast-act{display:none;}
@@ -1684,6 +1752,10 @@ requestAnimationFrame(function(){ requestAnimationFrame(function(){
   document.documentElement.classList.remove("restoring"); }); });
 </script>
 
+<script>window.FOOUND_CFG={url:"https://axlncpmrmsqbomlhhgkh.supabase.co",key:"sb_publishable_BMupqqH8BFuoRENLafPudg_pidmD8-a",edition:"__ISODATE__"};</script>
+<script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script defer src="/verdicts.js"></script>
+
 </body>
 </html>
 """
@@ -1861,6 +1933,13 @@ def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
             .replace("__SALARY__", "Salary not posted")
             .replace("__POSTED__", f'<span class="sep">/</span><span class="dim">posted {posted}</span>' if posted else "")
             .replace("__URL__", _html.escape(j.get("url", "") or "#"))
+            .replace("__DT_TITLE__", _html.escape(j["title"]))
+            .replace("__DT_CO__", _html.escape(j["company"]))
+            .replace("__DT_URL__", _html.escape(j.get("url", "") or ""))
+            .replace("__DT_LOC__", _html.escape(j.get("location", "") or ""))
+            .replace("__DT_FIT__", str(fit) if fit is not None else "")
+            .replace("__DT_WHY__", _html.escape(_cut(j.get("ai_why", "") or "", 500)))
+            .replace("__DT_PAUSE__", _html.escape(_cut(j.get("ai_pause", "") or "", 500)))
         )
 
     entries = []
@@ -1943,6 +2022,7 @@ def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
         .replace("__EDITION__", f"{edition:03d}")
         .replace("__ENTRIES__", "".join(entries))
         .replace("__PASSED__", passed_html)
+        .replace("__ISODATE__", now.strftime("%Y-%m-%d"))
         .replace("__NCOMPANIES__", str(len(SCRAPERS)))
         .replace("__FRACTION__", f"{n:03d}/{total_fetched:,}")
     )
