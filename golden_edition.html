@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>FOOUND · <DAY>, <DATELONG></title>
+<script>try{if(location.pathname==="/"&&!localStorage.getItem("foound_seen")){localStorage.setItem("foound_seen","1");location.replace("/foound/");}}catch(e){}</script>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 fill=%27white%27/%3E%3Ccircle cx=%2710%27 cy=%2716%27 r=%276%27 fill=%27black%27/%3E%3Ccircle cx=%2723.5%27 cy=%2716%27 r=%275.4%27 fill=%27none%27 stroke=%27black%27 stroke-width=%271.2%27/%3E%3C/svg%3E">
+<meta property="og:title" content="FOOUND">
+<meta property="og:description" content="To find what matters. A career agent that works for one person. New edition every weekday.">
+<meta property="og:url" content="https://foound.ai/">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://foound.ai/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="description" content="To find what matters. A career agent that works for one person. New edition every weekday.">
+<script data-goatcounter="https://foound.goatcounter.com/count" async src="//gc.zgo.at/count.js"></script>
+<style>
+  :root{--ink:#000;--paper:#fff;--mute:#6b6b6b;}
+  *{margin:0;padding:0;box-sizing:border-box;}
+  html{-webkit-text-size-adjust:100%;}
+  body{background:var(--paper);color:var(--ink);font-family:"Helvetica Neue",Helvetica,Arial,sans-serif;-webkit-font-smoothing:antialiased;}
+  .plate{padding:4.5vw 5vw 4vw;}
+  /* ---- masthead: the object's nameplate + quiet furniture nav ---- */
+  .mast{
+    display:flex;justify-content:space-between;align-items:baseline;gap:14px;
+    padding:22px 5vw 0;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+  }
+  .mast .id{font-weight:500;white-space:nowrap;color:var(--ink);text-decoration:none;}
+  .mast nav{display:flex;gap:24px;flex-wrap:wrap;}
+  .mast nav a{color:var(--mute);text-decoration:none;white-space:nowrap;letter-spacing:.12em;}
+  .mast nav a:hover{color:var(--ink);}
+  .mast nav a.here{color:var(--ink);}
+  @media (max-width:640px){.mast{flex-direction:column;gap:9px;}.mast nav{gap:18px;}}
+  /* career-evidence links inside the argument */
+  a.ev{color:inherit;text-decoration:none;border-bottom:1px dotted #b9b9b9;}
+  a.ev:hover{border-bottom:1px solid var(--ink);}
+  .brief{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.5px;line-height:1.7;letter-spacing:.01em;
+    margin:0 0 4vh 0;
+  }
+  /* ---- the overnight briefing: the agent's telegram, one quiet voice ---- */
+  .cascade{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.5px;line-height:1.7;letter-spacing:.01em;
+    margin:0 0 2.5vh 0;
+  }
+  .statline{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.5px;line-height:1.7;letter-spacing:.01em;color:var(--mute);
+    margin:0;max-width:58em;
+  }
+  /* ---- section labels (I'd start with… / unusually strong / worth your attention) ---- */
+  .seclabel{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:11px;letter-spacing:.14em;text-transform:uppercase;
+    margin:9vh 0 2vh;
+    display:flex;align-items:center;gap:10px;
+  }
+  .seclabel::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--ink);}
+  .seclabel.pass{margin-top:13vh;}
+  .item{border:none;}
+  .row{
+    display:flex;align-items:center;gap:.38em;width:100%;
+    background:none;border:none;cursor:pointer;text-align:left;
+    color:var(--ink);font-family:inherit;
+    font-size:clamp(40px,8.6vw,124px);
+    font-weight:500;letter-spacing:-.035em;line-height:1.08;
+    padding:.03em 0;white-space:nowrap;
+  }
+  .row:focus{outline:none;}
+  .row:focus-visible{outline:2px solid var(--ink);outline-offset:6px;}
+  .marker{
+    flex:none;width:.62em;height:.62em;border-radius:50%;
+    background:var(--ink);
+    position:relative;
+  }
+  .marker span{
+    display:none;
+    position:absolute;top:50%;left:50%;
+    transform:translate(-50%,-52%);
+    font-size:.34em;line-height:1;font-weight:500;letter-spacing:-.02em;
+  }
+  .marker span.d2{font-size:.29em;}
+  .marker::after{
+    content:"";display:none;
+    position:absolute;top:50%;left:50%;
+    transform:translate(-50%,-50%);
+    width:.21em;height:.21em;
+    border:.012em solid var(--ink);border-radius:50%;
+  }
+  .item.open .marker{background:none;}
+  .item.open .marker span{display:block;}
+  .item.open .marker::after{display:block;}
+  .anno{
+    font-size:.42em;font-weight:500;letter-spacing:-.02em;
+    align-self:flex-start;transform:translateY(.28em);margin-left:.12em;
+    opacity:0;transition:opacity .25s ease .1s;
+  }
+  .item.open .anno{opacity:1;}
+  @media (hover:hover){
+    .item:not(.open) .row:hover .marker{background:none;}
+    .item:not(.open) .row:hover .marker::after{display:block;}
+  }
+  .panel{overflow:hidden;max-height:0;transition:max-height .35s ease;}
+  .panel-inner{padding:14px 0 40px;max-width:640px;}
+  .item.open .panel{max-height:1100px;}
+  .item.lead.open .panel{max-height:1500px;}
+  .role{font-size:clamp(18px,3.4vw,24px);font-weight:400;letter-spacing:-.005em;}
+  .desc{margin-top:14px;font-size:15px;line-height:1.5;color:var(--mute);max-width:36em;}
+  /* ---- the argument: score line + why / pause / why now ---- */
+  .scoreline{
+    margin-top:10px;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.5px;letter-spacing:.01em;
+  }
+  .plabel{
+    margin-top:26px;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;
+  }
+  .ptext{margin-top:6px;font-size:15px;line-height:1.55;color:var(--mute);max-width:35em;}
+  .meta{margin-top:18px;font-size:13px;line-height:1.35;display:flex;flex-wrap:wrap;gap:6px 0;}
+  .meta b{font-weight:700;}
+  .meta .sep{color:var(--mute);padding:0 10px;}
+  .meta .dim{color:var(--mute);}
+  .actions{display:flex;align-items:baseline;gap:32px;margin-top:22px;}
+  a.apply{
+    display:inline-block;font-size:13px;font-weight:700;
+    letter-spacing:.1em;text-transform:uppercase;color:var(--ink);
+    text-decoration:none;border-bottom:2px solid var(--ink);padding-bottom:2px;
+  }
+  a.apply:hover{background:var(--ink);color:var(--paper);}
+  button.mark{
+    background:none;border:none;cursor:pointer;font-family:inherit;
+    font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--mute);padding:0 0 2px;border-bottom:2px solid transparent;
+  }
+  button.mark:hover{color:var(--ink);}
+  /* fresh: posted in the last 3 days */
+  .fresh{font-size:.5em;align-self:flex-start;transform:translateY(.18em);margin-left:.08em;}
+  /* applied: struck from the list, kept for the record */
+  .item.applied .co{color:#b9b9b9;text-decoration:line-through;text-decoration-thickness:.045em;}
+  .item.applied:not(.open) .marker{background:none;border:.028em solid #b9b9b9;}
+  .item.applied .marker span{color:#b9b9b9;}
+  .item.applied .marker::after{border-color:#b9b9b9;}
+  .item.applied .anno,.item.applied .fresh{color:#b9b9b9;}
+  .item.applied button.mark{color:var(--ink);}
+  .new{
+    display:inline-block;margin-left:12px;font-size:11px;font-weight:700;
+    letter-spacing:.12em;border:1px solid var(--ink);padding:2px 7px 1px;
+    vertical-align:middle;transform:translateY(-2px);
+  }
+  /* ---- what I passed on: taste shown by refusal, set at footnote scale ---- */
+  .seclabel.pass::before{background:none;border:1px solid var(--ink);}
+  .passintro{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:12.5px;line-height:1.7;letter-spacing:.01em;color:var(--mute);
+    margin:0 0 3vh 0;
+  }
+  .passed{max-width:640px;}
+  .pitem{margin:0;}
+  .prow{
+    display:flex;align-items:center;gap:10px;width:100%;
+    background:none;border:none;cursor:pointer;text-align:left;
+    color:var(--ink);font-family:inherit;
+    font-size:15px;font-weight:500;letter-spacing:-.005em;
+    padding:7px 0;
+  }
+  .prow:focus{outline:none;}
+  .prow:focus-visible{outline:2px solid var(--ink);outline-offset:4px;}
+  .pdot{flex:none;width:7px;height:7px;border-radius:50%;border:1px solid var(--ink);background:none;}
+  @media (hover:hover){
+    .pitem:not(.open) .prow:hover .pdot{background:var(--ink);}
+  }
+  .ppanel{overflow:hidden;max-height:0;transition:max-height .3s ease;}
+  .pitem.open .ppanel{max-height:240px;}
+  .ppanel-inner{padding:2px 0 16px 17px;}
+  .pline{font-size:14.5px;font-weight:400;letter-spacing:-.005em;}
+  .pline .pfit{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:11px;font-weight:400;color:var(--mute);margin-left:10px;letter-spacing:.01em;
+  }
+  .preason{display:block;margin-top:5px;font-size:14px;line-height:1.5;color:var(--mute);max-width:36em;}
+  footer{
+    padding:12vh 5vw 6vh;
+  }
+  .colophon{
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:11.5px;letter-spacing:.02em;line-height:1.9;color:var(--mute);
+  }
+  .colophon .nw{white-space:nowrap;}
+  .colophon a{color:inherit;text-decoration:none;}
+  .colophon a:hover{color:var(--ink);}
+  .colophon .backed{display:inline-block;margin-top:.5em;}
+  .colophon .cstar{font-size:15px;line-height:0;vertical-align:-.15em;}
+  @media (max-width:560px){
+    .row{font-size:clamp(30px,10.5vw,64px);}
+    .panel-inner{padding:12px 0 34px;}
+    .seclabel{margin:7.5vh 0 2vh;}
+    .seclabel.pass{margin-top:10vh;}
+    footer{flex-wrap:wrap;gap:14px 0;padding:9vh 5vw 5vh;}
+    footer .col{margin-right:9vw;}
+  }
+
+  /* ---- mobile: the room system ---- */
+  @view-transition{navigation:auto;}
+  .mast-act{display:none;}
+  .roombar{display:none;}
+  html.restoring .panel,html.restoring .ppanel{transition:none!important;}
+  @media (prefers-reduced-motion:reduce){.panel,.ppanel{transition:none!important;}}
+  @media (max-width:700px){
+    .mast{flex-direction:row;align-items:baseline;gap:12px;padding:14px 20px 0;}
+    .mast nav{display:none;}
+    .mast-act{display:inline;color:var(--mute);text-decoration:none;white-space:nowrap;letter-spacing:.12em;}
+    body{padding-bottom:calc(60px + env(safe-area-inset-bottom));}
+    .roombar{display:flex;position:fixed;left:0;right:0;bottom:0;z-index:50;
+      background:var(--paper);border-top:1px solid var(--ink);
+      padding-bottom:env(safe-area-inset-bottom);}
+    .roombar a{flex:1;display:flex;align-items:center;justify-content:center;gap:7px;
+      height:52px;color:var(--mute);text-decoration:none;
+      font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+      font-size:11px;letter-spacing:.14em;text-transform:uppercase;}
+    .roombar a .rdot{width:7px;height:7px;border-radius:50%;background:var(--ink);display:none;}
+    .roombar a.here{color:var(--ink);}
+    .roombar a.here .rdot{display:block;}
+    /* the voice steps up; the furniture recedes */
+    .plate{padding:20px 20px 0;}
+    .brief{font-size:15px;line-height:1.6;}
+    .cascade{font-size:15px;line-height:1.6;}
+    .statline{font-size:12px;line-height:1.6;}
+    .seclabel{margin:56px 0 20px;}
+    .role{font-size:19px;}
+    .scoreline{font-size:13px;}
+    .plabel{font-size:12px;}
+    .ptext{font-size:16px;line-height:1.5;}
+    .meta{font-size:13px;}
+    .panel-inner{padding:12px 0 8px;}
+    /* the hands: actions become rows, type stays delicate */
+    .actions{display:block;margin-top:20px;}
+    .actions .apply,.actions .mark{display:flex;align-items:center;justify-content:flex-start;
+      width:100%;min-height:52px;border-top:1px solid var(--ink);margin:0;padding:0;text-align:left;}
+    footer{padding:56px 20px 28px;}
+  }
+  @media (max-width:360px){.roombar a{font-size:10px;letter-spacing:.1em;gap:6px;}}
+</style>
+</head>
+<body>
+
+  <div class="mast">
+    <a class="id" href="/foound/">FOOUND</a>
+    <nav>
+      <a class="here" href="/">At work</a>
+      <a href="/candidate/">Candidate</a>
+      <a href="/memory/">Memory</a>
+      <a href="/me/">FOOUND for me &rarr;</a>
+    </nav>
+    <a class="mast-act" href="/me/">FOOUND for me &rarr;</a>
+  </div>
+
+  <div class="plate">
+    <p class="brief"><GREETING></p>
+    <div class="cascade">I searched <COUNT> jobs overnight.<br>FOOUND 5 for you.</div>
+    <p class="statline">5 read in full &middot; everything else dismissed on sight.</p>
+    <div class="seclabel" style="margin-top:5vh;">I&rsquo;d start with Suno</div>
+    <div class="item" data-key="head of brand|suno">
+      <button class="row" aria-expanded="false">
+        <span class="marker"><span>1</span></span><span class="co">Suno</span><span class="fresh">*</span><span class="anno"></span>
+      </button>
+      <div class="panel"><div class="panel-inner">
+        <div class="role">Head of Brand<span class="new">NEW</span></div>
+        <div class="plabel">Why I chose it</div>
+        <p class="ptext">Build the campaign language for AI-made music, a brand still wet on the canvas.</p>
+        <div class="plabel">Why now</div>
+        <p class="ptext">Surfaced for the first time this morning &middot; posted <AGE> &middot; still open as of 8:00 AM ET</p>
+        <div class="meta"><b>New York, NY</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Aug 13</span></div>
+        <div class="actions">
+          <a class="apply" href="https://example.com/1" target="_blank" rel="noopener">Apply &#8599;</a>
+          <button class="mark" type="button">Mark applied</button>
+        </div>
+      </div></div>
+    </div>
+    <div class="seclabel">Worth your attention</div>
+    <div class="item" data-key="creative director|anthropic">
+      <button class="row" aria-expanded="false">
+        <span class="marker"><span>2</span></span><span class="co">Anthropic</span><span class="fresh">*</span><span class="anno"></span>
+      </button>
+      <div class="panel"><div class="panel-inner">
+        <div class="role">Creative Director<span class="new">NEW</span></div>
+        <div class="plabel">Why I chose it</div>
+        <p class="ptext">Shape how the most safety-minded frontier lab speaks to the world.</p>
+        <div class="plabel">Why now</div>
+        <p class="ptext">Surfaced for the first time this morning &middot; posted <AGE> &middot; still open as of 8:00 AM ET</p>
+        <div class="meta"><b>San Francisco, CA</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Aug 12</span></div>
+        <div class="actions">
+          <a class="apply" href="https://example.com/2" target="_blank" rel="noopener">Apply &#8599;</a>
+          <button class="mark" type="button">Mark applied</button>
+        </div>
+      </div></div>
+    </div>
+    <div class="item" data-key="vp of brand|ramp">
+      <button class="row" aria-expanded="false">
+        <span class="marker"><span>3</span></span><span class="co">Ramp</span><span class="fresh">*</span><span class="anno"></span>
+      </button>
+      <div class="panel"><div class="panel-inner">
+        <div class="role">VP of Brand</div>
+        <div class="plabel">Why I chose it</div>
+        <p class="ptext">A senior creative seat at a company worth watching.</p>
+        <div class="plabel">Why now</div>
+        <p class="ptext">Posted <AGE> &middot; still open as of 8:00 AM ET</p>
+        <div class="meta"><b>New York, NY</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Aug 11</span></div>
+        <div class="actions">
+          <a class="apply" href="https://example.com/3" target="_blank" rel="noopener">Apply &#8599;</a>
+          <button class="mark" type="button">Mark applied</button>
+        </div>
+      </div></div>
+    </div>
+    <div class="item" data-key="brand director|spotify">
+      <button class="row" aria-expanded="false">
+        <span class="marker"><span>4</span></span><span class="co">Spotify</span><span class="anno"></span>
+      </button>
+      <div class="panel"><div class="panel-inner">
+        <div class="role">Brand Director</div>
+        <div class="plabel">Why I chose it</div>
+        <p class="ptext">The brand that turned data into pop culture. Wrapped, but all year.</p>
+        <div class="plabel">Why now</div>
+        <p class="ptext">Posted <AGE> &middot; still open as of 8:00 AM ET</p>
+        <div class="meta"><b>Remote</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Aug 10</span></div>
+        <div class="actions">
+          <a class="apply" href="https://example.com/4" target="_blank" rel="noopener">Apply &#8599;</a>
+          <button class="mark" type="button">Mark applied</button>
+        </div>
+      </div></div>
+    </div>
+    <div class="item" data-key="design director|apple">
+      <button class="row" aria-expanded="false">
+        <span class="marker"><span>5</span></span><span class="co">Apple</span><span class="anno"></span>
+      </button>
+      <div class="panel"><div class="panel-inner">
+        <div class="role">Design Director</div>
+        <div class="plabel">Why I chose it</div>
+        <p class="ptext">The reference point. Craft as religion.</p>
+        <div class="plabel">Why now</div>
+        <p class="ptext">Posted <AGE> &middot; still open as of 8:00 AM ET</p>
+        <div class="meta"><b>Cupertino, CA</b><span class="sep">/</span><span>Salary not posted</span><span class="sep">/</span><span class="dim">posted Aug 9</span></div>
+        <div class="actions">
+          <a class="apply" href="https://example.com/5" target="_blank" rel="noopener">Apply &#8599;</a>
+          <button class="mark" type="button">Mark applied</button>
+        </div>
+      </div></div>
+    </div>
+  </div>
+
+  <footer>
+    <div class="colophon">
+      <div>FOOUND AT WORK &middot; <a href="/archive/">Edition 001</a> &middot; <span class="nw"><DAY>, <DATELONG></span></div>
+      <div>Compiled 8:00 AM ET &middot; 41 companies watched &middot; <span class="nw"><span class="cstar">*</span> posted in the last 3 days</span></div>
+      <div><a class="backed" href="/archive/">Back editions &rarr;</a></div>
+    </div>
+  </footer>
+
+
+  <nav class="roombar" aria-label="Rooms">
+    <a href="/" class="here"><span class="rdot"></span>At work</a>
+    <a href="/candidate/"><span class="rdot"></span>Candidate</a>
+    <a href="/memory/"><span class="rdot"></span>Memory</a>
+  </nav>
+
+<script>
+/* the tapped row holds its place while panels trade height */
+function pinRow(btn){
+  var y0 = btn.getBoundingClientRect().top, t0 = performance.now();
+  function hold(now){
+    var d = btn.getBoundingClientRect().top - y0;
+    if (d) scrollBy(0, d);
+    if (now - t0 < 430) requestAnimationFrame(hold);
+  }
+  requestAnimationFrame(hold);
+}
+document.querySelectorAll(".item .row").forEach(function(btn){
+  btn.addEventListener("click", function(){
+    var item = btn.parentElement;
+    var wasOpen = item.classList.contains("open");
+    var others = document.querySelectorAll(".item.open");
+    var hadOther = others.length > 1 || (others.length === 1 && others[0] !== item);
+    others.forEach(function(o){
+      o.classList.remove("open");
+      o.querySelector(".row").setAttribute("aria-expanded","false");
+    });
+    if(!wasOpen){
+      item.classList.add("open");
+      btn.setAttribute("aria-expanded","true");
+    }
+    if(hadOther) pinRow(btn);
+  });
+});
+
+document.querySelectorAll(".pitem .prow").forEach(function(btn){
+  btn.addEventListener("click", function(){
+    var it = btn.parentElement;
+    var was = it.classList.contains("open");
+    document.querySelectorAll(".pitem.open").forEach(function(o){
+      o.classList.remove("open");
+      o.querySelector(".prow").setAttribute("aria-expanded","false");
+    });
+    if(!was){ it.classList.add("open"); btn.setAttribute("aria-expanded","true"); }
+  });
+});
+
+/* long-name guard: a row that cannot fit steps down deliberately, alone */
+function fitRows(){
+  document.querySelectorAll(".row, .srow").forEach(function(r){
+    r.style.fontSize = "";
+    var guard = 0;
+    while (r.scrollWidth > r.clientWidth + 1 && guard < 4){
+      var cur = parseFloat(getComputedStyle(r).fontSize);
+      r.style.fontSize = (cur * 0.92) + "px";
+      guard++;
+    }
+  });
+}
+var fitT; window.addEventListener("resize", function(){ clearTimeout(fitT); fitT = setTimeout(fitRows, 120); });
+fitRows();
+
+/* applied tracking: remembered by this browser across editions */
+var AP_KEY = "shortlist_applied";
+function apLoad(){ try{ return JSON.parse(localStorage.getItem(AP_KEY) || "[]"); }catch(e){ return []; } }
+function apSave(a){ try{ localStorage.setItem(AP_KEY, JSON.stringify(a)); }catch(e){} }
+var apList = apLoad();
+document.querySelectorAll(".item[data-key]").forEach(function(it){
+  var k = it.getAttribute("data-key");
+  var btn = it.querySelector("button.mark");
+  function sync(){
+    var on = apList.indexOf(k) >= 0;
+    it.classList.toggle("applied", on);
+    if(btn) btn.textContent = on ? "Applied ✓ · undo" : "Mark applied";
+  }
+  sync();
+  if(btn) btn.addEventListener("click", function(e){
+    e.stopPropagation();
+    var i = apList.indexOf(k);
+    if(i >= 0) apList.splice(i, 1); else apList.push(k);
+    apSave(apList);
+    sync();
+  });
+});
+
+/* the room remembers: which entry was open, and where you were */
+document.documentElement.classList.add("restoring");
+var OPEN_KEY = "foound-open:" + location.pathname;
+function saveOpen(){ var o = document.querySelector(".item.open");
+  try{ sessionStorage.setItem(OPEN_KEY, o ? (o.getAttribute("data-key") || "") : ""); }catch(e){} }
+document.querySelectorAll(".item .row").forEach(function(btn){
+  btn.addEventListener("click", function(){ setTimeout(saveOpen, 0); });
+});
+try{
+  var want = sessionStorage.getItem(OPEN_KEY);
+  if (want !== null){
+    var cur = document.querySelector(".item.open");
+    var target = null;
+    if (want){
+      document.querySelectorAll(".item[data-key]").forEach(function(it){
+        if (it.getAttribute("data-key") === want) target = it;
+      });
+    }
+    if (cur && target !== cur){ cur.classList.remove("open"); cur.querySelector(".row").setAttribute("aria-expanded","false"); }
+    if (target && target !== cur){ target.classList.add("open"); target.querySelector(".row").setAttribute("aria-expanded","true"); }
+  }
+}catch(e){}
+var SCROLL_KEY = "foound-scroll:" + location.pathname;
+addEventListener("pagehide", function(){ try{ sessionStorage.setItem(SCROLL_KEY, String(Math.round(scrollY))); }catch(e){} });
+try{ var sv = sessionStorage.getItem(SCROLL_KEY);
+  if (sv && !location.hash) scrollTo(0, parseInt(sv, 10) || 0); }catch(e){}
+requestAnimationFrame(function(){ requestAnimationFrame(function(){
+  document.documentElement.classList.remove("restoring"); }); });
+</script>
+
+</body>
+</html>
