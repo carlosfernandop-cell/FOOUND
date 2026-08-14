@@ -2051,7 +2051,9 @@ def main():
 
     print(f"Total fetched: {len(raw)}")
 
-    filtered = [j for j in raw if passes_title(j["title"]) and passes_location(j["location"])]
+    filtered = [j for j in raw
+                if passes_title(agent, j["title"])
+                and passes_location(agent, j["location"])]
     print(f"After filters: {len(filtered)}")
 
     # THE CHOKE POINT. Applied here — after collection, before ranking, before
@@ -2072,16 +2074,25 @@ def main():
             print(f"  + {job['title']} | {job['company']} | {job.get('location', '')}")
 
     try:
-        send_email(new_jobs, len(added))
+        send_email(agent, new_jobs, len(added))
     except Exception as e:
         print(f"Email failed: {e}")
 
     try:
         new_keys = {dedup_key(j["title"], j["company"]) for j in new_jobs}
-        build_shortlist(filtered, new_keys, len(raw))
-        publish_shortlist()
+        build_shortlist(agent, filtered, new_keys, len(raw),
+                        state=state, report=report)
+        report.edition = "built"
+        publish_shortlist(agent)
+        report.delivered = True
     except Exception as e:
+        report.edition = "failed"
+        report.detail = str(e)[:120]
         print(f"Shortlist failed: {e}")
+
+    report.market_fetched = len(raw)
+    report.foound = len(filtered)
+    report.emit()
 
     print(f"\nDone - {len(added)}/{len(new_jobs)} new role(s) saved to Notion.")
 
