@@ -45,21 +45,12 @@ HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleW
 
 # ---- priority watch: companies Carlos has flagged. Their matches are always
 #      read in full, and a role that clears the bar is never trimmed by the cap.
-PRIORITY_COMPANIES = {"Apple"}
+# PRIORITY_COMPANIES moved to foound_agent.AgentConfig (per-agent data)
 
 # ---- hand-added roles: the unscrapeable tail and direct requests.
 #      Injected into every run as if fetched (deduped against the scrapers),
 #      then judged like everything else — pinned into the reading, not the verdict.
-MANUAL_JOBS = [
-    {
-        "title":     "Creative Director, A/V, Apple TV+ Marketing",
-        "company":   "Apple",
-        "location":  "",
-        "url":       "https://jobs.apple.com/en-us/details/200666406-0670/creative-director-a-v-apple-tv-marketing?team=MKTG",
-        "posted_at": None,
-        "added_by":  "Carlos — 2026-08-11",
-    },
-]
+# MANUAL_JOBS moved to foound_agent.AgentConfig (per-agent data)
 
 # ======================================================================
 # FILTERS — edit these lists to change what jobs you get
@@ -67,67 +58,33 @@ MANUAL_JOBS = [
 
 # A job passes if its title contains AT LEAST ONE of these phrases.
 # Note: "creative director" also matches Senior/Group/Executive/Associate CD titles.
-INCLUDE = [
-    "creative director",
-    "director of creative", "director, creative",
-    "head of creative", "creative lead",
-    "head of brand", "brand director",
-    "director of brand", "director, brand", "brand lead",
-    "vp of creative", "vp, creative",
-    "vp of brand", "vp, brand",
-    "brand marketing director",
-    "executive creative",
-    "brand experience",
-    "design director",   # studio-world equivalent of CD (Koto, Collins, Pentagram-tier)
-]
+# INCLUDE moved to foound_agent.AgentConfig (per-agent data)
 
 # A job is dropped if its title contains ANY of these.
-EXCLUDE_TYPE = ["intern", "internship", "part-time", "part time", "contractor"]
+# EXCLUDE_TYPE moved to foound_agent.AgentConfig (per-agent data)
 
 # Locations. Matching is word-boundary based ("us" will NOT match "Austin").
 # A job with NO listed location passes automatically.
-ACCEPTED_LOCATIONS = [
-    # US — California
-    "california", "san francisco", "bay area", "los angeles", "culver city",
-    "santa monica", "burbank", "mountain view", "menlo park", "palo alto",
-    "cupertino", "sunnyvale", "san jose", "santa clara", "los gatos",
-    # US — other hubs
-    "new york", "nyc", "brooklyn", "austin", "chicago",
-    "seattle", "bellevue", "redmond",
-    "boston", "cambridge", "pittsburgh", "miami", "denver", "boulder",
-    "washington", "atlanta", "portland",
-    # US — general / remote
-    "united states", "usa", "us", "remote", "north america",
-    # Canada (major AI hubs — Cohere is Toronto-based)
-    "toronto", "montreal", "vancouver",
-    # Europe
-    "london", "paris", "dublin", "amsterdam", "berlin", "munich",
-    "zurich", "geneva", "stockholm", "copenhagen", "oslo", "helsinki",
-    "madrid", "barcelona", "lisbon", "milan", "vienna", "brussels",
-    "united kingdom", "uk", "england", "france", "germany", "ireland",
-    "netherlands", "spain", "portugal", "italy", "switzerland",
-    "sweden", "denmark", "norway", "finland", "austria", "belgium",
-    "europe", "emea",
-]
+# ACCEPTED_LOCATIONS moved to foound_agent.AgentConfig (per-agent data)
 
 # Search terms used by scrapers that require a query (Workday, Microsoft,
 # Netflix, Apple, Spotify, GitHub). Keep these broad — the INCLUDE list
 # above does the precise filtering afterwards.
-SEARCH_QUERIES = ["creative director", "brand", "creative lead"]
+# SEARCH_QUERIES moved to foound_agent.AgentConfig (per-agent data)
 
 # ======================================================================
 # Filter helpers
 # ======================================================================
 
-def passes_title(title: str) -> bool:
+def passes_title(agent, title: str) -> bool:
     t = title.lower()
-    if not any(k in t for k in INCLUDE):
+    if not any(k in t for k in agent.include):
         return False
-    if any(k in t for k in EXCLUDE_TYPE):
+    if any(k in t for k in agent.exclude_type):
         return False
     return True
 
-def passes_location(location: str) -> bool:
+def passes_location(agent, location: str) -> bool:
     if not location:
         return True
     loc = location.lower()
@@ -135,11 +92,11 @@ def passes_location(location: str) -> bool:
     # postings — let those through rather than silently dropping them.
     if re.search(r"\d+\s+locations", loc):
         return True
-    return any(re.search(rf"\b{re.escape(a)}\b", loc) for a in ACCEPTED_LOCATIONS)
+    return any(re.search(rf"\b{re.escape(a)}\b", loc) for a in agent.accepted_locations)
 
-def matched_keywords(title: str) -> str:
+def matched_keywords(agent, title: str) -> str:
     t = title.lower()
-    return ", ".join(k for k in INCLUDE if k in t)[:120]
+    return ", ".join(k for k in agent.include if k in t)[:120]
 
 # -- Date helpers
 def parse_iso(s: str):
@@ -205,12 +162,24 @@ def format_age(posted_at) -> str:
 def dedup_key(title: str, company: str) -> str:
     return f"{title.lower().strip()}|{company.lower().strip()}"
 
+from foound_agent import (AgentConfig, load_agent_config,
+                          load_agent_config_from_db, market_query_union)
+import foound_state as _fstate
+
+# Market-layer query set. Populated per run from the active agent until the
+# shared market lands, at which point it becomes the union across agents.
+MARKET_QUERIES: list = []
+
+# Private state lives OUTSIDE the published directory. foound_state refuses to
+# write here if this ever resolves inside the public output path.
+STATE_DIR = os.environ.get("FOOUND_STATE_DIR", ".foound-state")
+
 FIRST_SEEN_DATES = {}  # dedup_key -> ISO date FOOUND first saved the role (Notion "Date Found")
 
 def get_existing_keys() -> set:
     """Read every (title, company) pair already saved in Notion.
     Side effect: fills FIRST_SEEN_DATES so freshness can fall back to
-    first-seen when a source exposes no posting date (Apple, Greenhouse)."""
+    first-seen when a source exposes no posting date."""
     url = f"https://api.notion.com/v1/databases/{NOTION_DB_ID}/query"
     existing = set()
     cursor = None
@@ -360,7 +329,7 @@ def fetch_workday(host: str, tenant: str, board: str, company_label: str) -> lis
     seen = set()
     base = f"https://{host}.myworkdayjobs.com/wday/cxs/{tenant}/{board}/jobs"
     try:
-        for q in SEARCH_QUERIES:
+        for q in MARKET_QUERIES:
             offset = 0
             while True:
                 r = requests.post(
@@ -404,7 +373,7 @@ def fetch_netflix() -> list:
     seen = set()
     base = "https://explore.jobs.netflix.net/api/apply/v2/jobs"
     try:
-        for q in SEARCH_QUERIES:
+        for q in MARKET_QUERIES:
             start = 0
             while start < 200:
                 r = requests.get(
@@ -809,7 +778,8 @@ def run_test():
     print(f"\n{'='*60}")
     print(f"JOB ALERTS - TEST MODE - {date.today()}")
     print(f"{'='*60}")
-    print(f"Filters: keywords={len(INCLUDE)}, locations={len(ACCEPTED_LOCATIONS)}\n")
+    agent = load_agent_config("001")
+    print(f"Filters: keywords={len(agent.include)}, locations={len(agent.accepted_locations)}\n")
 
     grand_total = 0
     grand_matches = 0
@@ -825,8 +795,8 @@ def run_test():
             print(f"  CRASHED: {e}\n")
             continue
 
-        title_pass  = [j for j in jobs if passes_title(j["title"])]
-        loc_pass    = [j for j in title_pass if passes_location(j["location"])]
+        title_pass  = [j for j in jobs if passes_title(agent, j["title"])]
+        loc_pass    = [j for j in title_pass if passes_location(agent, j["location"])]
         with_date   = [j for j in jobs if j.get("posted_at") is not None]
         recent      = [j for j in loc_pass if is_recent(j.get("posted_at"))]
         grand_total += len(jobs)
@@ -862,7 +832,7 @@ def run_test():
 # Email
 # ======================================================================
 
-def send_email(new_jobs: list, notion_saved: int = 0):
+def send_email(agent, new_jobs: list, notion_saved: int = 0):
     today = date.today().strftime("%B %d, %Y")
     subject = f"Job Alerts - {today}"
 
@@ -876,7 +846,7 @@ def send_email(new_jobs: list, notion_saved: int = 0):
         recent = [j for j in new_jobs if is_recent(j.get("posted_at"))]
         older  = [j for j in new_jobs if not is_recent(j.get("posted_at"))]
 
-        lines = [f"Hi Carlos,\n\nDaily job alert - {today}"]
+        lines = [f"Hi {agent.name},\n\nDaily job alert - {today}"]
         lines.append(f"{len(new_jobs)} new role(s) found (saved to Notion: {notion_saved})\n")
 
         if recent:
@@ -890,15 +860,13 @@ def send_email(new_jobs: list, notion_saved: int = 0):
                 lines.append(format_job(j))
     else:
         lines = [
-            f"Hi Carlos,\n\nNo new matching roles found today ({today}).",
+            f"Hi {agent.name},\n\nNo new matching roles found today ({today}).",
             "All companies were checked.\n",
         ]
 
-    lines.append("\n---\nRead today's edition -> https://carlosfernandop-cell.github.io/job-alerts/")
-    lines.append("Filters: Creative Director / Head of Brand / Creative & Brand leadership")
-    lines.append("Locations: US hubs (CA, NYC, Austin, Chicago, Seattle, Boston, Miami...), Toronto, Europe + Remote")
-    lines.append("Not auto-checked (visit manually): Meta, Google, Microsoft, Midjourney, Notion, "
-                 "W+K, Droga5, Mother, Mischief, GUT, Uncommon, Buck, COLLINS, Pentagram, Porto Rocha, Instrument, ManvsMachine")
+    lines.append(f"\n---\nRead today's edition -> {agent.edition_url}")
+    for footer_line in agent.email_footer:
+        lines.append(footer_line)
 
     msg = MIMEMultipart()
     msg["Subject"] = subject
@@ -939,9 +907,9 @@ def fetch_jd_text(url: str) -> str:
     except Exception:
         return ""
 
-def load_profile() -> str:
+def load_profile(agent) -> str:
     try:
-        with open("profile.md") as f:
+        with open(agent.profile_path) as f:
             return f.read()
     except Exception:
         return ""
@@ -966,7 +934,7 @@ def fit_tier(score) -> str:
         return "Worth considering"
     return "Wildcard"
 
-def score_fit(profile: str, job: dict, jd_text: str):
+def score_fit(agent, profile: str, job: dict, jd_text: str):
     """Ask Claude to argue one role for this candidate: score + the case for,
     and the honest case against. Returns (score, why, pause) or (None, None, None)."""
     try:
@@ -978,7 +946,7 @@ def score_fit(profile: str, job: dict, jd_text: str):
             f"ROLE: {job['title']} at {job['company']} — {job.get('location','')}\n\n"
             + (f"NOTE: He has flagged {job['company']} as a priority target — he asked his agent to watch this company closely. "
                "Weigh his stated affinity as real fit-relevant information, but stay honest about the role itself.\n\n"
-               if job.get("company") in PRIORITY_COMPANIES else "")
+               if job.get("company") in agent.priority_companies else "")
             + f"JOB POSTING TEXT (may include page boilerplate — ignore navigation/footer noise):\n"
             f"{jd_text or '(no description available — judge from title and company)'}\n\n"
             "Return ONLY a JSON object, no other text:\n"
@@ -1025,25 +993,25 @@ def score_fit(profile: str, job: dict, jd_text: str):
         print(f"  [Fit error] {job['title']}: {e}")
         return None, None, None
 
-def rank_with_fit(matches: list, new_keys: set):
+def rank_with_fit(agent, matches: list, new_keys: set):
     """Return (ranked_matches, used_ai). Each match may gain 'fit' and 'ai_line'."""
     heuristic = lambda j: (
         _seniority_score(j["title"]) + _recency_score(j.get("posted_at"))
         + (2 if dedup_key(j["title"], j["company"]) in new_keys else 0)
     )
-    profile = load_profile()
+    profile = load_profile(agent)
     if not ANTHROPIC_KEY or not profile:
         print("Fit engine: no API key or profile — using heuristic ranking.")
         return sorted(matches, key=heuristic, reverse=True), False
 
     candidates = sorted(matches, key=heuristic, reverse=True)[:MAX_CANDIDATES_TO_SCORE]
     for j in matches:
-        if j["company"] in PRIORITY_COMPANIES and j not in candidates:
+        if j["company"] in agent.priority_companies and j not in candidates:
             candidates.append(j)   # priority watch: always read in full
     scored_any = False
     for j in candidates:
         jd = fetch_jd_text(j.get("url", ""))
-        score, why, pause = score_fit(profile, j, jd)
+        score, why, pause = score_fit(agent, profile, j, jd)
         if score is not None:
             j["fit"] = score
             j["ai_why"] = why
@@ -1720,12 +1688,23 @@ requestAnimationFrame(function(){ requestAnimationFrame(function(){
 </html>
 """
 
-def build_shortlist(matches: list, new_keys: set, total_fetched: int):
-    """Render THE SHORTLIST from today's matches and write docs/."""
+def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
+                    state=None, report=None):
+    """Render THE SHORTLIST from today's matches into the agent's output dir."""
     now = _et_now()
     datelong = now.strftime("%A, %B %d, %Y").replace(" 0", " ")
 
-    ranked_all, used_ai = rank_with_fit(matches, new_keys)
+    ranked_all, used_ai = rank_with_fit(agent, matches, new_keys)
+
+    # Heuristic is a DEGRADED success, never a normal one. Recorded every run
+    # so 'ran on rules for five days' can never read as healthy.
+    engine = "ai" if used_ai else "heuristic"
+    if report is not None:
+        report.engine = engine
+    try:
+        _fstate.record_engine_run(STATE_DIR, agent.agent_id, engine)
+    except Exception as _e:
+        print(f"[health] engine health not recorded (non-fatal): {_e}")
     FOOUND_FLOOR = 60
     if used_ai:
         cleared = [j for j in ranked_all if (j.get("fit") or 0) >= FOOUND_FLOOR]
@@ -1733,9 +1712,9 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         cleared = list(ranked_all)   # heuristic day: no scores, no floor
     ranked = cleared[:11]
     for j in cleared[11:]:
-        if j["company"] in PRIORITY_COMPANIES and j not in ranked:
+        if j["company"] in agent.priority_companies and j not in ranked:
             for k in range(len(ranked) - 1, -1, -1):
-                if ranked[k]["company"] not in PRIORITY_COMPANIES:
+                if ranked[k]["company"] not in agent.priority_companies:
                     ranked[k] = j
                     break
     ranked.sort(key=lambda j: (j.get("fit") or -1), reverse=True)
@@ -1745,7 +1724,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
     # ---- the overnight briefing: greeting, cascade, statline ----
     hour = now.hour
     daypart = "morning" if hour < 12 else ("afternoon" if hour < 18 else "evening")
-    greeting = f"Good {daypart}, Carlos."
+    greeting = f"Good {daypart}, {agent.name}."
 
     top = ranked[0].get("fit") if n else None
     second = ranked[1].get("fit") if n > 1 else None
@@ -1768,7 +1747,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
 
     # ---- deep look: when the lead clears the bar, the agent keeps looking ----
     if used_ai and n > 0 and ((ranked[0].get("fit") or 0) >= 80 or ranked[0].get("company") in PRIORITY_COMPANIES):
-        _dl = deep_look(ranked[0], load_profile())
+        _dl = deep_look(ranked[0], load_profile(agent))
         if _dl:
             ranked[0]["deep"] = _dl
             print(f"Deep Look: {ranked[0]['company']} — {_dl.get('verdict','')}")
@@ -1782,9 +1761,7 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
             statline += " " + _html.escape(obs)
 
     # ---- entries, in three editorial ranks ----
-    _EV_MAP = [("MAL", "/candidate/#c-mal"), ("Airbnb", "/candidate/#c-airbnb"),
-               ("Publicis", "/candidate/#c-publicis"), ("Ogilvy", "/candidate/#c-ogilvy"),
-               ("AKQA", "/candidate/#c-akqa")]
+    _EV_MAP = agent.evidence_map
 
     def _evidence_links(escaped_text: str) -> str:
         """Wrap the first mention of each career anchor in a quiet evidence link."""
@@ -1921,6 +1898,12 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         seen_pass.add(k)
         rejects.append(j)
     passed_html = ""
+    # Belt and braces. Exclusions were applied before ranking; this refuses to
+    # render if any user-excluded role reached the PUBLIC near-miss set anyway.
+    if state is not None:
+        _fstate.assert_no_private_leak(
+            rejects, state, key_fn=lambda j: dedup_key(j["title"], j["company"]))
+
     if n > 0 and rejects:
         shown = [j for j in rejects if j.get("ai_pause")][:5]
         if shown:
@@ -1944,9 +1927,9 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
                 f'The {COUNT_WORDS[len(shown)].lower()} nearest {word}, and why they failed:</p>\n'
                 '    <div class="passed">\n' + "".join(items) + '    </div>\n')
 
-    os.makedirs("docs/archive", exist_ok=True)
-    today_file = f"docs/archive/{now.strftime('%Y-%m-%d')}.html"
-    prior = sorted(_glob.glob("docs/archive/????-??-??.html"))
+    os.makedirs(f"{agent.output_dir}/archive", exist_ok=True)
+    today_file = f"{agent.output_dir}/archive/{now.strftime('%Y-%m-%d')}.html"
+    prior = sorted(_glob.glob(f"{agent.output_dir}/archive/????-??-??.html"))
     if today_file in prior:
         edition = prior.index(today_file) + 1   # same-day re-run reprints, no bump
     else:
@@ -1964,33 +1947,33 @@ def build_shortlist(matches: list, new_keys: set, total_fetched: int):
         .replace("__FRACTION__", f"{n:03d}/{total_fetched:,}")
     )
 
-    with open("docs/index.html", "w") as f:
+    with open(f"{agent.output_dir}/index.html", "w") as f:
         f.write(page)
     archive_page = page.replace('href="/archive/"', 'href="./"')
     with open(today_file, "w") as f:
         f.write(archive_page)
 
     # simple archive index (newest first, numbered by chronological position)
-    editions = sorted(_glob.glob("docs/archive/????-??-??.html"))
+    editions = sorted(_glob.glob(f"{agent.output_dir}/archive/????-??-??.html"))
     links = "\n".join(
         f'<li style="padding:10px 0;border-top:1px solid #000;"><a style="color:#000;font-weight:700;text-decoration:none;" href="{os.path.basename(p)}">{i:03d}<span style="color:#6b6b6b;font-weight:400;"> &nbsp;&middot;&nbsp; {os.path.basename(p)[:-5]}</span></a></li>'
         for i, p in reversed(list(enumerate(editions, 1)))
     )
-    with open("docs/archive/index.html", "w") as f:
+    with open(f"{agent.output_dir}/archive/index.html", "w") as f:
         f.write(f'<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>THE SHORTLIST · Archive</title></head><body style="font-family:\'Helvetica Neue\',Helvetica,Arial,sans-serif;max-width:680px;margin:0 auto;padding:72px 24px;"><div style="font-size:13px;font-weight:700;letter-spacing:.14em;">THE SHORTLIST <span style="color:#6b6b6b;font-weight:400;">&middot; ARCHIVE</span></div><ol style="list-style:none;margin-top:48px;">{links}</ol><p style="margin-top:48px;font-size:13px;"><a href="../" style="color:#000;">&larr; Latest edition</a></p></body></html>')
 
     print(f"Shortlist: edition No. {edition:03d} built with {n} role(s).")
     return edition
 
-def publish_shortlist():
-    """Commit and push docs/ from inside GitHub Actions."""
+def publish_shortlist(agent):
+    """Publish the public showroom edition from inside GitHub Actions."""
     if os.environ.get("GITHUB_ACTIONS") != "true":
         print("Shortlist: not in GitHub Actions, skipping publish.")
         return
     try:
         _sub.run(["git", "config", "user.name", "shortlist-bot"], check=True)
         _sub.run(["git", "config", "user.email", "actions@users.noreply.github.com"], check=True)
-        _sub.run(["git", "add", "docs/"], check=True)
+        _sub.run(["git", "add", f"{agent.output_dir}/"], check=True)
         diff = _sub.run(["git", "diff", "--staged", "--quiet"])
         if diff.returncode == 0:
             print("Shortlist: no changes to publish.")
@@ -2005,8 +1988,46 @@ def publish_shortlist():
 # Main
 # ======================================================================
 
+def active_agents() -> list:
+    """Every agent the collector must gather for. One today; a query later.
+
+    Kept as its own function so the market layer never reaches for "the"
+    agent — there is no such thing once №002 exists.
+    """
+    return [load_agent_config("001")]
+
+
 def main():
     print(f"Job Alerts - {date.today()}")
+
+    agents = active_agents()
+
+    # ---- MARKET LAYER -----------------------------------------------------
+    # The collector runs the UNION of every active agent's search terms, not
+    # any single agent's. This is a recall guarantee: if one agent's vocabulary
+    # decided what was fetched, every other agent could only ever judge roles
+    # that agent caused to be retrieved. With one agent the union is identical
+    # to today's behaviour; with two it is the difference between №002 having
+    # a market and not having one.
+    global MARKET_QUERIES
+    MARKET_QUERIES = market_query_union(agents)
+    print(f"Market: {len(MARKET_QUERIES)} query term(s) across "
+          f"{len(agents)} agent(s)")
+
+    # ---- AGENT LAYER (one pass per agent; failures isolated) ---------------
+    agent = agents[0]
+
+    # ---- private state: live, else last-known-valid, else fail THIS agent ----
+    try:
+        state = _fstate.load_private_state(
+            agent.agent_id, snapshot_dir=STATE_DIR, agent_no=agent.agent_no,
+            published_dir=agent.output_dir)
+    except _fstate.PrivateStateUnavailable as e:
+        # One agent's failure is one agent's failure. Yesterday's edition stays
+        # readable; we do not publish one that contradicts stored decisions.
+        print(f"[state] ABORT for agent {agent.agent_id}: {e}")
+        return
+    report = _fstate.AgentRunReport.from_state(state)
 
     existing = get_existing_keys()
     print(f"Existing in Notion: {len(existing)}")
@@ -2021,7 +2042,7 @@ def main():
         raw += results
 
     seen_keys = {dedup_key(j["title"], j["company"]) for j in raw}
-    for mj in MANUAL_JOBS:
+    for mj in agent.manual_jobs:
         if dedup_key(mj["title"], mj["company"]) in seen_keys:
             print(f"  Manual: already fetched — {mj['company']} — {mj['title']}")
         else:
@@ -2033,12 +2054,19 @@ def main():
     filtered = [j for j in raw if passes_title(j["title"]) and passes_location(j["location"])]
     print(f"After filters: {len(filtered)}")
 
+    # THE CHOKE POINT. Applied here — after collection, before ranking, before
+    # any stage that can produce public output. A user-passed role that reaches
+    # rank_with_fit lands in the reject set and is published under NEARLY FOOUND
+    # with FOOUND's written reason. Filtering downstream would be too late.
+    filtered = _fstate.apply_private_exclusions(
+        filtered, state, key_fn=lambda j: dedup_key(j["title"], j["company"]))
+
     new_jobs = [j for j in filtered if dedup_key(j["title"], j["company"]) not in existing]
     print(f"New (not in Notion): {len(new_jobs)}")
 
     added = []
     for job in new_jobs:
-        job["keywords"] = matched_keywords(job["title"])
+        job["keywords"] = matched_keywords(agent, job["title"])
         if add_to_notion(job):
             added.append(job)
             print(f"  + {job['title']} | {job['company']} | {job.get('location', '')}")
