@@ -1818,7 +1818,7 @@ def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
     cascade = "<br>".join(cascade_lines)
 
     # ---- deep look: when the lead clears the bar, the agent keeps looking ----
-    if used_ai and n > 0 and ((ranked[0].get("fit") or 0) >= 80 or ranked[0].get("company") in PRIORITY_COMPANIES):
+    if used_ai and n > 0 and ((ranked[0].get("fit") or 0) >= 80 or ranked[0].get("company") in agent.priority_companies):
         _dl = deep_look(ranked[0], load_profile(agent))
         if _dl:
             ranked[0]["deep"] = _dl

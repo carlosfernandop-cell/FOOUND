@@ -38,7 +38,7 @@ def check(name, cond, detail=""):
 
 
 def run_main(signals, break_publish=False, break_build=False,
-             break_state=False):
+             break_state=False, ai=False):
     """Run main() against a fake market and a fake Supabase. Returns the log."""
     import importlib
     import job_alerts as ja
@@ -68,6 +68,14 @@ def run_main(signals, break_publish=False, break_build=False,
     ]
 
     ja.SCRAPERS = [("FakeMarket", lambda: list(market))]
+    if ai:
+        # Exercise the MODEL path: fits below 80 so every conditional branch
+        # in the deep-read gate actually evaluates (a leftover global hid
+        # behind a short-circuit here and crashed only in production).
+        ja.ANTHROPIC_KEY = "test-key"
+        ja.score_fit = lambda agent, profile, j, jd: (78, "why", "pause")
+        ja.deep_look = lambda j, p: ""
+
     ja.get_existing_keys = lambda: set()
     ja.add_to_notion = lambda job: True
     ja.fetch_jd_text = lambda url: ""
@@ -195,6 +203,18 @@ try:
           [l for l in logs_.split("\n") if "outcome" in l])
 except Exception:
     check("protective skip turns the run RED", False, "raised")
+    traceback.print_exc()
+
+# ----------------------- AI path: conditional branches must execute
+try:
+    loga, _, codea = run_main([], ai=True)
+    check("AI-path run completes (deep-read gate evaluates fully)",
+          codea == 0, str(codea) + " " + loga[-300:])
+    check("AI path reports engine=ai", "· ai ·" in loga,
+          [l for l in loga.split("\n") if "operator" in l])
+    check("AI path delivers", "outcome=delivered" in loga or "outcome=degraded-delivered" in loga)
+except Exception:
+    check("AI-path run completes", False, "raised")
     traceback.print_exc()
 
 print(f"\n{len(OK)} passed, {len(FAIL)} failed")
