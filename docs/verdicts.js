@@ -223,6 +223,36 @@
 
   function markAll() { $all(".item[data-key]").forEach(buildControls); }
 
+  /* --------------------------------------------------- signed-in nameplate
+     Signed out the masthead reads FOOUND. Signed in it reads
+     FOOUND · № 001 · SIGNED IN — the page says whose it is, at a glance,
+     without a new surface. Falls back to a quiet fixed mark if a page has
+     no masthead. */
+  function padNo(n) {
+    n = String(n == null ? "" : n);
+    while (n.length < 3) n = "0" + n;
+    return n;
+  }
+  function showOwnerMark(agentNo) {
+    if ($(".vowner")) return;
+    var css = document.createElement("style");
+    css.textContent =
+      ".vowner{color:#6b6b6b;} .vowner b{color:#000;font-weight:inherit;}" +
+      ".vowner-fixed{position:fixed;top:14px;right:16px;z-index:60;background:#fff;" +
+      "font-family:ui-monospace,'SF Mono',Menlo,Consolas,'Liberation Mono',monospace;" +
+      "font-size:10.5px;letter-spacing:.14em;text-transform:uppercase;padding:4px 0 4px 8px;}";
+    document.head.appendChild(css);
+    var mark = el("span", "vowner");
+    mark.appendChild(document.createTextNode(" · "));
+    var no = document.createElement("b");
+    no.textContent = "№ " + padNo(agentNo);
+    mark.appendChild(no);
+    mark.appendChild(document.createTextNode(" · signed in"));
+    var host = $(".mast .id");
+    if (host) host.appendChild(mark);
+    else { mark.className += " vowner-fixed"; document.body.appendChild(mark); }
+  }
+
   /* ------------------------------------------------------- sign-in sheet */
   function buildSheet() {
     if ($("#vsheet")) return $("#vsheet");
@@ -254,15 +284,18 @@
 
   /* ---------------------------------------------------------------- init */
   function activate(session) {
+    var agentNo = null;
     return sb.from("agents").select("id,agent_no").limit(1).single()
       .then(function (res) {
         if (res.error || !res.data) throw (res.error || new Error("no agent"));
         agentId = res.data.id;
+        agentNo = res.data.agent_no;
         return refresh();
       })
       .then(function () {
         authed = true;
         document.body.classList.add("owner");
+        showOwnerMark(agentNo);
         var sheet = $("#vsheet"); if (sheet) sheet.remove();
         markAll();
       })
