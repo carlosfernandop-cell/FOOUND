@@ -20,9 +20,11 @@ Responsibilities, in order of importance:
 Naming note (deliberate, do not collapse these):
     user_pass / user_passes    — the PERSON rejected this role.
     foound_rejects / near_miss — FOOUND read the role and declined it.
-                                 Rendered publicly as "NEARLY FOOUND".
-Two different actors. The interface may keep NEARLY FOOUND; the code may not
-use "passed" for both.
+                                 Rendered publicly as "FOUND, NOT FOOUND".
+    reconsider / second_look   — the PERSON pushed back on a decline:
+                                 "look again." The inverse of PASS.
+Two different actors. The interface may keep its section names; the code may
+not use "passed" for more than one of them.
 """
 
 from __future__ import annotations
@@ -68,6 +70,10 @@ class PrivateState:
     agent_no: int | None = None
     user_passes: dict[str, dict] = field(default_factory=dict)   # role_key -> signal
     applied: dict[str, dict] = field(default_factory=dict)       # role_key -> signal
+    reconsider: dict[str, dict] = field(default_factory=dict)    # role_key -> signal
+    # Filled by the renderer: second looks today's edition visibly answered
+    # (promoted, or re-declined with a fresh argument). Settled after publish.
+    answered_second_looks: set[str] = field(default_factory=set)
     fetched_at: str = ""
     source: str = "live"                 # "live" | "snapshot"
     stale: bool = False
@@ -81,8 +87,18 @@ class PrivateState:
         PASS    — out of consideration.
         APPLIED — moved forward; retained and openable, but no longer
                   competing among today's new recommendations.
+
+        RECONSIDER is deliberately NOT here: it is the opposite instruction —
+        the person is pushing a role INTO consideration, not out of it.
         """
         return set(self.user_passes) | set(self.applied)
+
+    @property
+    def second_look_keys(self) -> set[str]:
+        """Roles the person asked FOOUND to look at again. The pipeline must
+        re-judge these with a full read and answer visibly — promote the role,
+        or decline it again with a better-argued reason. Never silence."""
+        return set(self.reconsider)
 
     def recent_decisions(
         self,
@@ -381,7 +397,7 @@ def _fetch_live_with_retry(agent_id: str, url: str, key: str,
 
 def _valid_row(row: dict) -> bool:
     """Reject anything that would poison state. Validation is code, not a model."""
-    if row.get("kind") not in ("pass", "applied"):
+    if row.get("kind") not in ("pass", "applied", "reconsider"):
         return False
     if not row.get("role_key"):
         return False
@@ -390,6 +406,8 @@ def _valid_row(row: dict) -> bool:
         return False
     if row["kind"] == "applied" and (row.get("reason") or row.get("note")):
         return False          # class violation; should be impossible via the DB
+    if row["kind"] == "reconsider" and (row.get("reason") or row.get("note")):
+        return False          # the verb is bare by design; DB enforces this too
     return True
 
 
@@ -405,6 +423,8 @@ def _build_state(agent_id: str, rows: Iterable[dict], source: str,
             st.user_passes[row["role_key"]] = row
         elif row["kind"] == "applied":
             st.applied[row["role_key"]] = row
+        elif row["kind"] == "reconsider":
+            st.reconsider[row["role_key"]] = row
     return st
 
 
@@ -630,6 +650,41 @@ def enrich_applied_source(state: PrivateState, fetch_jd, patch_row) -> int:
             print(f"[enrich] {role_key}: enrichment failed ({exc}) — "
                   "APPLIED state unaffected, will retry next run")
     return enriched
+
+
+# ---------------------------------------------------------------------------
+# RECONSIDER — answering the persuade verb
+# ---------------------------------------------------------------------------
+def mark_reconsiders_answered(state: PrivateState, answered_keys, patch_row) -> int:
+    """Settle each reconsider the edition just answered: state -> 'answered'.
+
+    Called AFTER the edition is built and published, only for roles that
+    actually appeared in it (promoted into the shortlist, or re-declined with
+    a fresh argument in FOUND, NOT FOOUND). A role absent from today's market
+    stays ACTIVE — an unanswered question, not a forgotten one — and forces a
+    second look again on the next run.
+
+    Same hard rule as enrichment: this can only ever settle, never break.
+    A failed patch leaves the signal active, so the worst failure mode is
+    answering the same question twice — honest, and self-healing.
+    Returns the number of signals settled.
+    """
+    settled = 0
+    for key in answered_keys:
+        sig = state.reconsider.get(key)
+        if not sig or not sig.get("id"):
+            continue
+        try:
+            patch_row(sig["id"], {"state": "answered"})
+            settled += 1
+            print(f"[reconsider] {key}: answered — signal settled")
+        except Exception as exc:
+            print(f"[reconsider] {key}: could not settle ({exc}) — stays "
+                  "active, will answer again next run")
+    open_keys = set(state.reconsider) - set(answered_keys)
+    for key in open_keys:
+        print(f"[reconsider] {key}: not in today's market — remains open")
+    return settled
 
 
 def _note_attempt(sig: dict, snap: dict, patch_row) -> None:

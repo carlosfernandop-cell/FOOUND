@@ -993,8 +993,12 @@ def score_fit(agent, profile: str, job: dict, jd_text: str):
         print(f"  [Fit error] {job['title']}: {e}")
         return None, None, None
 
-def rank_with_fit(agent, matches: list, new_keys: set):
-    """Return (ranked_matches, used_ai). Each match may gain 'fit' and 'ai_line'."""
+def rank_with_fit(agent, matches: list, new_keys: set, second_look: set | None = None):
+    """Return (ranked_matches, used_ai). Each match may gain 'fit' and 'ai_line'.
+
+    second_look: role_keys the person explicitly asked FOOUND to re-judge
+    (the RECONSIDER verb). These are always read in full, exactly like
+    priority companies — the person's push-back outranks the heuristic cut."""
     heuristic = lambda j: (
         _seniority_score(j["title"]) + _recency_score(j.get("posted_at"))
         + (2 if dedup_key(j["title"], j["company"]) in new_keys else 0)
@@ -1008,6 +1012,12 @@ def rank_with_fit(agent, matches: list, new_keys: set):
     for j in matches:
         if j["company"] in agent.priority_companies and j not in candidates:
             candidates.append(j)   # priority watch: always read in full
+    for j in matches:
+        if (second_look
+                and dedup_key(j["title"], j["company"]) in second_look
+                and j not in candidates):
+            candidates.append(j)   # the person asked: always read in full
+            print(f"  [second look] forced full read: {j['company']} — {j['title']}")
     scored_any = False
     for j in candidates:
         jd = fetch_jd_text(j.get("url", ""))
@@ -1502,6 +1512,24 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   /* ---- the owner's hands: verdicts. invisible until signed in ---- */
   .vpass{display:none;}
   body.owner .vpass{display:inline-block;}
+  /* the persuade verb, on FOUND NOT FOOUND rows */
+  .vlook{display:none;}
+  body.owner .vlook{
+    display:inline-block;background:none;border:none;cursor:pointer;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:11px;font-weight:500;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--mute);padding:10px 0 2px;
+  }
+  @media (hover:hover){body.owner .vlook:hover{color:var(--ink);}}
+  .pitem .vword{
+    display:block;margin-top:8px;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+    font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--ink);
+  }
+  .pitem .vundo{margin-top:8px;}
+  .pitem.vlooked .pdot{background:var(--ink);}
+  .relook-tag{font-weight:700;color:var(--ink);}
+  .pitem.open .ppanel{max-height:340px;}
   .vwrap{max-width:640px;}
   .vchips{display:none;margin-top:18px;flex-wrap:wrap;align-items:baseline;gap:10px 18px;}
   .vchips.on{display:flex;}
@@ -1766,7 +1794,9 @@ def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
     now = _et_now()
     datelong = now.strftime("%A, %B %d, %Y").replace(" 0", " ")
 
-    ranked_all, used_ai = rank_with_fit(agent, matches, new_keys)
+    second_look = state.second_look_keys if state is not None else set()
+    ranked_all, used_ai = rank_with_fit(agent, matches, new_keys,
+                                        second_look=second_look)
 
     # Heuristic is a DEGRADED success, never a normal one. Recorded every run
     # so 'ran on rules for five days' can never read as healthy.
@@ -1984,27 +2014,56 @@ def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
             rejects, state, key_fn=lambda j: dedup_key(j["title"], j["company"]))
 
     if n > 0 and rejects:
-        shown = [j for j in rejects if j.get("ai_pause")][:5]
+        # The person's second-look requests are answered FIRST, and are never
+        # trimmed by the five-row cap: a question asked must be answered.
+        with_reason = [j for j in rejects if j.get("ai_pause")]
+        relooked = [j for j in with_reason
+                    if dedup_key(j["title"], j["company"]) in second_look]
+        others = [j for j in with_reason if j not in relooked]
+        shown = (relooked + others)[:max(5, len(relooked))]
         if shown:
             word = "misses" if len(shown) > 1 else "miss"
             items = []
             for j in shown:
+                key = dedup_key(j["title"], j["company"])
+                is_relook = j in relooked
                 fit = j.get("fit")
                 pfit = f'<span class="pfit">{{fit&nbsp;{fit}}}</span>' if fit is not None else ""
+                reason = _html.escape(j["ai_pause"])
+                if is_relook:
+                    reason = ('<b class="relook-tag">Looked again, as you asked.</b> '
+                              + reason)
                 items.append(
-                    '      <div class="pitem">\n'
+                    f'      <div class="pitem{" relook" if is_relook else ""}"'
+                    f' data-key="{_html.escape(key)}"'
+                    f' data-title="{_html.escape(j["title"])}"'
+                    f' data-company="{_html.escape(j["company"])}"'
+                    f' data-url="{_html.escape(j.get("url", "") or "")}"'
+                    f' data-location="{_html.escape(j.get("location", "") or "")}"'
+                    f' data-fit="{fit if fit is not None else ""}"'
+                    f' data-pause="{_html.escape(j.get("ai_pause", "") or "")}">\n'
                     '        <button class="prow" aria-expanded="false">'
                     f'<span class="pdot"></span>{_html.escape(j["company"])}</button>\n'
                     '        <div class="ppanel"><div class="ppanel-inner">\n'
                     f'          <div class="pline">{_html.escape(j["title"])}{pfit}</div>\n'
-                    f'          <span class="preason">{_html.escape(j["ai_pause"])}</span>\n'
+                    f'          <span class="preason">{reason}</span>\n'
                     '        </div></div>\n'
                     '      </div>\n')
             passed_html = (
-                '\n    <div class="seclabel pass">Nearly foound</div>\n'
+                '\n    <div class="seclabel pass">Found, not FOOUND</div>\n'
                 f'    <p class="passintro">{len(rejects)} more read in full and declined. '
-                f'The {COUNT_WORDS[len(shown)].lower()} nearest {word}, and why they failed:</p>\n'
+                f'The {COUNT_WORDS[min(len(shown), len(COUNT_WORDS) - 1)].lower()} nearest {word}, and why they failed:</p>\n'
                 '    <div class="passed">\n' + "".join(items) + '    </div>\n')
+
+    # A second look is ANSWERED when today's edition responded visibly:
+    # promoted into the shortlist, or re-declined with a fresh argument above.
+    # An edition with no shortlist rendered answers nothing.
+    if state is not None and second_look and n > 0:
+        answered = {dedup_key(j["title"], j["company"]) for j in ranked}
+        answered |= {dedup_key(j["title"], j["company"])
+                     for j in rejects if j.get("ai_pause")
+                     and dedup_key(j["title"], j["company"]) in second_look}
+        state.answered_second_looks = answered & second_look
 
     os.makedirs(f"{agent.output_dir}/archive", exist_ok=True)
     today_file = f"{agent.output_dir}/archive/{now.strftime('%Y-%m-%d')}.html"
@@ -2044,6 +2103,23 @@ def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
 
     print(f"Shortlist: edition No. {edition:03d} built with {n} role(s).")
     return edition
+
+def _sb_patch_signal(sig_id: str, patch: dict) -> None:
+    """Operator-side write to one signal row (service key, bypasses RLS).
+    Used to settle answered RECONSIDER signals; raises on any failure so the
+    caller can log-and-continue — a patch must never break an edition."""
+    url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+    if not url or not key:
+        raise RuntimeError("Supabase not configured")
+    r = requests.patch(
+        f"{url}/rest/v1/signals",
+        params={"id": f"eq.{sig_id}"},
+        headers={"apikey": key, "Authorization": f"Bearer {key}",
+                 "Prefer": "return=minimal"},
+        json=patch, timeout=15)
+    r.raise_for_status()
+
 
 def publish_shortlist(agent) -> bool:
     """Publish the public showroom edition from inside GitHub Actions.
@@ -2176,6 +2252,15 @@ def main():
                         state=state, report=report)
         report.edition = "built"
         report.delivered = publish_shortlist(agent)
+        # Settle answered second looks ONLY once the answer is truly published.
+        # A failed settle is non-fatal: the signal stays active and the same
+        # question is answered again tomorrow — honest, and self-healing.
+        if report.delivered and state.reconsider:
+            try:
+                _fstate.mark_reconsiders_answered(
+                    state, state.answered_second_looks, patch_row=_sb_patch_signal)
+            except Exception as _e:
+                print(f"[reconsider] settling failed (non-fatal): {_e}")
     except Exception as e:
         report.edition = "failed"
         report.detail = str(e)[:120]

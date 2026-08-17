@@ -71,6 +71,15 @@
     });
   }
 
+  function reconsider(item, key) {
+    /* The persuade verb. Bare by design: no reason, no note — the argument
+       belongs in the edition's answer, not in the request. */
+    return writeSignal(key, {
+      agent_id: agentId, kind: "reconsider", role_key: key,
+      snapshot: snapshotFor(item, key)
+    });
+  }
+
   function applied(item, key) {
     return writeSignal(key, {
       agent_id: agentId, kind: "applied", role_key: key,
@@ -221,7 +230,76 @@
     syncFromStore();
   }
 
-  function markAll() { $all(".item[data-key]").forEach(buildControls); }
+  /* ------------------------------------- FOUND NOT FOOUND: the persuade verb
+     Each declined row gains one quiet verb for the owner: LOOK AGAIN.
+     It writes a bare reconsider signal; the next edition must answer —
+     promote the role, or decline it again with a better-argued reason.
+     The pipeline settles the signal to 'answered' once the answer publishes,
+     so the verb returns after each answer: persuasion is a conversation. */
+  function buildLook(item) {
+    var key = item.getAttribute("data-key");
+    var inner = $(".ppanel-inner", item);
+    if (!key || !inner || $(".vlook", item)) return;
+
+    var btn = el("button", "vlook", "Look again");
+    btn.type = "button";
+    var state = el("div", "vstate plook");
+    inner.appendChild(btn);
+    inner.appendChild(state);
+
+    function setState(mode) {
+      item.classList.remove("vlooked", "vsaving");
+      state.textContent = "";
+      state.classList.remove("on");
+      btn.style.display = "";
+      if (mode === "saving") {
+        item.classList.add("vsaving");
+        btn.style.display = "none";
+        state.classList.add("on");
+        state.appendChild(el("span", "vword", "Asking…"));
+      } else if (mode === "asked") {
+        item.classList.add("vlooked");
+        btn.style.display = "none";
+        state.classList.add("on");
+        state.appendChild(el("span", "vword",
+          "Second look requested — the next edition answers"));
+        var u = el("button", "vundo", "Undo");
+        u.type = "button";
+        u.addEventListener("click", function (e) {
+          e.stopPropagation();
+          setState("saving");
+          undo(key).then(function () { setState("open"); })
+                   .catch(function () { syncFromStore(); });
+        });
+        state.appendChild(u);
+      } else if (mode === "error") {
+        state.classList.add("on");
+        state.appendChild(el("span", "vword verr",
+          "Didn’t save — check connection and try again"));
+      }
+    }
+
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      setState("saving");
+      reconsider(item, key)
+        .then(function () { setState("asked"); })
+        .catch(function () { setState("error"); });
+    });
+
+    function syncFromStore() {
+      var row = active[key];
+      if (row && row.kind === "reconsider") setState("asked");
+      else setState("open");
+    }
+    item._foundSync = syncFromStore;
+    syncFromStore();
+  }
+
+  function markAll() {
+    $all(".item[data-key]").forEach(buildControls);
+    $all(".pitem[data-key]").forEach(buildLook);
+  }
 
   /* --------------------------------------------------- signed-in nameplate
      Signed out the masthead reads FOOUND. Signed in it reads

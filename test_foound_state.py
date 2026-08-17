@@ -176,6 +176,8 @@ check("operator row is machine-readable", fs.AgentRunReport.as_row(rep)["foound"
 # ---------------------------------- 11. decision-only reasons teach nothing
 fs.DECISION_ONLY_REASONS.add("timing")
 fs.LEARNING_BEARING_REASONS.discard("timing")
+check("'other' ships as decision-only (the neutral pass)",
+      not fs.is_learning_bearing("other"))
 mixed = [row("a|co", "pass", "scope", days_ago=1, company="ScopeCo"),
          row("b|co", "pass", "timing", days_ago=1, company="TimingCo")]
 st_mixed = fs._build_state(AG, mixed, source="live")
@@ -254,6 +256,44 @@ refresh["snapshot"]["source_refresh_requested"] = True
 st_ref = fs._build_state(AG, [refresh], source="live")
 check("explicit refresh request re-opens capture",
       len(fs.applied_rows_needing_source(st_ref)) == 1)
+
+# ---------------------------------- 15. RECONSIDER: the persuade verb
+rc = row("head of brand|suno", "reconsider")
+rc["id"] = "r1"
+st_rc = fs._build_state(AG, [row("a|co", "pass", reason="scope"),
+                             row("b|co", "applied"), rc], source="live")
+check("reconsider routed to its own map",
+      set(st_rc.reconsider) == {"head of brand|suno"})
+check("reconsider is NOT an exclusion — it pushes a role IN, not out",
+      "head of brand|suno" not in st_rc.excluded_keys)
+check("second_look_keys exposes exactly the reconsider set",
+      st_rc.second_look_keys == {"head of brand|suno"})
+check("pass and applied still excluded alongside reconsider",
+      st_rc.excluded_keys == {"a|co", "b|co"})
+check("reconsider never enters RECENT DECISIONS",
+      all(s.get("kind") == "pass" for s in st_rc.recent_decisions()))
+
+check("a bare reconsider row is valid", fs._valid_row(rc))
+bad_rc = row("x|co", "reconsider", reason="scope")
+check("a reconsider carrying a reason is rejected", not fs._valid_row(bad_rc))
+bad_rc2 = row("y|co", "reconsider", note="please")
+check("a reconsider carrying a note is rejected", not fs._valid_row(bad_rc2))
+
+# answered lifecycle: settle only what the edition answered; failures tolerated
+rc2 = row("cd|udio", "reconsider"); rc2["id"] = "r2"
+st_ans = fs._build_state(AG, [rc, rc2], source="live")
+settled = {}
+n_set = fs.mark_reconsiders_answered(
+    st_ans, {"head of brand|suno"}, patch_row=lambda i, d: settled.update({i: d}))
+check("answered second look settles to 'answered'",
+      n_set == 1 and settled == {"r1": {"state": "answered"}}, str(settled))
+
+def boom(i, d): raise RuntimeError("db down")
+n_fail = fs.mark_reconsiders_answered(st_ans, {"head of brand|suno"}, patch_row=boom)
+check("a failed settle is swallowed — signal stays active, edition unaffected",
+      n_fail == 0)
+n_none = fs.mark_reconsiders_answered(st_ans, set(), patch_row=boom)
+check("no answers means no patches, even with open questions", n_none == 0)
 
 shutil.rmtree(tmp)
 print(f"\n{len(OK)} passed, {len(FAIL)} failed")
