@@ -659,83 +659,81 @@ def _apple_row(j: dict, seen: set) -> dict | None:
     }
 
 
-def _apple_find_results(payload) -> list:
-    """The results array has moved between API versions; look in the known
-    places, then fall back to 'any list of dicts that look like postings'."""
-    if isinstance(payload, dict):
-        for path in (("searchResults",), ("res", "searchResults"),
-                     ("result", "searchResults")):
-            node = payload
-            for k in path:
-                node = node.get(k) if isinstance(node, dict) else None
-            if isinstance(node, list):
-                return node
-        for v in payload.values():
-            if (isinstance(v, list) and v and isinstance(v[0], dict)
-                    and ("postingTitle" in v[0] or "positionId" in v[0])):
-                return v
-    return []
+def _apple_hydration(html: str) -> dict | None:
+    """Extract the server-rendered React Router state from a search page.
+
+    The page embeds everything the results list needs as
+    window.__staticRouterHydrationData = JSON.parse("<escaped json>") —
+    a JS string literal, so it decodes in two steps: once as a JSON string,
+    then as JSON. Verified live against jobs.apple.com in a cookie-less
+    fetch, which is exactly what this scraper is."""
+    m = re.search(
+        r'__staticRouterHydrationData\s*=\s*JSON\.parse\("((?:[^"\\]|\\.)*)"\)',
+        html)
+    if not m:
+        return None
+    try:
+        return json.loads(json.loads('"' + m.group(1) + '"'))
+    except Exception:
+        return None
 
 
 def fetch_apple() -> list:
     """Apple jobs.
 
-    Apple's search page no longer filters server-side: GET ?search=... returns
-    the newest postings company-wide and the real search happens in a
-    background POST. So the primary path here is that API (CSRF token, then
-    POST per query), with the old page-parsing kept only as a fallback. Every
-    path logs what it produced, so a silent regression to 'newest 20 random
-    Apple jobs' can never look like coverage again.
-    If it all breaks, check manually:
-    https://jobs.apple.com/en-us/search?search=creative%20director"""
+    Two facts about Apple's search, learned the hard way and verified live:
+      1. There is no background search API to call — results are
+         server-rendered into the page as a hydration blob.
+      2. An UNQUOTED query is near-useless: 'creative director' loose-matches
+         ~1,500 postings (retail 'Creative', any 'Director') and relevance
+         buries the real ones. A QUOTED phrase matches against full job
+         descriptions and returns a tight, complete set — 14 roles, including
+         the Creative Director postings the unquoted search never surfaced.
+
+    So: GET the search page per quoted phrase, parse the hydration blob,
+    normalize. The old page-scrape stays only as a last-resort fallback and
+    says out loud that it is unfiltered.
+    Check manually if broken:
+    https://jobs.apple.com/en-us/search?search=%22creative%20director%22"""
     jobs = []
     seen = set()
-    queries = ["creative director", "brand"]
+    queries = ['"creative director"', '"brand marketing"']
 
-    # ---- primary: the search API the page itself uses ----
+    # ---- primary: quoted-phrase search, hydration blob ----
     try:
         s = requests.Session()
         s.headers.update(HEADERS)
-        s.get("https://jobs.apple.com/en-us/search", timeout=20)   # cookies
-        token = ""
-        try:
-            rt = s.get("https://jobs.apple.com/api/csrfToken", timeout=20)
-            token = rt.headers.get("X-Apple-CSRF-Token", "") or ""
-        except Exception:
-            pass
-        api_headers = {"Content-Type": "application/json"}
-        if token:
-            api_headers["X-Apple-CSRF-Token"] = token
         for q in queries:
             got_q = 0
-            for endpoint in ("https://jobs.apple.com/api/v1/search",
-                             "https://jobs.apple.com/api/role/search"):
-                try:
-                    for page in (1, 2):
-                        r = s.post(endpoint, timeout=20, headers=api_headers,
-                                   json={"query": q, "locale": "en-us",
-                                         "page": page, "sort": "newest",
-                                         "filters": {}})
-                        if not r.ok:
-                            break
-                        results = _apple_find_results(r.json())
-                        if not results:
-                            break
-                        for item in results:
-                            row = _apple_row(item, seen)
-                            if row:
-                                jobs.append(row)
-                                got_q += 1
-                except Exception:
-                    continue
-                if got_q:
+            for page in (1, 2, 3):
+                params = {"search": q}
+                if page > 1:
+                    params["page"] = str(page)
+                r = s.get("https://jobs.apple.com/en-us/search",
+                          params=params, timeout=20)
+                if not r.ok:
+                    print(f"[Apple] HTTP {r.status_code} for q={q!r} page {page}")
                     break
-            print(f"[Apple] api q={q!r}: {got_q} new role(s)")
+                data = _apple_hydration(r.text)
+                search = (data or {}).get("loaderData", {}).get("search", {})
+                results = search.get("searchResults") or []
+                if not results:
+                    break
+                for item in results:
+                    row = _apple_row(item, seen)
+                    if row:
+                        jobs.append(row)
+                        got_q += 1
+                total = search.get("totalRecords") or 0
+                if page * 20 >= min(int(total), 60):
+                    break
+            print(f"[Apple] search q={q!r}: {got_q} role(s)")
         if jobs:
             return jobs
-        print("[Apple] api returned nothing — falling back to page parsing")
+        print("[Apple] hydration search returned nothing — "
+              "falling back to page parsing")
     except Exception as e:
-        print(f"[Apple] api error: {e} — falling back to page parsing")
+        print(f"[Apple] search error: {e} — falling back to page parsing")
 
     # ---- fallbacks: the old server-rendered page (now UNFILTERED newest-20;
     # better than blindness, but logged for what it is) ----
