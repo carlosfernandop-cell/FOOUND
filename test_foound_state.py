@@ -51,8 +51,11 @@ rows = [row("head of brand|suno", "pass", "scope", title="Head of Brand", compan
         row("vp brand|ramp", "applied", title="VP Brand", company="Ramp"),
         row("ecd|koto", "pass", "company", days_ago=30, title="ECD", company="Koto")]
 with open(os.path.join(sd, f"agent_{AG}.json"), "w") as f:
+    # RELATIVE, never a literal date: a hardcoded fetched_at is a time bomb
+    # that detonates exactly MAX_SNAPSHOT_AGE_DAYS after it is written.
     json.dump({"snapshot_format": 1, "agent_id": AG,
-               "fetched_at": "2026-08-13T12:00:00+00:00", "rows": rows}, f)
+               "fetched_at": (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(),
+               "rows": rows}, f)
 
 st = fs.load_private_state(AG, snapshot_dir=sd, supabase_url=UNREACHABLE, service_key="k")
 check("falls back to last-known-valid snapshot", st.source == "snapshot" and st.stale)

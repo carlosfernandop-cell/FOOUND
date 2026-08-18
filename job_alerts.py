@@ -636,52 +636,131 @@ def fetch_canva() -> list:
         print(f"[Canva] error: {e}")
     return jobs
 
+def _apple_row(j: dict, seen: set) -> dict | None:
+    """Normalize one Apple search result across their API/page variants."""
+    title = (j.get("postingTitle") or j.get("title") or "").strip()
+    key = title.lower()
+    if not title or key in seen:
+        return None
+    seen.add(key)
+    locs = j.get("locations") or []
+    location = "; ".join(
+        l.get("name", "") for l in locs if isinstance(l, dict) and l.get("name"))
+    slug = j.get("positionId") or j.get("id") or j.get("reqId") or ""
+    transformed = j.get("transformedPostingTitle") or ""
+    url = (f"https://jobs.apple.com/en-us/details/{slug}/{transformed}"
+           if slug else "")
+    return {
+        "title":     title,
+        "location":  location,
+        "url":       url,
+        "company":   "Apple",
+        "posted_at": parse_iso(j.get("postDateInGMT") or j.get("postingDate") or ""),
+    }
+
+
+def _apple_find_results(payload) -> list:
+    """The results array has moved between API versions; look in the known
+    places, then fall back to 'any list of dicts that look like postings'."""
+    if isinstance(payload, dict):
+        for path in (("searchResults",), ("res", "searchResults"),
+                     ("result", "searchResults")):
+            node = payload
+            for k in path:
+                node = node.get(k) if isinstance(node, dict) else None
+            if isinstance(node, list):
+                return node
+        for v in payload.values():
+            if (isinstance(v, list) and v and isinstance(v[0], dict)
+                    and ("postingTitle" in v[0] or "positionId" in v[0])):
+                return v
+    return []
+
+
 def fetch_apple() -> list:
-    """Apple jobs — EXPERIMENTAL. Parses the server-rendered search page.
-    Apple has no stable public API; if this breaks, check manually at
+    """Apple jobs.
+
+    Apple's search page no longer filters server-side: GET ?search=... returns
+    the newest postings company-wide and the real search happens in a
+    background POST. So the primary path here is that API (CSRF token, then
+    POST per query), with the old page-parsing kept only as a fallback. Every
+    path logs what it produced, so a silent regression to 'newest 20 random
+    Apple jobs' can never look like coverage again.
+    If it all breaks, check manually:
     https://jobs.apple.com/en-us/search?search=creative%20director"""
     jobs = []
     seen = set()
+    queries = ["creative director", "brand"]
+
+    # ---- primary: the search API the page itself uses ----
     try:
-        for q in ["creative director", "brand"]:
+        s = requests.Session()
+        s.headers.update(HEADERS)
+        s.get("https://jobs.apple.com/en-us/search", timeout=20)   # cookies
+        token = ""
+        try:
+            rt = s.get("https://jobs.apple.com/api/csrfToken", timeout=20)
+            token = rt.headers.get("X-Apple-CSRF-Token", "") or ""
+        except Exception:
+            pass
+        api_headers = {"Content-Type": "application/json"}
+        if token:
+            api_headers["X-Apple-CSRF-Token"] = token
+        for q in queries:
+            got_q = 0
+            for endpoint in ("https://jobs.apple.com/api/v1/search",
+                             "https://jobs.apple.com/api/role/search"):
+                try:
+                    for page in (1, 2):
+                        r = s.post(endpoint, timeout=20, headers=api_headers,
+                                   json={"query": q, "locale": "en-us",
+                                         "page": page, "sort": "newest",
+                                         "filters": {}})
+                        if not r.ok:
+                            break
+                        results = _apple_find_results(r.json())
+                        if not results:
+                            break
+                        for item in results:
+                            row = _apple_row(item, seen)
+                            if row:
+                                jobs.append(row)
+                                got_q += 1
+                except Exception:
+                    continue
+                if got_q:
+                    break
+            print(f"[Apple] api q={q!r}: {got_q} new role(s)")
+        if jobs:
+            return jobs
+        print("[Apple] api returned nothing — falling back to page parsing")
+    except Exception as e:
+        print(f"[Apple] api error: {e} — falling back to page parsing")
+
+    # ---- fallbacks: the old server-rendered page (now UNFILTERED newest-20;
+    # better than blindness, but logged for what it is) ----
+    try:
+        for q in queries:
             r = requests.get(
                 "https://jobs.apple.com/en-us/search",
                 params={"search": q, "sort": "newest"},
                 headers=HEADERS, timeout=20,
             )
             if not r.ok:
-                print(f"[Apple] HTTP {r.status_code} for q={repr(q)}")
+                print(f"[Apple] HTTP {r.status_code} for q={q!r}")
                 continue
             html = r.text
-            # Try embedded JSON state first
             m = re.search(r'window\.APP_STATE\s*=\s*(\{.*?\});\s*</script>', html, re.S)
             if m:
                 try:
                     state = json.loads(m.group(1))
-                    for j in state.get("searchResults", []):
-                        title = j.get("postingTitle", "") or j.get("title", "")
-                        key = title.lower().strip()
-                        if not title or key in seen:
-                            continue
-                        seen.add(key)
-                        locs = j.get("locations") or []
-                        location = "; ".join(
-                            l.get("name", "") for l in locs if isinstance(l, dict)
-                        )
-                        slug = j.get("positionId", "") or j.get("id", "")
-                        transformed = j.get("transformedPostingTitle", "")
-                        url = f"https://jobs.apple.com/en-us/details/{slug}/{transformed}" if slug else ""
-                        jobs.append({
-                            "title":     title,
-                            "location":  location,
-                            "url":       url,
-                            "company":   "Apple",
-                            "posted_at": parse_iso(j.get("postDateInGMT", "")),
-                        })
+                    for item in state.get("searchResults", []):
+                        row = _apple_row(item, seen)
+                        if row:
+                            jobs.append(row)
                     continue
                 except Exception:
                     pass
-            # Fallback: pull job links out of the HTML
             junk = {"see full role description", "where we're hiring",
                     "where we&#x27;re hiring", "learn more", "apply", "share"}
             for slug, title in re.findall(
@@ -699,6 +778,9 @@ def fetch_apple() -> list:
                     "company":   "Apple",
                     "posted_at": None,
                 })
+        if jobs:
+            print(f"[Apple] page fallback: {len(jobs)} role(s) — NOTE: this "
+                  "path is unfiltered newest postings, not a query match")
     except Exception as e:
         print(f"[Apple] error: {e}")
     return jobs
