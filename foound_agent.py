@@ -119,7 +119,9 @@ BOOTSTRAP_001 = AgentConfig(
     recipient_email="",              # from RECIPIENT_EMAIL env for now
     profile_path="profile.md",
     output_dir="docs",
-    edition_url='https://carlosfernandop-cell.github.io/job-alerts/',
+    # The custom domain, never the github.io URL: a repo rename kills the
+    # github.io address (learned Aug 18) but foound.ai survives anything.
+    edition_url='https://foound.ai/',
     publish_public=True,
     include=[
     "creative director",
