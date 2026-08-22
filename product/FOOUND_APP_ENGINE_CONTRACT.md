@@ -46,8 +46,9 @@ client isolation (RLS's job) · any schema change.
 
 | Object | App access | Notes |
 |---|---|---|
-| own uploads (Storage `feeds/{uid}/`) | read/write | evidence in |
-| `memory` (own) | read; insert/update corrections | Mirror actions; ledger rows only |
+| own uploads (Storage `feeds/{uid}/{item_id}/blob`) | insert + read own prefix | object requires a matching owned `evidence_items` row; no update/delete — physical cleanup is engine work via the Storage API, never SQL |
+| `evidence_items` (own) | read; insert `received` only (client-generated id, canonical path); update = request logical deletion only (`status` → `deleted`) | column-grant enforced; `reading`/`read`/`failed`, `submitted_in`, `read_at`, `deleted_at` are engine/database-owned; deletion is terminal and orphans derived memory in-database |
+| `memory` (own) | read only | correction paths arrive with the Mirror contract; active memory may cite only `read`, same-agent evidence (database-enforced) |
 | `briefs` (own) | read; insert PROPOSED; edit proposed only | activation never via row update |
 | `editions` (own) | read | render as delivered |
 | `signals` (own) | read/write | verdict loop (already live) |
@@ -66,7 +67,40 @@ on manual fire while we are piloting. `commission_agent()` enqueues
 gate, not app logic. Poll latency is a pilot-honest tradeoff; the upgrade
 path (Edge Function → `repository_dispatch` wake-up) changes speed, never
 the contract. Failed jobs carry an `error` the app shows honestly, with a
-client retry (a fresh intent), never an operator path.
+client retry (a fresh intent), never an operator path. `jobs.error` is
+client-legible by contract — the app renders it, never suppresses it.
+
+## Evidence intake (V1 — migration 007)
+
+- Feed v1 accepts **file upload (pdf/docx/txt/md, ≤20 MB) and pasted text
+  only**. No links, no images — fully absent, no placeholders, no "coming
+  soon." Client-supplied `mime_type`/`byte_size` are intake metadata; the
+  engine validates the actual stored object and fails items honestly on
+  disagreement.
+- File flow is **row-first**: the app generates the item UUID, inserts the
+  `received` row with canonical path `{uid}/{item_id}/blob` (original
+  filename lives only in `label`), then uploads the object.
+- Upload/paste triggers nothing. The handoff is one explicit client act —
+  *"I'm done. Read what I gave you."* — inserting one `synthesize` intent.
+  One job = one submission batch. A conflict on insert means a synthesis is
+  already active: the app renders "FOOUND is already reading.", a fact, not
+  an error.
+- The engine runs synthesis through exactly two doors, both atomic,
+  service-only: `claim_synthesis_batch(job)` (queued→running · received→
+  reading · invited/commissioning→feed_submitted, non-empty claims only) and
+  `finalize_synthesis(job, outcome)` (running→done/failed · feed_submitted→
+  mirror_ready/commissioning). **The database refuses any other terminal
+  path for a running synthesize job** (guard trigger). Job `done` never
+  implies Mirror readiness — the outcome carries that judgment.
+- Evidence-item states the app renders: `received`, `reading`, `read`,
+  `failed` (with a client-legible `failure_reason`), `deleted` (shown as
+  removed history, never vanished). The app never writes processing states.
+  Swept items (still `reading` when a batch finalized) are recovery
+  artifacts — the technical reason goes to engine logs, never the client
+  field.
+- Deletion is logical and immediate in effect (derived beliefs orphan
+  in-database); physical cleanup is asynchronous engine work through the
+  Storage API.
 
 ## Cross-boundary change protocol
 
