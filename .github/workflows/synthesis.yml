@@ -1,0 +1,37 @@
+# FOOUND Synthesis Runner v1 — manual fire only (workflow_dispatch).
+# Cadence scheduling is a separate, later decision after the live proof.
+# Concurrency group: two fires can never run simultaneously (belt; the
+# database's claim door is the suspenders — correctness never depends on
+# Actions behaving).
+#
+# PUBLIC REPO: these logs are public. The runner logs ids/counts/enums only —
+# never evidence text, labels, storage paths, prompts, or model output.
+
+name: synthesis-runner
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: synthesis-runner
+  cancel-in-progress: false
+
+jobs:
+  synthesize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies (exact versions exercised by the harness)
+        run: >
+          pip install requests==2.33.1 anthropic==1.0.0
+          pypdf==3.17.4 python-docx==1.2.0
+      - name: Run one synthesis cycle
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python synthesis_runner.py
