@@ -241,12 +241,26 @@ def test_w7_evidence_rows_query(wire):
 
 # -- W8 · existing memory (reconciliation) ---------------------------------
 
-def test_w8_existing_memory_query(wire):
+def test_w8a_comparison_memory_query(wire):
     db, fake = wire
     fake.queue(FakeResponse(200, []))
-    db.existing_memory("agent-1")
+    db.comparison_memory("agent-1")
     url = fake.calls[0]["url"]
     assert "memory?agent_id=eq.agent-1" in url
     assert "status=in.(active,tension)" in url
     assert "order=created_at.asc" in url
     assert f"limit={sr.RECONCILIATION_ROW_CAP}" in url
+
+
+def test_w8b_retracted_memory_query(wire):
+    # 009 correction 1: retracted suppression context is a SEPARATE query —
+    # the comparison cap can never truncate it — fetched with a fail-closed
+    # sentinel limit of RETRACTED_FETCH_LIMIT + 1.
+    db, fake = wire
+    fake.queue(FakeResponse(200, []))
+    db.retracted_memory("agent-1")
+    url = fake.calls[0]["url"]
+    assert "memory?agent_id=eq.agent-1" in url
+    assert "status=eq.retracted" in url
+    assert f"limit={sr.RETRACTED_FETCH_LIMIT + 1}" in url
+    assert not set(url) & {"+", " ", '"', "'"}, url

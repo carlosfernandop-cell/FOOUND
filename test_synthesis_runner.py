@@ -807,6 +807,179 @@ def test_r22b_fence_stripping_stays_strict():
 
 
 # ---------------------------------------------------------------------------
+# R25/R26 — 009 correction 3: exact-suppression guard across every model
+# output channel. A retracted statement reasserted verbatim (case/whitespace
+# variant) is REFUSED by the validator — as a statement (R25) or as either
+# side of a contradiction (R26) — with the documented retry, then honest
+# abort if the model persists (R25b). Also proves the CLIENT-RETRACTED fence
+# renders id-less (correction 1's prompt contract).
+# ---------------------------------------------------------------------------
+
+def _seed_active_row(db, aid, statement, item):
+    jid = mk_job(db, aid)
+    make_runner(db, model=StubModel([model_json([
+        stmt("self", statement, "stated", [item], True),
+        *five_grounded(item)[:4],
+    ])])).run_once()
+    assert job_row(db, jid)["status"] == "done"
+    return db._rows(
+        "select id::text from memory where agent_id=%s and statement=%s",
+        (aid, statement),
+    )[0]["id"]
+
+
+def _retract_via_door(db, uid, row_ids):
+    db._rows("select set_config('test.uid', %s, false) as s", (uid,))
+    return db._rows("select retract_memory(%s::uuid[]) as r", (row_ids,))[0]["r"]
+
+
+def test_r25_statement_reassert_refused_then_recovers(fresh):
+    db = fresh
+    uid, aid = mk_agent(db, state="at_work")
+    a1 = mk_text(db, aid, "Doc one", "text one")
+    target = "Apple is a stated priority target."
+    row_id = _seed_active_row(db, aid, target, a1)
+    _retract_via_door(db, uid, [row_id])
+
+    a2 = mk_text(db, aid, "Doc two", "text two")
+    jid = mk_job(db, aid)
+    reassert = model_json([stmt("self", "  apple IS a stated priority target. ",
+                                "stated", [a2], True)])
+    clean = model_json([stmt("record", "A genuinely different fact.", "stated", [a2])])
+    model = StubModel([reassert, clean])
+    report = make_runner(db, model=model).run_once()
+    assert report.action == "settled" and model.calls == 2
+    assert "reasserted_retracted" in model.prompts[1]
+    # fence rendered, with the statement text but WITHOUT the row's id
+    assert "CLIENT-RETRACTED UNDERSTANDING — DO NOT REASSERT" in model.prompts[0]
+    assert target in model.prompts[0]
+    assert row_id not in model.prompts[0]
+    rows = memory_rows(db, aid)
+    assert not any("priority target" in r["statement"] and r["status"] == "active"
+                   for r in rows)
+    assert job_row(db, jid)["status"] == "done"
+
+
+def test_r25b_persistent_reassert_aborts(fresh):
+    db = fresh
+    uid, aid = mk_agent(db, state="at_work")
+    a1 = mk_text(db, aid, "Doc one", "text one")
+    target = "Prefers fully remote roles."
+    row_id = _seed_active_row(db, aid, target, a1)
+    _retract_via_door(db, uid, [row_id])
+    a2 = mk_text(db, aid, "Doc two", "text two")
+    jid = mk_job(db, aid)
+    reassert = model_json([stmt("self", target, "stated", [a2])])
+    report = make_runner(db, model=StubModel([reassert, reassert])).run_once()
+    assert report.action == "aborted"
+    assert report.detail["reason"] == "model_output_invalid"
+    j = job_row(db, jid)
+    assert j["status"] == "failed" and j["error"] == COPY_DEFAULT
+
+
+def test_r26_contradiction_side_reassert_refused(fresh):
+    db = fresh
+    uid, aid = mk_agent(db, state="at_work")
+    a1 = mk_text(db, aid, "Doc one", "text one")
+    target = "Only considering roles in New York."
+    row_id = _seed_active_row(db, aid, target, a1)
+    _retract_via_door(db, uid, [row_id])
+    a2 = mk_text(db, aid, "Doc two", "text two")
+    jid = mk_job(db, aid)
+    bad = model_json(
+        statements=[stmt("record", "Fresh unrelated fact.", "stated", [a2])],
+        contradictions=[{"kind": "batch", "a": "Open to many cities",
+                         "b": " only considering roles in NEW york. ",
+                         "evidence": [a2]}],
+    )
+    clean = model_json([stmt("record", "Fresh unrelated fact.", "stated", [a2])])
+    model = StubModel([bad, clean])
+    report = make_runner(db, model=model).run_once()
+    assert report.action == "settled" and model.calls == 2
+    assert "contradiction_reasserts_retracted" in model.prompts[1]
+    assert job_row(db, jid)["status"] == "done"
+
+
+# ---------------------------------------------------------------------------
+# R27 — 009 correction 1: retraction fence completeness FAILS CLOSED. If more
+# retracted rows exist than the fetch limit, synthesis must not proceed.
+# ---------------------------------------------------------------------------
+
+def test_r27_incomplete_retracted_context_fails_closed(fresh, monkeypatch):
+    db = fresh
+    uid, aid = mk_agent(db, state="at_work")
+    a1 = mk_text(db, aid, "Doc one", "one")
+    ids = []
+    jid1 = mk_job(db, aid)
+    make_runner(db, model=StubModel([model_json([
+        stmt("record", "Fact one to retract.", "stated", [a1]),
+        stmt("record", "Fact two to retract.", "stated", [a1]),
+        stmt("record", "Fact three to retract.", "stated", [a1]),
+    ])])).run_once()
+    assert job_row(db, jid1)["status"] == "done"
+    ids = [r["id"] for r in db._rows(
+        "select id::text from memory where agent_id=%s and status='active'", (aid,))]
+    _retract_via_door(db, uid, ids)
+    monkeypatch.setattr(sr, "RETRACTED_FETCH_LIMIT", 2)  # 3 retracted > 2
+
+    a2 = mk_text(db, aid, "Doc two", "two")
+    jid2 = mk_job(db, aid)
+    model = StubModel([])
+    report = make_runner(db, model=model).run_once()
+    assert report.action == "aborted"          # fail closed, never synthesize
+    assert model.calls == 0                    # model never consulted
+    j = job_row(db, jid2)
+    assert j["status"] == "failed" and j["error"] == COPY_DEFAULT
+
+
+# ---------------------------------------------------------------------------
+# R28 — 009 correction 2 (cross-migration): a CONFIRMED direction row, later
+# reinforced by new evidence, satisfies require_direction. inferred stays out.
+# ---------------------------------------------------------------------------
+
+def test_r28_confirmed_direction_reinforcement_satisfies_gate(fresh):
+    db = fresh
+    uid, aid = mk_agent(db, state="at_work")
+    a1 = mk_text(db, aid, "Doc one", "one")
+    jid1 = mk_job(db, aid)
+    make_runner(db, model=StubModel([model_json(five_grounded(a1))])).run_once()
+    assert job_row(db, jid1)["status"] == "done"
+    direction_stmt = "I want senior brand leadership roles next."
+    row_id = db._rows(
+        "select id::text from memory where agent_id=%s and statement=%s",
+        (aid, direction_stmt),
+    )[0]["id"]
+    db._rows("select set_config('test.uid', %s, false) as s", (uid,))
+    r = db._rows("select confirm_memory(%s::uuid[]) as r", ([row_id],))[0]["r"]
+    assert r["count"] == 1
+    confirmed_id = db._rows(
+        "select id::text from memory where supersedes=%s", (row_id,))[0]["id"]
+
+    a2 = mk_text(db, aid, "Doc two", "two")
+    jid2 = mk_job(db, aid)
+    # 4 fresh grounded (record+self, NO direction) + reinforcement of the
+    # CONFIRMED direction row: mirror_ready only if 'confirmed' qualifies.
+    payload = json.dumps({
+        "statements": [
+            stmt("record", "R28 record one.", "stated", [a2]),
+            stmt("record", "R28 record two.", "stated", [a2]),
+            stmt("self", "R28 self one.", "stated", [a2]),
+            stmt("self", "R28 self two.", "stated", [a2]),
+        ],
+        "contradictions": [],
+        "reinforcements": [{"existing_memory_id": confirmed_id,
+                            "evidence": [a2], "is_direction": True}],
+        "unknowns": [],
+    })
+    report = make_runner(db, model=StubModel([payload])).run_once()
+    assert report.action == "settled"
+    assert report.detail["reinforced"] == 1
+    assert report.outcome == "mirror_ready"    # the gate accepts 'confirmed'
+    assert agent_state(db, aid) == "at_work"
+    assert job_row(db, jid2)["status"] == "done"
+
+
+# ---------------------------------------------------------------------------
 # R19 — log privacy: no evidence/model/label text in any log line
 # ---------------------------------------------------------------------------
 

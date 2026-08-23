@@ -47,7 +47,11 @@ STORAGE_FETCH_RETRIES = 2
 PER_ITEM_CHAR_CAP = 150_000     # above: honest per-item failure (too_large)
 BATCH_INPUT_CHAR_BUDGET = 400_000  # above: honest whole-job abort
 MAX_STATEMENTS_PER_JOB = 40
-RECONCILIATION_ROW_CAP = 200    # existing-memory rows included in the prompt
+RECONCILIATION_ROW_CAP = 200    # comparison context (active+tension) MAY be capped
+RETRACTED_FETCH_LIMIT = 1000    # suppression context must be COMPLETE: if more
+                                # retracted rows exist than this, synthesis
+                                # FAILS CLOSED rather than run while knowingly
+                                # missing client retractions
 
 JANITOR_STALE_MINUTES = 30
 
@@ -120,9 +124,16 @@ class Db:
     def evidence_rows(self, item_ids: list[str]) -> list[dict]:
         raise NotImplementedError
 
-    def existing_memory(self, agent_id: str) -> list[dict]:
-        """Active + tension rows for reconciliation (id, layer, statement,
-        provenance, status). Read-only context; never citable."""
+    def comparison_memory(self, agent_id: str) -> list[dict]:
+        """Active + tension rows for the comparison context — deliberately
+        capped at RECONCILIATION_ROW_CAP. Read-only; never citable."""
+        raise NotImplementedError
+
+    def retracted_memory(self, agent_id: str) -> list[dict]:
+        """Retracted rows for the suppression context. Fetched SEPARATELY
+        from the comparison context so the cap there can never silently
+        truncate retractions. Fetches up to RETRACTED_FETCH_LIMIT + 1 rows;
+        the runner FAILS CLOSED if the sentinel row appears."""
         raise NotImplementedError
 
 
@@ -205,11 +216,20 @@ class RestDb(Db):
             "byte_size,status,submitted_in"
         )
 
-    def existing_memory(self, agent_id):
+    def comparison_memory(self, agent_id):
         return self._select(
             f"memory?agent_id=eq.{agent_id}&status=in.(active,tension)"
             "&select=id,layer,statement,provenance,status"
             f"&order=created_at.asc&limit={RECONCILIATION_ROW_CAP}"
+        )
+
+    def retracted_memory(self, agent_id):
+        # Separate query: the comparison cap can never truncate retractions.
+        # limit is FETCH_LIMIT + 1 — the extra row is the fail-closed sentinel.
+        return self._select(
+            f"memory?agent_id=eq.{agent_id}&status=eq.retracted"
+            "&select=id,statement,status"
+            f"&order=created_at.asc&limit={RETRACTED_FETCH_LIMIT + 1}"
         )
 
 
@@ -276,12 +296,20 @@ class PgDb(Db):
             (item_ids,),
         )
 
-    def existing_memory(self, agent_id):
+    def comparison_memory(self, agent_id):
         return self._rows(
             "select id::text, layer, statement, provenance, status from memory "
             "where agent_id=%s and status in ('active','tension') "
             "order by created_at asc limit %s",
             (agent_id, RECONCILIATION_ROW_CAP),
+        )
+
+    def retracted_memory(self, agent_id):
+        return self._rows(
+            "select id::text, statement, status from memory "
+            "where agent_id=%s and status = 'retracted' "
+            "order by created_at asc limit %s",
+            (agent_id, RETRACTED_FETCH_LIMIT + 1),
         )
 
 
@@ -436,7 +464,8 @@ Rules — absolute:
 - layer: "record" = verifiable career facts; "self" = the person's own account of themselves; "model" = your synthesized understanding. Nothing else.
 - You make NO judgment about whether the evidence is sufficient, ready, or good. That is not your role.
 - Contradictions must surface, never be averaged, softened, or silently resolved.
-- EXISTING MEMORY (if present) is comparison context ONLY. It may never be cited as evidence, and may never cause a new claim that current evidence does not support. Use it only to detect: (a) statements that duplicate existing memory -> report in "reinforcements"; (b) conflicts between current evidence and existing memory -> report in "contradictions" with kind "existing".
+- EXISTING MEMORY (if present) is comparison context ONLY. It may never be cited as evidence, and may never cause a new claim that current evidence does not support. Use it only to detect: (a) statements that duplicate existing memory -> report in "reinforcements"; (b) conflicts between current evidence and existing memory -> report in "contradictions" with kind "existing". Only rows marked (active/...) may be referenced by id; rows marked (tension/...) are context only.
+- CLIENT-RETRACTED UNDERSTANDING (if present) is suppression context ONLY: the client has struck those beliefs. Never reassert any of them in ANY wording — not as a statement, not as a contradiction, not as a reinforcement — even if the current evidence appears to support them. They are not beliefs and not evidence.
 
 Output JSON shape:
 {
@@ -469,7 +498,10 @@ def _strip_fences(raw: str) -> str:
     return s
 
 
-def build_user_prompt(items: list[dict], contents: dict, memory: list[dict]) -> str:
+def build_user_prompt(
+    items: list[dict], contents: dict, memory: list[dict],
+    retracted: list[dict] | None = None,
+) -> str:
     parts = ["CURRENT EVIDENCE (citable):"]
     for it in items:
         parts.append(
@@ -487,6 +519,23 @@ def build_user_prompt(items: list[dict], contents: dict, memory: list[dict]) -> 
         parts.append("=== END EXISTING MEMORY ===")
     else:
         parts.append("\n(no existing memory)")
+    # 009 fence: retracted beliefs — suppression context ONLY. Deliberately
+    # id-less so they are structurally unreferencable: not citable, not
+    # reinforceable, not usable in contradictions. They are not beliefs and
+    # not evidence; they exist only so the model can avoid repeating them.
+    if retracted:
+        parts.append(
+            "\n=== CLIENT-RETRACTED UNDERSTANDING — DO NOT REASSERT ===\n"
+            "These are not evidence and may never support a new claim. They "
+            "exist only to prevent the engine from regenerating understanding "
+            "the client explicitly rejected. Never reassert any of them, in "
+            "any wording, as a statement, contradiction, or reinforcement — "
+            "even if the current evidence appears to support one: the "
+            "client's retraction stands."
+        )
+        for m in retracted:
+            parts.append(f"- {m['statement']}")
+        parts.append("=== END CLIENT-RETRACTED UNDERSTANDING ===")
     return "\n".join(parts)
 
 
@@ -499,7 +548,8 @@ def _norm(statement: str) -> str:
 
 
 def validate_and_map(
-    raw: str, readable_ids: set[str], existing: list[dict]
+    raw: str, readable_ids: set[str], existing: list[dict],
+    retracted: list[dict] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Validate model output strictly; map it to 008 memory/reinforce entries.
 
@@ -522,10 +572,21 @@ def validate_and_map(
         raise ValidationError("bad_shape")
     if len(stmts) > MAX_STATEMENTS_PER_JOB:
         raise ValidationError("too_many_statements")
-    existing_ids = {m["id"] for m in existing}
+    # 009: references (reinforcement targets, contradiction existing_memory_id)
+    # must resolve to ACTIVE rows only. Tension rows are context, not targets
+    # (the door would refuse them); retracted rows never reach this function
+    # and carry no ids in the prompt at all.
+    active_ids = {m["id"] for m in existing if m["status"] == "active"}
     existing_by_norm = {
         _norm(m["statement"]): m["id"] for m in existing if m["status"] == "active"
     }
+    # 009 correction 3: deterministic exact-suppression guard across EVERY
+    # model-output channel. Same normalization as the SQL guard — case and
+    # whitespace only, never fuzzy. A reassertion is REFUSED (validation
+    # error -> documented retry -> honest abort), as a statement or as
+    # either side of a contradiction. Reinforcement is already structurally
+    # active-id-only; retracted rows carry no ids in the prompt at all.
+    retracted_norms = {_norm(m["statement"]) for m in (retracted or [])}
 
     def check_citations(ev) -> list[str]:
         if not isinstance(ev, list) or not ev:
@@ -566,6 +627,8 @@ def validate_and_map(
             raise ValidationError("bad_is_direction")
         cites = check_citations(s.get("evidence"))
         norm = _norm(text)
+        if norm in retracted_norms:
+            raise ValidationError("reasserted_retracted")
         if norm in seen_norms:
             # intra-payload duplicate: merge citations into the first, never
             # send a duplicate to the door (the door would refuse it)
@@ -600,9 +663,11 @@ def validate_and_map(
         a, b = c.get("a"), c.get("b")
         if not isinstance(a, str) or not isinstance(b, str) or not a or not b:
             raise ValidationError("bad_contradiction_text")
+        if _norm(a) in retracted_norms or _norm(b) in retracted_norms:
+            raise ValidationError("contradiction_reasserts_retracted")
         if kind == "existing":
             mid = c.get("existing_memory_id")
-            if not isinstance(mid, str) or mid not in existing_ids:
+            if not isinstance(mid, str) or mid not in active_ids:
                 raise ValidationError("bad_existing_memory_id")
         cites = check_citations(c.get("evidence"))
         text = f"Tension: {a} / {b}"[:1000]
@@ -619,7 +684,7 @@ def validate_and_map(
         }:
             raise ValidationError("bad_reinforcement_shape")
         mid = rf.get("existing_memory_id")
-        if not isinstance(mid, str) or mid not in existing_ids:
+        if not isinstance(mid, str) or mid not in active_ids:
             raise ValidationError("bad_existing_memory_id")
         is_dir = rf.get("is_direction", False)
         if not isinstance(is_dir, bool):
@@ -775,10 +840,24 @@ class Runner:
         memory_entries: list[dict] = []
         reinforce_entries: list[dict] = []
         if contents:
-            existing = self.db.existing_memory(job["agent_id"])
-            log.info("reconciliation job=%s existing_rows=%d", job["id"], len(existing))
+            existing = self.db.comparison_memory(job["agent_id"])
+            retracted = self.db.retracted_memory(job["agent_id"])
+            # FAIL CLOSED on incomplete suppression context: synthesizing
+            # while knowingly missing client retractions is forbidden. The
+            # sentinel row (FETCH_LIMIT + 1) proves incompleteness; raising
+            # here routes to the abort door via the standard error path.
+            if len(retracted) > RETRACTED_FETCH_LIMIT:
+                log.error(
+                    "retracted context incomplete job=%s fetched=%d limit=%d",
+                    job["id"], len(retracted), RETRACTED_FETCH_LIMIT,
+                )
+                raise RuntimeError("retracted_context_incomplete")
+            log.info(
+                "reconciliation job=%s existing_rows=%d retracted_rows=%d",
+                job["id"], len(existing), len(retracted),
+            )
             readable = [rows[i] for i in item_ids if i in contents]
-            user_prompt = build_user_prompt(readable, contents, existing)
+            user_prompt = build_user_prompt(readable, contents, existing, retracted)
 
             raw = None
             error_hint = None
@@ -791,7 +870,7 @@ class Runner:
                 raw = self.model.complete(SYSTEM_PROMPT, prompt)
                 try:
                     memory_entries, reinforce_entries = validate_and_map(
-                        raw, set(contents.keys()), existing
+                        raw, set(contents.keys()), existing, retracted
                     )
                     error_hint = None
                     break
