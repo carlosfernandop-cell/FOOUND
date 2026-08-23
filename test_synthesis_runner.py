@@ -778,6 +778,35 @@ def test_r21_merged_duplicate_withdrawal_discards_whole_statement(fresh):
 
 
 # ---------------------------------------------------------------------------
+# R22 — fenced model output: a single markdown fence is transport, not error
+# (observed live in Fire #2 run 3: model fenced its JSON despite instructions)
+# ---------------------------------------------------------------------------
+
+def test_r22_fenced_model_output(fresh):
+    db = fresh
+    _, aid = mk_agent(db)
+    a = mk_text(db, aid, "Doc", "text")
+    jid = mk_job(db, aid)
+    fenced = "```json\n" + model_json(five_grounded(a)) + "\n```"
+    report = make_runner(db, model=StubModel([fenced])).run_once()
+    assert report.action == "settled" and report.outcome == "mirror_ready"
+    assert job_row(db, jid)["status"] == "done"
+
+
+def test_r22b_fence_stripping_stays_strict():
+    from synthesis_runner import _strip_fences, validate_and_map, ValidationError
+    # plain fence unwraps
+    assert _strip_fences("```json\n{\"a\":1}\n```") == '{"a":1}'
+    assert _strip_fences("```\n{\"a\":1}\n```") == '{"a":1}'
+    # prose-wrapped JSON is still refused — no lenient parsing
+    with pytest.raises(ValidationError):
+        validate_and_map('Here is the JSON: {"statements":[]}', set(), [])
+    # fenced prose is still refused
+    with pytest.raises(ValidationError):
+        validate_and_map("```\nnot json\n```", set(), [])
+
+
+# ---------------------------------------------------------------------------
 # R19 — log privacy: no evidence/model/label text in any log line
 # ---------------------------------------------------------------------------
 

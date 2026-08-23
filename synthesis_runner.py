@@ -451,7 +451,22 @@ Output JSON shape:
                      "is_direction": bool}],
  "unknowns": ["things the evidence approaches but does not establish"]
 }
-"is_direction" is true only for statements about what the person wants next."""
+"is_direction" is true only for statements about what the person wants next.
+Your response MUST begin with the character { and end with the character }."""
+
+
+def _strip_fences(raw: str) -> str:
+    """Deterministically unwrap ONE outer markdown code fence, if present.
+
+    Transport normalization only — models sometimes fence JSON despite
+    instructions (observed live: Fire #2 run 3, reason=not_json twice).
+    Anything beyond a single clean fence still fails validation honestly."""
+    s = raw.strip()
+    if s.startswith("```") and s.endswith("```"):
+        first_nl = s.find("\n")
+        if first_nl != -1:
+            s = s[first_nl + 1 : -3].strip()
+    return s
 
 
 def build_user_prompt(items: list[dict], contents: dict, memory: list[dict]) -> str:
@@ -492,7 +507,7 @@ def validate_and_map(
     terse machine-readable reason (safe to log AND to feed back on retry —
     it never contains evidence or model text)."""
     try:
-        out = json.loads(raw)
+        out = json.loads(_strip_fences(raw))
     except Exception:
         raise ValidationError("not_json") from None
     if not isinstance(out, dict):
@@ -836,6 +851,11 @@ def main() -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
+    # Public Actions logs carry ONLY the runner's contract lines: silence
+    # third-party INFO chatter (the SDK's httpx request lines are harmless
+    # but off-contract — observed in Fire #2 run 3).
+    for noisy in ("httpx", "httpcore", "anthropic", "urllib3", "requests"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     base = os.environ["SUPABASE_URL"]
     key = os.environ["SUPABASE_SERVICE_KEY"]
     runner = Runner(
