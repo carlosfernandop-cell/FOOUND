@@ -170,9 +170,12 @@ class RestDb(Db):
     def stale_running_synthesize_jobs(self, stale_minutes):
         import datetime as _dt
 
+        # URL-safe UTC format: a '+00:00' offset would put a raw '+' in the
+        # query string, which HTTP decodes as a space -> PostgREST 400.
+        # (Found live in Fire #1 run 1; W6 now forbids unsafe characters.)
         cutoff = (
             _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=stale_minutes)
-        ).isoformat()
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
         return self._select(
             "jobs?type=eq.synthesize&status=eq.running"
             f"&started_at=lt.{cutoff}&select=id,agent_id,started_at"
@@ -194,7 +197,8 @@ class RestDb(Db):
         )
 
     def evidence_rows(self, item_ids):
-        ids = ",".join(f'"{i}"' for i in item_ids)
+        # bare UUIDs in the in-list: no quotes, no URL-unsafe characters
+        ids = ",".join(item_ids)
         return self._select(
             f"evidence_items?id=in.({ids})"
             "&select=id,agent_id,kind,label,storage_path,body,mime_type,"

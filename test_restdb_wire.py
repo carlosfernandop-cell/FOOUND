@@ -213,9 +213,15 @@ def test_w6_janitor_query(wire):
     assert url.startswith(f"{BASE}/rest/v1/jobs?type=eq.synthesize&status=eq.running")
     assert "&started_at=lt." in url
     assert "&select=id,agent_id,started_at" in url
-    # cutoff is an ISO-8601 UTC timestamp
+    # cutoff must be a URL-SAFE ISO-8601 UTC timestamp: a '+00:00' offset puts
+    # a raw '+' in the query string, which HTTP decodes as a space and
+    # PostgREST rejects with 400 (found live in Fire #1 run 1).
+    import re as _re
+
     cutoff = url.split("started_at=lt.")[1].split("&")[0]
-    assert "T" in cutoff and ("+00:00" in cutoff or cutoff.endswith("Z"))
+    assert _re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", cutoff), cutoff
+    # the whole URL must contain no characters that change meaning in a query
+    assert not set(url) & {"+", " ", '"', "'"}, url
     assert out == []
 
 
@@ -226,7 +232,8 @@ def test_w7_evidence_rows_query(wire):
     fake.queue(FakeResponse(200, []))
     db.evidence_rows(["aaaa", "bbbb"])
     url = fake.calls[0]["url"]
-    assert 'id=in.("aaaa","bbbb")' in url
+    assert "id=in.(aaaa,bbbb)" in url          # bare UUIDs, no quoting
+    assert not set(url) & {"+", " ", '"', "'"}, url
     for col in ("kind", "label", "storage_path", "body", "mime_type",
                 "byte_size", "status", "submitted_in"):
         assert col in url
