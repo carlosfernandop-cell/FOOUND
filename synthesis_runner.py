@@ -470,7 +470,8 @@ Rules — absolute:
 Output JSON shape:
 {
  "statements": [{"layer": "...", "statement": "<=1000 chars", "provenance": "...",
-                 "evidence": ["<current item id>", ...], "is_direction": bool}],
+                 "evidence": ["<current item id>", ...], "is_direction": bool,
+                 "handle": "<optional 1-3 word display name, <=24 chars>"}],
  "contradictions": [{"kind": "batch" | "existing",
                      "a": "<one reading>", "b": "<the conflicting reading>",
                      "evidence": ["<current item ids behind the conflict>"],
@@ -481,6 +482,7 @@ Output JSON shape:
  "unknowns": ["things the evidence approaches but does not establish"]
 }
 "is_direction" is true only for statements about what the person wants next.
+"handle" is an optional 1-3 word DISPLAY NAME for the statement (<=24 chars, no terminal punctuation, distinct within this output where possible). It must summarize the statement's existing meaning and may NEVER introduce a claim the statement does not make. It is presentation metadata only: not evidence, not a belief, and never a substitute for the statement.
 Your response MUST begin with the character { and end with the character }."""
 
 
@@ -547,6 +549,22 @@ def _norm(statement: str) -> str:
     return re.sub(r"\s+", " ", statement).strip().lower()
 
 
+HANDLE_MAX_CHARS = 40  # defensive ceiling (mirrors the DB CHECK); prompt targets <=24
+
+
+def _soft_handle(value) -> str | None:
+    """011: fail-soft handle normalization. Presentation metadata only —
+    a malformed, empty, or oversized handle degrades to None and NEVER
+    fails a synthesis. Never participates in _norm/suppression/duplicate
+    logic (those remain statement-based by contract)."""
+    if not isinstance(value, str):
+        return None
+    v = value.strip()
+    if not v or len(v) > HANDLE_MAX_CHARS:
+        return None
+    return v
+
+
 def validate_and_map(
     raw: str, readable_ids: set[str], existing: list[dict],
     retracted: list[dict] | None = None,
@@ -609,13 +627,15 @@ def validate_and_map(
 
     for s in stmts:
         if not isinstance(s, dict) or set(s.keys()) - {
-            "layer", "statement", "provenance", "evidence", "is_direction"
+            "layer", "statement", "provenance", "evidence", "is_direction",
+            "handle",  # 011: optional presentation handle
         }:
             raise ValidationError("bad_statement_shape")
         layer = s.get("layer")
         text = s.get("statement")
         prov = s.get("provenance")
         is_dir = s.get("is_direction", False)
+        hnd = _soft_handle(s.get("handle"))  # 011: fail-soft, may be None
         if layer not in ("record", "self", "model"):
             # 'behavior' and anything else refused from this producer
             raise ValidationError("layer_not_allowed")
@@ -635,6 +655,8 @@ def validate_and_map(
             first = seen_norms[norm]
             first["evidence"] = list(dict.fromkeys(first["evidence"] + cites))
             first["is_direction"] = first.get("is_direction", False) or is_dir
+            # 011: handle of the FIRST occurrence wins (deterministic); a
+            # duplicate's handle is discarded with its duplicate statement.
             continue
         if norm in existing_by_norm:
             # duplicate of existing active memory: MUST go through reinforce
@@ -649,6 +671,8 @@ def validate_and_map(
             "layer": layer, "statement": text, "provenance": prov,
             "evidence": cites, "is_direction": is_dir,
         }
+        if hnd is not None:
+            entry["handle"] = hnd  # 011: absent key -> NULL at the door
         seen_norms[norm] = entry
         memory_entries.append(entry)
 

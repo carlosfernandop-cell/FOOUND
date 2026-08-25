@@ -997,3 +997,91 @@ def test_r19_log_privacy(fresh, caplog):
     assert logged                                     # something was logged
     for sentinel in ("BODYSENTINEL", "STATEMENTSENTINEL", "LABELSENTINEL"):
         assert sentinel not in logged
+
+
+# ---------------------------------------------------------------------------
+# H — 011 memory handles: fail-soft passthrough; presentation-only contract.
+# The handle NEVER affects validation outcomes, norms, or read paths.
+# ---------------------------------------------------------------------------
+
+from synthesis_runner import validate_and_map, ValidationError  # noqa: E402  (H-group)
+
+
+H_ITEM = "11111111-1111-4111-8111-111111111111"
+
+
+def _h_stmt(handle=None, statement="Handle test statement.", item=H_ITEM):
+    s = {"layer": "record", "statement": statement, "provenance": "stated",
+         "evidence": [item], "is_direction": False}
+    if handle is not None:
+        s["handle"] = handle
+    return s
+
+
+def test_h1_handle_passes_through():
+    raw = json.dumps({"statements": [_h_stmt(handle="Airbnb now")]})
+    mem, _ = validate_and_map(raw, {H_ITEM}, [])
+    assert mem[0]["handle"] == "Airbnb now"
+
+
+def test_h2_absent_handle_omitted():
+    raw = json.dumps({"statements": [_h_stmt()]})
+    mem, _ = validate_and_map(raw, {H_ITEM}, [])
+    assert "handle" not in mem[0]
+
+
+def test_h3_fail_soft_variants_degrade_to_omitted():
+    for bad in ["", "   ", "x" * 41, 12345, None, ["list"]]:
+        raw = json.dumps({"statements": [_h_stmt(handle=bad)]})
+        mem, _ = validate_and_map(raw, {H_ITEM}, [])
+        assert "handle" not in mem[0], f"handle {bad!r} should degrade"
+
+
+def test_h4_forty_char_handle_survives():
+    h = "y" * 40
+    raw = json.dumps({"statements": [_h_stmt(handle=h)]})
+    mem, _ = validate_and_map(raw, {H_ITEM}, [])
+    assert mem[0]["handle"] == h
+
+
+def test_h5_duplicate_merge_keeps_first_handle():
+    raw = json.dumps({"statements": [
+        _h_stmt(handle="First name"),
+        _h_stmt(handle="Second name"),  # same statement -> merged into first
+    ]})
+    mem, _ = validate_and_map(raw, {H_ITEM}, [])
+    assert len(mem) == 1
+    assert mem[0]["handle"] == "First name"
+
+
+def test_h6_handle_never_rescues_or_breaks_validation():
+    # a retracted statement with a fresh handle is STILL refused (norms are
+    # statement-based; the handle is invisible to suppression)
+    retracted = [{"id": "r1", "statement": "Handle test statement.", "status": "retracted"}]
+    raw = json.dumps({"statements": [_h_stmt(handle="Shiny new name")]})
+    with pytest.raises(ValidationError):
+        validate_and_map(raw, {H_ITEM}, [], retracted=retracted)
+
+
+def test_h7_prompt_declares_handle_contract():
+    import synthesis_runner as sr
+    blob = "".join(
+        v for k, v in vars(sr).items() if isinstance(v, str) and "statements" in v
+    )
+    assert "handle" in blob and "presentation" in blob
+
+
+def test_h8_read_paths_are_handle_blind():
+    # the runner's memory reads must not select the handle column
+    import inspect, re, synthesis_runner as sr
+    src = inspect.getsource(sr)
+    for anchor in ("comparison_memory", "retracted_memory"):
+        starts = [m.start() for m in re.finditer(f"def {anchor}", src)]
+        assert starts
+        checked = 0
+        for i in starts:
+            seg = src[i:i + 700]
+            if "select=" in seg or "select id" in seg:
+                assert "handle" not in seg, f"{anchor} reads handle"
+                checked += 1
+        assert checked >= 1, f"no select found for {anchor}"
