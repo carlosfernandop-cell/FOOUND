@@ -1,4 +1,4 @@
--- Verification suite for migration 011 (memory handles).
+-- Verification suite for migration 010 (memory handles).
 -- Groups: K column/CHECK · P settle passthrough (incl. fail-soft + whitelist
 -- regression) · C confirm carry-over · R retract untouched · B handle-blind
 -- norms (suppression + duplicate remain statement-based) · G regression.
@@ -229,4 +229,4 @@ end $$;
 
 -- ---- cleanup ----
 delete from agents where agent_no between 70 and 71;
-do $$ begin raise notice 'MIGRATION 011 BATTERY COMPLETE'; end $$;
+do $$ begin raise notice 'MIGRATION 010 BATTERY COMPLETE'; end $$;

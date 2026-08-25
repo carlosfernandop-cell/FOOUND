@@ -553,7 +553,7 @@ HANDLE_MAX_CHARS = 40  # defensive ceiling (mirrors the DB CHECK); prompt target
 
 
 def _soft_handle(value) -> str | None:
-    """011: fail-soft handle normalization. Presentation metadata only —
+    """010: fail-soft handle normalization. Presentation metadata only —
     a malformed, empty, or oversized handle degrades to None and NEVER
     fails a synthesis. Never participates in _norm/suppression/duplicate
     logic (those remain statement-based by contract)."""
@@ -628,14 +628,14 @@ def validate_and_map(
     for s in stmts:
         if not isinstance(s, dict) or set(s.keys()) - {
             "layer", "statement", "provenance", "evidence", "is_direction",
-            "handle",  # 011: optional presentation handle
+            "handle",  # 010: optional presentation handle
         }:
             raise ValidationError("bad_statement_shape")
         layer = s.get("layer")
         text = s.get("statement")
         prov = s.get("provenance")
         is_dir = s.get("is_direction", False)
-        hnd = _soft_handle(s.get("handle"))  # 011: fail-soft, may be None
+        hnd = _soft_handle(s.get("handle"))  # 010: fail-soft, may be None
         if layer not in ("record", "self", "model"):
             # 'behavior' and anything else refused from this producer
             raise ValidationError("layer_not_allowed")
@@ -655,7 +655,7 @@ def validate_and_map(
             first = seen_norms[norm]
             first["evidence"] = list(dict.fromkeys(first["evidence"] + cites))
             first["is_direction"] = first.get("is_direction", False) or is_dir
-            # 011: handle of the FIRST occurrence wins (deterministic); a
+            # 010: handle of the FIRST occurrence wins (deterministic); a
             # duplicate's handle is discarded with its duplicate statement.
             continue
         if norm in existing_by_norm:
@@ -672,7 +672,7 @@ def validate_and_map(
             "evidence": cites, "is_direction": is_dir,
         }
         if hnd is not None:
-            entry["handle"] = hnd  # 011: absent key -> NULL at the door
+            entry["handle"] = hnd  # 010: absent key -> NULL at the door
         seen_norms[norm] = entry
         memory_entries.append(entry)
 

@@ -1000,11 +1000,11 @@ def test_r19_log_privacy(fresh, caplog):
 
 
 # ---------------------------------------------------------------------------
-# H — 011 memory handles: fail-soft passthrough; presentation-only contract.
+# H — 010 memory handles: fail-soft passthrough; presentation-only contract.
 # The handle NEVER affects validation outcomes, norms, or read paths.
 # ---------------------------------------------------------------------------
 
-from synthesis_runner import validate_and_map, ValidationError  # noqa: E402  (H-group)
+from synthesis_runner import validate_and_map, ValidationError  # noqa: E402  (H-group, 010)
 
 
 H_ITEM = "11111111-1111-4111-8111-111111111111"

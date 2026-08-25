@@ -1,5 +1,10 @@
 -- ============================================================================
--- FOOUND — Migration 011: memory handles (Memory Handle Contract Plan v2)
+-- FOOUND — Migration 010: memory handles (Memory Handle Contract Plan v2,
+-- release-hardened per review 2026-08-23)
+--
+-- NUMBERING: no sql/010_* exists anywhere in committed history and none was
+-- ever applied; First Read was a roadmap idea, not a migration, and cannot
+-- reserve a number. Memory Handles is therefore 010.
 --
 -- Adds ONE nullable, engine-owned column and threads it through the two doors
 -- that insert memory rows. Nothing else changes: RLS untouched, client doors
@@ -7,30 +12,43 @@
 --
 --   memory.handle              additive display metadata: the engine's 1-3
 --                              word compression of the statement. CHECK caps
---                              at 40 chars (defensive ceiling; runner targets
---                              <=24). NULL is always a safe fallback.
+--                              at 40 chars (runner targets <=24). NULL is
+--                              always a safe fallback.
 --   confirm_memory             REPLACED: successor insert carries m.handle
---                              (marked "-- 011:"); otherwise byte-identical
+--                              (marked "-- 010:"); otherwise byte-identical
 --                              to 009 (generated from the 009 source text).
 --   settle_synthesis_results   REPLACED: accepts an OPTIONAL ''handle'' key
 --                              per result item; malformed/empty/oversized
 --                              degrades to NULL and never blocks settlement
---                              (marked "-- 011:"); otherwise byte-identical
---                              to 009 (generated from the 009 source text).
+--                              (marked "-- 010:"); otherwise byte-identical.
 --
--- SEMANTIC SAFEGUARD (canonical, per plan): the handle is NOT evidence and
--- NOT truth-bearing. It never enters synthesis as a fact, never counts
--- toward sufficiency, never participates in tension detection or the
--- suppression/duplicate norms (which remain statement-based), is never
--- citable, and never influences the Working Brief. It summarizes the
--- statement''s existing meaning and may never introduce a new claim.
--- Migration numbering: 010 remains reserved for First Read (roadmap).
+-- SEMANTIC SAFEGUARD (canonical): the handle is NOT evidence and NOT
+-- truth-bearing. It never enters synthesis as a fact, never counts toward
+-- sufficiency, never joins tension detection or the suppression/duplicate
+-- norms (statement-based), is never citable, and never influences the
+-- Working Brief. It summarizes the statement''s meaning; it may never
+-- introduce a new claim.
 --
--- Paste-safe: no dollar-quoting. Idempotent: safe to re-run. Run AFTER 009.
+-- ATOMICITY: one explicit transaction. Any failure anywhere -> full
+-- rollback: no column, no constraint, no replaced function, no grant change.
+--
+-- BASELINE GUARD: before replacing anything, the exact canonical 009 state
+-- is asserted (prosrc md5 fingerprints, identity arguments, SECURITY
+-- DEFINER, search_path, execute grants). Any drift -> abort with
+-- unexpected_009_baseline; production is NEVER silently overwritten.
+-- Fingerprints were computed from the byte-exact 009 file this repo pins:
+--   confirm_memory           md5(prosrc) = 575219f904761dcc2a0bf5ac9874e9c5
+--   settle_synthesis_results md5(prosrc) = 96442d384c0fd11cbdc5dad50e1ea992
+--
+-- Paste-safe: no dollar-quoting. Run AFTER 009. Re-run safe: the guard
+-- refuses once 010''s own bodies are live (their fingerprints differ), which
+-- is the correct behavior for a fully-applied migration.
 -- ============================================================================
 
+begin;
+
 -- ---------------------------------------------------------------------------
--- Preflight: 009 must be live. Assert, never silently adopt.
+-- Preflight A: existence (names + signatures resolvable)
 -- ---------------------------------------------------------------------------
 do '
 begin
@@ -46,24 +64,68 @@ begin
 end';
 
 -- ---------------------------------------------------------------------------
--- 1 · The column. Nullable, additive; CHECK is the defensive ceiling.
+-- Preflight B: EXACT canonical-009 baseline guard. Never overwrite drift.
 -- ---------------------------------------------------------------------------
-alter table memory add column if not exists handle text;
-
 do '
+declare f record;
 begin
-  if not exists (
-    select 1 from pg_constraint
-    where conname = ''memory_handle_len'' and conrelid = ''memory''::regclass
-  ) then
-    alter table memory add constraint memory_handle_len
-      check (handle is null or char_length(handle) between 1 and 40);
+  for f in
+    select p.proname,
+           md5(p.prosrc)                             as body_md5,
+           pg_get_function_identity_arguments(p.oid) as ident,
+           p.prosecdef                               as secdef,
+           coalesce(array_to_string(p.proconfig, '';''), '''') as config
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = ''public''
+      and p.proname in (''confirm_memory'',''settle_synthesis_results'')
+  loop
+    if f.proname = ''confirm_memory'' then
+      if f.body_md5 <> ''575219f904761dcc2a0bf5ac9874e9c5''
+         or f.ident <> ''p_rows uuid[]''
+         or not f.secdef
+         or f.config <> ''search_path=public'' then
+        raise exception ''unexpected_009_baseline: confirm_memory md5=% ident=% secdef=% config=%'',
+          f.body_md5, f.ident, f.secdef, f.config;
+      end if;
+    elsif f.proname = ''settle_synthesis_results'' then
+      if f.body_md5 <> ''96442d384c0fd11cbdc5dad50e1ea992''
+         or f.ident <> ''p_job uuid, p_results jsonb, p_policy jsonb''
+         or not f.secdef
+         or f.config <> ''search_path=public'' then
+        raise exception ''unexpected_009_baseline: settle md5=% ident=% secdef=% config=%'',
+          f.body_md5, f.ident, f.secdef, f.config;
+      end if;
+    end if;
+  end loop;
+  -- grant boundary exactly as 009 left it
+  if not has_function_privilege(''authenticated'', ''confirm_memory(uuid[])'', ''execute'')
+     or has_function_privilege(''anon'', ''confirm_memory(uuid[])'', ''execute'') then
+    raise exception ''unexpected_009_baseline: confirm_memory grants'';
+  end if;
+  if not has_function_privilege(''service_role'',
+        ''settle_synthesis_results(uuid, jsonb, jsonb)'', ''execute'')
+     or has_function_privilege(''authenticated'',
+        ''settle_synthesis_results(uuid, jsonb, jsonb)'', ''execute'')
+     or has_function_privilege(''anon'',
+        ''settle_synthesis_results(uuid, jsonb, jsonb)'', ''execute'') then
+    raise exception ''unexpected_009_baseline: settle grants'';
+  end if;
+  if exists (select 1 from information_schema.columns
+             where table_name = ''memory'' and column_name = ''handle'') then
+    raise exception ''unexpected_009_baseline: memory.handle already exists'';
   end if;
 end';
 
 -- ---------------------------------------------------------------------------
--- 2 · CONFIRM: byte-identical to 009 except the successor now inherits the
---     handle (lines marked "-- 011:").
+-- 1 · The column. Nullable, additive; CHECK is the defensive ceiling.
+-- ---------------------------------------------------------------------------
+alter table memory add column handle text;
+alter table memory add constraint memory_handle_len
+  check (handle is null or char_length(handle) between 1 and 40);
+
+-- ---------------------------------------------------------------------------
+-- 2 · CONFIRM: byte-identical to 009 except the successor inherits the
+--     handle (lines marked "-- 010:").
 -- ---------------------------------------------------------------------------
 create or replace function confirm_memory(p_rows uuid[]) returns jsonb
 language plpgsql security definer set search_path = public as '
@@ -99,11 +161,11 @@ begin
   for i in 1..array_length(p_rows, 1) loop
     select * into m from memory where id = p_rows[i];
     insert into memory
-      (agent_id, layer, statement, provenance, evidence, source, handle,   -- 011: handle
+      (agent_id, layer, statement, provenance, evidence, source, handle,   -- 010: handle
        status, supersedes, can_affect_search, can_appear_publicly)
     values
       (m.agent_id, m.layer, m.statement, ''confirmed'', m.evidence, m.source,
-       m.handle,                          -- 011: successor inherits the handle
+       m.handle,                          -- 010: successor inherits the handle
        ''active'', m.id, false, false);   -- flags forced by the door, always
     update memory set status = ''superseded'' where id = m.id;
     n := n + 1;
@@ -117,9 +179,9 @@ grant execute on function confirm_memory(uuid[]) to authenticated;
 -- ---------------------------------------------------------------------------
 -- 3 · SETTLE: byte-identical to 009 except (a) the per-item key whitelist
 --     accepts an OPTIONAL ''handle'', (b) fail-soft parse to hnd, and
---     (c) the insert writes it (all marked "-- 011:"). The suppression
---     guard, duplicate norms, sufficiency, and tension logic are untouched
---     and remain statement-based - the handle is invisible to all of them.
+--     (c) the insert writes it (all marked "-- 010:"). Suppression guard,
+--     duplicate norms, sufficiency, and tension logic untouched and
+--     statement-based - the handle is invisible to all of them.
 -- ---------------------------------------------------------------------------
 create or replace function settle_synthesis_results(
   p_job uuid, p_results jsonb, p_policy jsonb)
@@ -147,7 +209,7 @@ declare
   lay text; prov text; stmt text; src text;
   norm text; stmts_seen text[] := ''{}'';
   is_tension boolean; is_dir boolean;
-  hnd text;                                       -- 011
+  hnd text;                                       -- 010
   cites_withdrawn boolean;
   canon jsonb;
   mem_id uuid; m_agent uuid; m_status text; m_prov text;
@@ -284,7 +346,7 @@ begin
     if jsonb_typeof(r) <> ''object'' then raise exception ''invalid_results''; end if;
     for k in select jsonb_object_keys(r) loop
       if k not in (''layer'',''statement'',''provenance'',''evidence'',
-                   ''tension'',''is_direction'',''handle'') then   -- 011: optional handle
+                   ''tension'',''is_direction'',''handle'') then   -- 010: optional handle
         raise exception ''invalid_results''; end if;
     end loop;
     if jsonb_typeof(r->''layer'')      is distinct from ''string''
@@ -308,17 +370,17 @@ begin
     is_tension := coalesce((r->>''tension'')::boolean, false);
     is_dir     := coalesce((r->>''is_direction'')::boolean, false);
 
-    -- 011: optional presentation handle. Fail-soft by contract: malformed,
+    -- 010: optional presentation handle. Fail-soft by contract: malformed,
     -- empty, or oversized handles degrade to NULL; settlement never blocks
     -- on a handle. The handle is presentation metadata; it is not evidence,
     -- not truth-bearing, and takes no part in suppression/duplicate norms.
-    hnd := null;                                                     -- 011
-    if r ? ''handle'' and jsonb_typeof(r->''handle'') = ''string'' then -- 011
-      hnd := nullif(btrim(r->>''handle''), '''');                    -- 011
-      if hnd is not null and char_length(hnd) > 40 then              -- 011
-        hnd := null;                                                 -- 011
-      end if;                                                        -- 011
-    end if;                                                          -- 011
+    hnd := null;                                                     -- 010
+    if r ? ''handle'' and jsonb_typeof(r->''handle'') = ''string'' then -- 010
+      hnd := nullif(btrim(r->>''handle''), '''');                    -- 010
+      if hnd is not null and char_length(hnd) > 40 then              -- 010
+        hnd := null;                                                 -- 010
+      end if;                                                        -- 010
+    end if;                                                          -- 010
 
     if jsonb_typeof(r->''evidence'') is distinct from ''array''
        or jsonb_array_length(r->''evidence'') = 0 then
@@ -374,10 +436,10 @@ begin
       select left(ei.label, 60) into src from evidence_items ei
         where ei.id = (canon->0->>''item'')::uuid;
       insert into memory
-        (agent_id, layer, statement, provenance, evidence, source, handle,  -- 011
+        (agent_id, layer, statement, provenance, evidence, source, handle,  -- 010
          status, can_affect_search, can_appear_publicly)
       values
-        (j.agent_id, lay, stmt, prov, canon, src, hnd,                      -- 011
+        (j.agent_id, lay, stmt, prov, canon, src, hnd,                      -- 010
          case when is_tension then ''tension'' else ''active'' end,
          false, false);                  -- forced by the door, always
       if is_tension then
@@ -504,12 +566,24 @@ grant execute on function settle_synthesis_results(uuid, jsonb, jsonb)
   to service_role;
 
 -- ---------------------------------------------------------------------------
--- Post-flight self-check
+-- Post-flight (inside the transaction): the new state, or nothing at all.
 -- ---------------------------------------------------------------------------
 do '
 begin
   if not exists (select 1 from information_schema.columns
                  where table_name = ''memory'' and column_name = ''handle'') then
-    raise exception ''011_failed: handle column missing'';
+    raise exception ''010_failed: handle column missing'';
+  end if;
+  if not exists (select 1 from pg_constraint
+                 where conname = ''memory_handle_len''
+                   and conrelid = ''memory''::regclass) then
+    raise exception ''010_failed: constraint missing'';
+  end if;
+  if md5((select prosrc from pg_proc p join pg_namespace n on n.oid=p.pronamespace
+          where n.nspname=''public'' and p.proname=''confirm_memory''))
+     = ''575219f904761dcc2a0bf5ac9874e9c5'' then
+    raise exception ''010_failed: confirm_memory not replaced'';
   end if;
 end';
+
+commit;
