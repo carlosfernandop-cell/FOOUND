@@ -467,6 +467,20 @@ Rules — absolute:
 - EXISTING MEMORY (if present) is comparison context ONLY. It may never be cited as evidence, and may never cause a new claim that current evidence does not support. Use it only to detect: (a) statements that duplicate existing memory -> report in "reinforcements"; (b) conflicts between current evidence and existing memory -> report in "contradictions" with kind "existing". Only rows marked (active/...) may be referenced by id; rows marked (tension/...) are context only.
 - CLIENT-RETRACTED UNDERSTANDING (if present) is suppression context ONLY: the client has struck those beliefs. Never reassert any of them in ANY wording — not as a statement, not as a contradiction, not as a reinforcement — even if the current evidence appears to support them. They are not beliefs and not evidence.
 
+LOOK FOR — hunt objects, this exact order. Ambition is top priority (one or several); if Ambition is missed, the rest is decoration:
+1. Ambition
+2. Origin
+3. Craft
+4. Houses
+5. Scope
+6. Geography
+7. Seat
+8. Frontier
+- These eight are hunt objects, not required handle strings. A found statement's handle may differ from the hunt name.
+- Ambition is also stated on intake, then hunted: when intake or feed evidence states ambition / what they want next, capture it as stated.
+- If evidence establishes one, it becomes a real grounded statement under existing law and may receive a handle under the existing handle rule (editorial icon of a found statement; no new claim). If not established, it stays unknown. Do not write a statement, handle, or chapter title for a miss. A miss is not Memory.
+- Existing chapter grouping (not a new taxonomy; do not invent layers). Use only so a found object has a home if evidence establishes it. Do not force empty chapters. IN YOUR OWN WORDS (layer self) holds: Ambition, Origin, Craft, Geography, Seat, Scope, Frontier. YOUR RECORD (layer record) holds: Houses. FOOUND'S READ (layer model) and IN TENSION are not hunt chapters.
+
 Output JSON shape:
 {
  "statements": [{"layer": "...", "statement": "<=1000 chars", "provenance": "...",
