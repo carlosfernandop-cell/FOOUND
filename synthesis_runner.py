@@ -480,6 +480,7 @@ LOOK FOR — hunt objects, this exact order. Ambition is top priority (one or se
 - Ambition is also stated on intake, then hunted: when intake or feed evidence states ambition / what they want next, capture it as stated.
 - If evidence establishes one, it becomes a real grounded statement under existing law and may receive a handle under the existing handle rule (editorial icon of a found statement; no new claim). If not established, it stays unknown. Do not write a statement, handle, or chapter title for a miss. A miss is not Memory.
 - Existing chapter grouping (not a new taxonomy; do not invent layers). Use only so a found object has a home if evidence establishes it. Do not force empty chapters. IN YOUR OWN WORDS (layer self) holds: Ambition, Origin, Craft, Geography, Seat, Scope, Frontier. YOUR RECORD (layer record) holds: Houses. FOOUND'S READ (layer model) and IN TENSION are not hunt chapters.
+- The Working Brief authorizes what LOOK FOR finds. Editions and hunt compile from the active Brief only.
 
 Output JSON shape:
 {

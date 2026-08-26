@@ -102,6 +102,45 @@ client-legible by contract — the app renders it, never suppresses it.
   in-database); physical cleanup is asynchronous engine work through the
   Storage API.
 
+## Working Brief authority
+
+*Locked August 26, 2026. Engine law. There is no Brief-generation prompt
+yet; when one exists, the model must see these subjects and this
+authority law. Until then this section is the engine source of truth.
+`briefs.content` remains unstructured jsonb — this is contract text, not
+a schema migration. The app renders Brief; it does not invent subjects
+or grant authority.*
+
+### Subjects (few, grouped, this exact order — do not invent more)
+
+1. **THE MOVE** = Ambition (top priority, one or several; stated on
+   intake then hunted; not yet a confirmed Memory handle)
+2. **ROLE SPACE** = Craft (Seat and Scope nest here, not separate Brief
+   lines)
+3. **WHERE** = Geography
+
+MARKET / STILL LEARNING / READINESS have no subject yet. Do not add
+them. AVOID is off until a confirmed hard no.
+
+Titles only if the subject exists. No empty titles, ghost rows, empty
+handles.
+
+### Authority
+
+- Confirmation is understanding, not authorization. `confirm_memory`
+  means this is true of me. It does not authorize hunt, edition, or
+  wake.
+- The Working Brief is the first place confirmed Memory gains
+  behavioral authority. Until a Brief is active, confirmed Memory is a
+  record only.
+- 27 confirms are the record, not the contract surface. Do not flatten
+  confirmed rows into hunt terms. Do not use №001's path as a template
+  for other clients.
+- LOOK FOR finds (the hunt eight in `SYSTEM_PROMPT`). Brief authorizes.
+  Editions and hunt compile from the active Brief only.
+- `commission_agent()` remains the put-to-work gate. No edition from
+  Memory alone. No wake from a Brief merely existing.
+
 ## Cross-boundary change protocol
 
 **Cross-boundary changes require contract review — both directions.**
