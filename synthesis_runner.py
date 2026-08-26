@@ -471,7 +471,7 @@ Output JSON shape:
 {
  "statements": [{"layer": "...", "statement": "<=1000 chars", "provenance": "...",
                  "evidence": ["<current item id>", ...], "is_direction": bool,
-                 "handle": "<optional 1-3 word display name, <=24 chars>"}],
+                 "handle": "<optional 1-3 word editorial icon, <=24 chars>"}],
  "contradictions": [{"kind": "batch" | "existing",
                      "a": "<one reading>", "b": "<the conflicting reading>",
                      "evidence": ["<current item ids behind the conflict>"],
@@ -482,7 +482,13 @@ Output JSON shape:
  "unknowns": ["things the evidence approaches but does not establish"]
 }
 "is_direction" is true only for statements about what the person wants next.
-"handle" is an optional 1-3 word DISPLAY NAME for the statement (<=24 chars, no terminal punctuation, distinct within this output where possible). It must summarize the statement's existing meaning and may NEVER introduce a claim the statement does not make. It is presentation metadata only: not evidence, not a belief, and never a substitute for the statement.
+"handle" is optional presentation metadata: an editorial icon in the person's career story, not a compressed summary of the statement. Statement holds precision. Handle holds signal. It is not evidence, not a belief, and never a substitute for the statement.
+Judge each handle on four tests: SOUND (rings in the ear), SIGHT (strong in giant type), STORY (adds to the career narrative), TRUTH (supported by the statement; no new claim).
+Optimize for: strong proper nouns; powerful career ideas; memorable themes; simple language; one clear subject; visual strength; narrative range across the full set.
+Avoid: résumé shorthand; miniature job descriptions; generic UI labels; overly literal compression; clever but weak abstractions; phrases that only make sense after opening the row.
+Do not author or judge handles as one isolated label per row. Author and review the entire handle set in this output together as one editorial composition: rhythm, variety, recognizable names, themes, ambition, and point of view. Signal mix across the set: brands -> scale -> craft -> leadership -> worldview -> ambition. Avoid duplicate handles and overloading one signal type.
+Structural: a positive career-story Memory may receive a handle; a stated filter or exclusion may omit handle (NULL). NULL does not mean unimportant. Do not invent a positive icon for a filter.
+Mechanical: 1-3 words, target <=24 chars, no terminal punctuation, distinct within this output where possible. Omit the field if the handle would be malformed.
 Your response MUST begin with the character { and end with the character }."""
 
 
