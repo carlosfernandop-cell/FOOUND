@@ -10,6 +10,9 @@ H7  never writes 'limited'; never infers ready from at_work
 H8  empty html has no DUMMY ROLE and no dummy seats
 H9  compile does not read Memory; hunt does not touch market_seen / docs
 H10 commission recovery predicate: insert once, then no-op
+H11 judgment: stronger-fit beats weaker-fit; not cap-alone
+H12 role_key precedence + title tweak on same posting id
+H13 adapter isolation smoke: SCRAPERS import without publisher
 """
 
 from __future__ import annotations
@@ -335,13 +338,14 @@ def test_h5_market_history_fields():
         "url": "https://example.invalid/role",
         "source": "adapter",
     }]
+    prior_key = hr.role_key(raw[0])
     # Prior private edition — personal history only.
     db.editions.append({
         "agent_id": aid,
         "edition_date": "2026-08-01",
         "payload": {
             "seats": [{
-                "role_key": "creative director|acme",
+                "role_key": prior_key,
                 "first_seen": "2026-07-15",
             }]
         },
@@ -362,7 +366,8 @@ def test_h5_market_history_fields():
     for key in ("role_key", "first_seen", "previously_seen", "source",
                 "new_or_resurfaced", "survived_because"):
         check(f"H5 field {key}", key in seat)
-    check("H5 role_key style", seat["role_key"] == "creative director|acme")
+    check("H5 role_key url precedence", seat["role_key"] == prior_key)
+    check("H5 role_key is url:", seat["role_key"].startswith("url:"))
     check("H5 previously_seen", seat["previously_seen"] is True)
     check("H5 first_seen from prior", seat["first_seen"] == "2026-07-15")
     check("H5 resurfaced", seat["new_or_resurfaced"] == "resurfaced")
@@ -442,8 +447,8 @@ def test_seat_cap():
         {"title": "Director B", "company": "B", "location": "Remote"},
         {"title": "Director C", "company": "C", "location": "Remote"},
     ]
-    seats = hr.filter_and_cap(raw, compiled)
-    check("cap 2", len(seats) == 2)
+    seats = hr.judge_seats(raw, compiled)
+    check("cap is ceiling after judgment", len(seats) == 2)
 
 
 # ---------------------------------------------------------------------------
@@ -547,6 +552,197 @@ def test_compile_job_writes_ready():
     cfg = brief["compiled_config"]
     check("compile persisted include", bool(cfg["include"]))
     check("compile persisted note", "temporary" in cfg["readiness_architecture"])
+
+
+def test_judgment_stronger_beats_weaker():
+    """Weaker-fit listed first; seat_cap=1. Filter/cap-alone would keep
+    the first eligible. Judgment must keep the stronger Brief fit."""
+    compiled = {
+        "include": ["creative director", "head of creative"],
+        "exclude_type": ["intern"],
+        "accepted_locations": ["new york", "remote"],
+        "seat_cap": 1,
+    }
+    raw = [
+        {"title": "Junior Creative Director", "company": "FirstCo",
+         "location": "Remote", "url": "https://example.invalid/weak"},
+        {"title": "Head of Creative", "company": "BestCo",
+         "location": "New York", "url": "https://example.invalid/strong"},
+        {"title": "Creative Director Intern", "company": "NoCo",
+         "location": "New York", "url": "https://example.invalid/intern"},
+    ]
+    seats = hr.judge_seats(raw, compiled)
+    check("J1 one seat", len(seats) == 1)
+    check("J1 stronger wins", seats[0]["company"] == "BestCo")
+    check("J1 not first-listed weaker", seats[0]["company"] != "FirstCo")
+    reasons = seats[0]["survived_because"]
+    check("J1 title_fit named", "title_fit" in reasons)
+    check("J1 location_fit named", "location_fit" in reasons)
+    check("J1 exclude_cleared named", "exclude_cleared" in reasons)
+    check("J1 ranked_above_peers", "ranked_above_peers" in reasons)
+    check("J1 not filter-only labels",
+          reasons != ["compiled_include", "within_seat_cap"])
+    check("J1 intern excluded",
+          all(s["company"] != "NoCo" for s in seats))
+
+
+def test_judgment_not_cap_alone():
+    compiled = {
+        "include": ["director"],
+        "exclude_type": [],
+        "accepted_locations": ["london", "remote"],
+        "seat_cap": 1,
+    }
+    # First row is eligible but weaker (remote + generic). Second is stronger.
+    raw = [
+        {"title": "Associate Director", "company": "Early",
+         "location": "Remote", "posting_id": "early-1"},
+        {"title": "Director", "company": "Later",
+         "location": "London", "posting_id": "later-1"},
+    ]
+    seats = hr.judge_seats(raw, compiled)
+    check("J2 judgment picks later stronger", seats[0]["company"] == "Later")
+    first_n = []
+    for job in raw:
+        if hr.passes_title(compiled, job["title"]) and hr.passes_location(
+                compiled, job["location"]):
+            first_n.append(job)
+            if len(first_n) >= 1:
+                break
+    check("J2 cap-alone would have kept Early", first_n[0]["company"] == "Early")
+    check("J2 they differ", seats[0]["company"] != first_n[0]["company"])
+
+
+def test_role_key_precedence():
+    a = {"title": "CD", "company": "Acme", "location": "NYC",
+         "posting_id": "gh-99", "url": "https://Example.com/jobs/1?utm_source=x"}
+    b = {"title": "CD Tweaked", "company": "Acme", "location": "NYC",
+         "posting_id": "gh-99", "url": "https://example.com/jobs/2"}
+    check("RKp id wins", hr.role_key(a) == "id:gh-99")
+    check("RKp same id survives title tweak", hr.role_key(a) == hr.role_key(b))
+
+    u1 = {"title": "CD", "company": "Acme", "location": "NYC",
+          "url": "https://WWW.Jobs.Example/apply/42/?utm_campaign=x&gclid=1"}
+    u2 = {"title": "CD, Brand", "company": "Acme", "location": "Remote",
+          "url": "https://jobs.example/apply/42"}
+    check("RKp url normalized equal", hr.role_key(u1) == hr.role_key(u2))
+    check("RKp url prefix", hr.role_key(u1).startswith("url:"))
+
+    d1 = {"title": "CD", "company": "Acme", "location": "NYC",
+          "url": "https://jobs.example/a"}
+    d2 = {"title": "CD", "company": "Acme", "location": "NYC",
+          "url": "https://jobs.example/b"}
+    check("RKp distinct urls do not collapse", hr.role_key(d1) != hr.role_key(d2))
+
+    f1 = {"title": "CD", "company": "Acme", "location": "NYC"}
+    f2 = {"title": "CD", "company": "Acme", "location": "London"}
+    check("RKp fallback includes location",
+          hr.role_key(f1) == "tcl:cd|acme|nyc")
+    check("RKp two openings no collapse", hr.role_key(f1) != hr.role_key(f2))
+
+
+def test_role_key_history_title_tweak_same_id():
+    compiled = {
+        "include": ["creative director"],
+        "accepted_locations": ["remote"],
+        "seat_cap": 5,
+        "exclude_type": [],
+    }
+    prior = [{"role_key": "id:board-7", "first_seen": "2026-07-01"}]
+    hist = hr.personal_history([{"seats": prior}])
+    today = [{
+        "title": "Creative Director, Brand",
+        "company": "Acme",
+        "location": "Remote",
+        "posting_id": "board-7",
+    }]
+    seats = hr.attach_market_fields(hr.judge_seats(today, compiled), hist,
+                                    date(2026, 8, 28))
+    check("RKh same id resurfaced", seats[0]["previously_seen"] is True)
+    check("RKh not new", seats[0]["new_or_resurfaced"] == "resurfaced")
+    check("RKh first_seen kept", seats[0]["first_seen"] == "2026-07-01")
+
+
+def test_adapter_isolation_smoke():
+    """Import job_alerts.SCRAPERS via hunt_runner and collect through a
+    stubbed scraper. Public Shortlist / Notion / email / docs must stay idle.
+    """
+    hits = {"publish": 0, "notion": 0, "smtp": 0, "docs": 0, "main": 0}
+
+    def stub_scraper(*_a, **_k):
+        return [{
+            "title": "Creative Director",
+            "company": "IsoCo",
+            "location": "Remote",
+            "url": "https://example.invalid/iso",
+            "posting_id": "iso-1",
+        }]
+
+    ja = hr._import_job_alerts_adapters()
+    check("smoke SCRAPERS present", hasattr(ja, "SCRAPERS") and len(ja.SCRAPERS) > 0)
+    check("smoke publish_shortlist exists but unused",
+          hasattr(ja, "publish_shortlist"))
+
+    orig_pub = ja.publish_shortlist
+    orig_mail = getattr(ja, "send_email", None)
+    orig_notion = getattr(ja, "add_to_notion", None)
+
+    def _boom_pub(*_a, **_k):
+        hits["publish"] += 1
+        raise AssertionError("publish_shortlist called")
+
+    def _boom_mail(*_a, **_k):
+        hits["smtp"] += 1
+        raise AssertionError("send_email called")
+
+    def _boom_notion(*_a, **_k):
+        hits["notion"] += 1
+        raise AssertionError("add_to_notion called")
+
+    ja.publish_shortlist = _boom_pub
+    if orig_mail:
+        ja.send_email = _boom_mail
+    if orig_notion:
+        ja.add_to_notion = _boom_notion
+
+    real_open = open
+
+    def guarded_open(path, *a, **k):
+        p = str(path).replace("\\", "/")
+        if "/docs/" in p or p.startswith("docs/") or p.endswith("/docs"):
+            hits["docs"] += 1
+            raise AssertionError(f"docs write: {path}")
+        return real_open(path, *a, **k)
+
+    import builtins
+    builtins.open = guarded_open
+    try:
+        raw = hr.live_collect(
+            {"search_queries": ["creative director"]},
+            scraper_entries=[("Stub", stub_scraper)],
+        )
+    finally:
+        builtins.open = real_open
+        ja.publish_shortlist = orig_pub
+        if orig_mail:
+            ja.send_email = orig_mail
+        if orig_notion:
+            ja.add_to_notion = orig_notion
+
+    check("smoke collected stub row", len(raw) == 1)
+    check("smoke no publish", hits["publish"] == 0)
+    check("smoke no notion", hits["notion"] == 0)
+    check("smoke no smtp", hits["smtp"] == 0)
+    check("smoke no docs write", hits["docs"] == 0)
+    check("smoke hunt publish_public false", hr.HUNT_PUBLISH_PUBLIC is False)
+    check("smoke did not call main", hits["main"] == 0)
+    src = open(hr.__file__, encoding="utf-8").read()
+    check("smoke runner never calls publisher",
+          not re.search(r"publish_shortlist\s*\(", src))
+    check("smoke runner never calls send_email",
+          not re.search(r"send_email\s*\(", src))
+    check("smoke runner never calls add_to_notion",
+          not re.search(r"add_to_notion\s*\(", src))
 
 
 def test_logs_have_no_brief_copy(caplog=None):

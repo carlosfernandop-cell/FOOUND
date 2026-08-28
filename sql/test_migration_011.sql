@@ -1,21 +1,23 @@
 \set ON_ERROR_STOP on
 -- Verification for migration 011 (commission_agent at_work recovery).
--- Fixtures use agents 96-98 (no collision with 92-95 of 005/006).
+-- Fixtures use agents 96-99 (no collision with 92-95 of 005/006).
 
 grant usage on schema public, auth to authenticated;
 grant select, insert, update, delete on all tables in schema public to authenticated;
 grant execute on all functions in schema public to authenticated;
 
-delete from agents where agent_no in (96,97,98);
+delete from agents where agent_no in (96,97,98,99);
 insert into auth.users (id, email) values
   ('66666666-6666-4666-8666-666666666666','six@example.com'),
   ('77777777-7777-4777-8777-777777777777','seven@example.com'),
-  ('88888888-8888-4888-8888-888888888888','eight@example.com')
+  ('88888888-8888-4888-8888-888888888888','eight@example.com'),
+  ('99999999-9999-4999-8999-999999999999','nine@example.com')
 on conflict do nothing;
 insert into agents (id, user_id, agent_no, state) values
   ('a6666666-0000-4000-8000-000000000096','66666666-6666-4666-8666-666666666666',96,'at_work'),
   ('a7777777-0000-4000-8000-000000000097','77777777-7777-4777-8777-777777777777',97,'at_work'),
-  ('a8888888-0000-4000-8000-000000000098','88888888-8888-4888-8888-888888888888',98,'mirror_ready');
+  ('a8888888-0000-4000-8000-000000000098','88888888-8888-4888-8888-888888888888',98,'mirror_ready'),
+  ('a9999999-0000-4000-8000-000000000099','99999999-9999-4999-8999-999999999999',99,'mirror_ready');
 
 -- 96: ready Brief, no editions, no first_edition jobs → recovery inserts once
 insert into briefs (agent_id, version, state, content, readiness, confirmed_at)
@@ -153,6 +155,23 @@ do $$ declare r text; n int; s text; begin
 end $$;
 reset role;
 
+-- R9 · 006 limited-unacknowledged gate remains intact
+insert into briefs (agent_id, version, state, content, readiness, confirmed_at)
+values ('a9999999-0000-4000-8000-000000000099', 1, 'active', '{"move":"x"}', 'limited', now());
+set role authenticated;
+select set_config('test.uid','99999999-9999-4999-8999-999999999999', false);
+do $$ declare r text; n int; s text; begin
+  r := commission_agent();
+  if r <> 'blocked:limited_unacknowledged' then
+    raise exception 'FAIL R9 limited_unacknowledged: %', r; end if;
+  select state into s from agents where id='a9999999-0000-4000-8000-000000000099';
+  if s <> 'mirror_ready' then raise exception 'FAIL R9 state flip: %', s; end if;
+  select count(*) into n from jobs
+    where agent_id='a9999999-0000-4000-8000-000000000099';
+  if n <> 0 then raise exception 'FAIL R9 enqueue: %', n; end if;
+end $$;
+reset role;
+
 select 'M011 OK: at_work recovery inserts one job then no-ops; no readiness bypass; 006 gates preserved';
 
-delete from agents where agent_no in (96,97,98);
+delete from agents where agent_no in (96,97,98,99);

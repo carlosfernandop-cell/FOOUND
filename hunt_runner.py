@@ -38,6 +38,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Callable, Optional
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 log = logging.getLogger("hunt_runner")
 
@@ -355,13 +356,93 @@ def current_engine_sha() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Filters (same contract as job_alerts.passes_* / dedup_key). Local copies
-# so tests never import job_alerts.py (that module requires publisher secrets).
+# role_key — durable NEW/RESURFACED identity. Precedence (first wins):
+#   1. stable provider posting ID on the adapter row
+#   2. canonical job/apply URL (lowercase, no trailing slash, no utm/query junk)
+#   3. normalized fallback title|company|location
+# title|company alone is not durable enough: two openings can collapse, and
+# a title tweak on the same posting must not look new.
 # ---------------------------------------------------------------------------
 
-def role_key(title: str, company: str) -> str:
-    """Existing dedup_key style: title.lower().strip() + '|' + company.lower().strip()."""
-    return f"{(title or '').lower().strip()}|{(company or '').lower().strip()}"
+_PROVIDER_ID_KEYS = (
+    "posting_id", "provider_id", "external_id", "job_id",
+    "requisition_id", "req_id", "position_id", "positionId",
+    "gh_id", "ashby_id", "lever_id",
+)
+_JUNK_QUERY = {
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+    "utm_id", "gclid", "fbclid", "mc_cid", "mc_eid", "ref", "source",
+    "gh_src", "gh_jid",
+}
+
+
+def canonical_job_url(url: str) -> str:
+    if not url or not isinstance(url, str):
+        return ""
+    raw = url.strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw)
+    if not parsed.netloc and not parsed.path:
+        return ""
+    scheme = (parsed.scheme or "https").lower()
+    if scheme not in ("http", "https"):
+        scheme = "https"
+    netloc = parsed.netloc.lower()
+    if netloc.startswith("www."):
+        netloc = netloc[4:]
+    path = (parsed.path or "").rstrip("/")
+    kept = [
+        (k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
+        if k.lower() not in _JUNK_QUERY and not k.lower().startswith("utm_")
+    ]
+    query = urlencode(kept, doseq=True)
+    return urlunparse((scheme, netloc, path, "", query, ""))
+
+
+def _provider_posting_id(row: dict) -> str:
+    for key in _PROVIDER_ID_KEYS:
+        val = row.get(key)
+        if val is None or isinstance(val, bool):
+            continue
+        text = str(val).strip()
+        if text:
+            return _norm_phrase(text)
+    return ""
+
+
+def role_key(row, company: str | None = None) -> str:
+    """Durable seat identity. Accepts an adapter row, or (title, company)
+    for the legacy two-arg form (maps to fallback without location)."""
+    if isinstance(row, str):
+        return _fallback_role_key(row, company or "", "")
+    if not isinstance(row, dict):
+        return ""
+    pid = _provider_posting_id(row)
+    if pid:
+        return f"id:{pid}"
+    url = canonical_job_url(row.get("url") or "")
+    if url:
+        return f"url:{url}"
+    return _fallback_role_key(
+        row.get("title") or "",
+        row.get("company") or "",
+        row.get("location") or "",
+    )
+
+
+def _fallback_role_key(title: str, company: str, location: str) -> str:
+    return "tcl:" + "|".join((
+        _norm_phrase(title),
+        _norm_phrase(company),
+        _norm_phrase(location),
+    ))
+
+
+# ---------------------------------------------------------------------------
+# Eligibility gates (not judgment). Local copies of job_alerts.passes_*
+# so tests never import job_alerts.py (that module requires publisher secrets).
+# ---------------------------------------------------------------------------
 
 
 def passes_title(compiled: dict, title: str) -> bool:
@@ -499,45 +580,123 @@ def build_payload(seats: list[dict], compiled: dict,
 
 
 # ---------------------------------------------------------------------------
-# Hunt: compiled_config only. Optional job_alerts adapters. Never publish.
+# Judgment — compiled Brief authority, not Shortlist rank_with_fit.
+# Eligible candidates are scored (title fit, location fit, exclude-cleared)
+# then ranked. The seat set is the top of that ranking, not first-N after
+# a filter. rank_with_fit is intentionally not reused: it needs Candidate
+# profile.md, AgentConfig, JD fetches, and Anthropic, and it logs titles.
 # ---------------------------------------------------------------------------
 
 Collector = Callable[[dict], list[dict]]
 
+HUNT_PUBLISH_PUBLIC = False  # this slice never publishes
 
-def filter_and_cap(raw: list[dict], compiled: dict) -> list[dict]:
+_JUNIOR_TOKENS = ("junior", "associate", "assistant", "coordinator")
+_SENIOR_TOKENS = ("head of", "vp ", "vp,", "vice president", "executive", "group ")
+
+
+def title_fit(title: str, include: list[str]) -> tuple[int, list[str]]:
+    t = (title or "").lower()
+    matched = [k for k in include if k and k in t]
+    if not matched:
+        return 0, []
+    longest = max(len(k) for k in matched)
+    reasons = ["title_fit"]
+    score = longest + 3 * len(matched)
+    compact = _norm_phrase(t)
+    if compact in include or any(compact == k for k in include):
+        score += 12
+        reasons.append("title_exact_authority")
+    elif any(compact.startswith(k) for k in matched):
+        score += 6
+        reasons.append("title_leads_with_authority")
+    if any(tok in t for tok in _SENIOR_TOKENS):
+        score += 5
+        reasons.append("title_seniority")
+    if any(tok in t for tok in _JUNIOR_TOKENS):
+        score -= 8
+        reasons.append("title_juniority")
+    return score, reasons
+
+
+def location_fit(location: str, accepted: list[str]) -> tuple[int, list[str]]:
+    if not location:
+        return 1, ["location_unspecified"]
+    loc = location.lower()
+    if re.search(r"\d+\s+locations", loc):
+        return 2, ["location_multi"]
+    matched = [a for a in accepted if a and re.search(rf"\b{re.escape(a)}\b", loc)]
+    if not matched:
+        return 0, []
+    longest = max(len(a) for a in matched)
+    reasons = ["location_fit"]
+    if any(a != "remote" for a in matched):
+        score = 4 + longest
+        reasons.append("location_specific")
+    else:
+        score = 3
+        reasons.append("location_remote")
+    return score, reasons
+
+
+def judge_seats(raw: list[dict], compiled: dict) -> list[dict]:
+    """Eligibility gates, then rank by Brief-authority scores, then cap.
+
+    survived_because names judgment reasons (title_fit / location_fit /
+    exclude_cleared / ranked_above_peers), not filter-only labels.
+    """
     cap = int(compiled.get("seat_cap") or DEFAULT_SEAT_CAP)
     cap = max(1, min(cap, MAX_SEAT_CAP))
-    kept, seen = [], set()
+    include = list(compiled.get("include") or [])
+    accepted = list(compiled.get("accepted_locations") or [])
+    eligible, seen = [], set()
     for job in raw:
         title = job.get("title") or ""
-        company = job.get("company") or ""
         loc = job.get("location") or ""
         if not passes_title(compiled, title):
             continue
         if not passes_location(compiled, loc):
             continue
-        key = role_key(title, company)
-        if not key.strip("|") or key in seen:
+        key = role_key(job)
+        if not key or key in seen:
             continue
         seen.add(key)
-        reasons = ["compiled_include", "within_seat_cap"]
-        if loc:
-            reasons.insert(1, "compiled_location")
-        kept.append({
+        t_score, t_reasons = title_fit(title, include)
+        l_score, l_reasons = location_fit(loc, accepted)
+        if t_score <= 0:
+            continue
+        reasons = t_reasons + l_reasons + ["exclude_cleared"]
+        eligible.append({
             "role_key": key,
             "title": title,
-            "company": company,
+            "company": job.get("company") or "",
             "location": loc,
             "url": job.get("url") or "",
-            "handle": company or title,
+            "handle": (job.get("company") or title),
             "line": _seat_line({"title": title, "location": loc}),
             "source": job.get("source") or "hunt",
             "survived_because": reasons,
+            "_title_score": t_score,
+            "_location_score": l_score,
         })
-        if len(kept) >= cap:
-            break
-    return kept
+    eligible.sort(
+        key=lambda s: (-s["_title_score"], -s["_location_score"], s["role_key"])
+    )
+    ranked_out = len(eligible) > cap
+    seats = []
+    for s in eligible[:cap]:
+        reasons = list(s["survived_because"])
+        if ranked_out:
+            reasons.append("ranked_above_peers")
+        seats.append({k: v for k, v in s.items() if not k.startswith("_")} | {
+            "survived_because": reasons,
+        })
+    return seats
+
+
+def filter_and_cap(raw: list[dict], compiled: dict) -> list[dict]:
+    """Deprecated name: judgment, not first-N after a filter."""
+    return judge_seats(raw, compiled)
 
 
 def _import_job_alerts_adapters():
@@ -553,16 +712,19 @@ def _import_job_alerts_adapters():
     return ja
 
 
-def live_collect(compiled: dict) -> list[dict]:
+def live_collect(compiled: dict, scraper_entries=None) -> list[dict]:
     """Reuse job_alerts scrapers as adapters. publish_public stays false.
 
     Individual source failures are skipped. A completed collect returning
     zero rows is an empty market, not a technical failure.
+    scraper_entries: optional override (tests / isolation smoke). When
+    omitted, uses job_alerts.SCRAPERS after a lazy import.
     """
+    assert HUNT_PUBLISH_PUBLIC is False
     ja = _import_job_alerts_adapters()
     ja.MARKET_QUERIES = list(compiled.get("search_queries") or [])
+    sources = scraper_entries if scraper_entries is not None else getattr(ja, "SCRAPERS", [])
     raw: list[dict] = []
-    sources = getattr(ja, "SCRAPERS", [])
     log.info("collect sources=%d queries=%d", len(sources), len(ja.MARKET_QUERIES))
     for i, entry in enumerate(sources):
         fn = entry[1]
@@ -577,7 +739,7 @@ def live_collect(compiled: dict) -> list[dict]:
             if not isinstance(j, dict):
                 continue
             row = dict(j)
-            row["source"] = "adapter"
+            row.setdefault("source", "adapter")
             raw.append(row)
             n += 1
         log.info("adapter source_ok i=%d n=%d", i, n)
@@ -861,7 +1023,7 @@ class Runner:
                           job["id"])
             raise HuntError("hunt_adapter_failed")
 
-        seats = filter_and_cap(raw or [], compiled)
+        seats = judge_seats(raw or [], compiled)
         history = personal_history(self.db.prior_edition_payloads(job["agent_id"]))
         seats = attach_market_fields(seats, history, self.today)
         sha = current_engine_sha()

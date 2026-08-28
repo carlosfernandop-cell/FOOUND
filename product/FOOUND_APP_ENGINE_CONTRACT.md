@@ -178,6 +178,43 @@ editions row.*
   is no queued/running/done `first_edition` job → INSERT `first_edition`
   (payload `brief_version`) and return `at_work`. No state reset. No
   readiness bypass. Existing non-at_work gates unchanged.
+  Prove 011 on disposable Postgres only — never the live FOOUND
+  project — via `sql/dev/run_011_harness.sh` or the `migration-011`
+  CI job (`postgres:16` service, database `foound_011`, no production
+  credentials). The harness applies `test_harness.sql` +
+  `000_harness_base.sql` + `005` + `006` + a local-only
+  `agents_owner_read` policy + `011` + `test_migration_011.sql`.
+  It does not apply 007–010.
+
+### Judgment (this slice)
+
+Collected candidates become seats by a **ranking/judgment** step, not
+filter-then-cap. `job_alerts.rank_with_fit` is intentionally **not**
+reused: it scores against Candidate `profile.md` via Anthropic + JD
+fetches, requires `AgentConfig`, and logs titles — Shortlist machinery
+this slice must not call. v1 judgment in `hunt_runner.judge_seats` is
+deterministic and Brief-only: eligibility gates (include / exclude /
+location), then a numeric score for title fit and location fit against
+`compiled_config`, then rank, then `seat_cap`. `survived_because`
+names those judgment reasons (`title_fit`, `location_fit`,
+`exclude_cleared`, `ranked_above_peers`, …). This is sufficient to
+prove the first real edition exercises judgment. It is **not**
+Shortlist `rank_with_fit`, **not** overnight market reading, and **not**
+editorial prose.
+
+### role_key precedence (NEW / RESURFACED)
+
+Personal history is keyed by `role_key`. Precedence, first match wins:
+
+1. stable provider posting ID on the adapter row (`posting_id` /
+   `provider_id` / `external_id` / `job_id` / …) → `id:<normalized>`
+2. else canonical job/apply URL (lowercase host, strip `www.`, trailing
+   slash, fragment, and utm/gclid/fbclid/ref/query junk) → `url:<canonical>`
+3. else explicit normalized fallback `tcl:<title>|<company>|<location>`
+
+Two distinct openings must not collapse. A minor title tweak on the
+same posting ID or URL must not look new. `title|company` alone is
+not durable enough and is no longer the identity.
 
 ## Readiness (v1 temporary architecture)
 

@@ -22,6 +22,12 @@ on:
       - "golden_edition.html"
       - ".github/workflows/agent-readiness.yml"
       - ".github/workflows/hunt.yml"
+      - "sql/011_commission_recovery.sql"
+      - "sql/test_migration_011.sql"
+      - "sql/dev/run_011_harness.sh"
+      - "sql/dev/011_harness_extras.sql"
+      - "sql/005_multiuser.sql"
+      - "sql/006_jobs.sql"
   pull_request:
   workflow_dispatch:
 
@@ -64,3 +70,34 @@ jobs:
           else
             echo "::notice::No golden fixture — commit golden_edition.html to enable this guard."
           fi
+
+  # Disposable Postgres. Never production. Proves migration 011 empirically.
+  migration-011:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: harness
+          POSTGRES_DB: foound_011
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Run 011 harness (disposable)
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: harness
+          PGDATABASE: foound_011
+          FOOUND_011_KEEP_DB: "1"
+        run: bash sql/dev/run_011_harness.sh
