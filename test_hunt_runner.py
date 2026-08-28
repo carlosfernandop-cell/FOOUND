@@ -183,7 +183,9 @@ SPECIMEN_5d260731 = {
                 {"handle": "Lead", "lines": [
                     "Lead the creative function for a culture-shaping brand. "
                     "Across markets. Build or transform that function. "
-                    "Not inherit a finished one. The seat is ECD."
+                    "Not inherit a finished one. Stay culturally relevant, "
+                    "creatively ambitious, and unmistakably themselves. "
+                    "The seat is ECD."
                 ]},
             ],
         },
@@ -193,7 +195,11 @@ SPECIMEN_5d260731 = {
                 {"handle": "Craft", "lines": [
                     "Seat: senior creative/brand leadership (CD, Group CD, "
                     "Executive CD, Head of Creative, Head of Brand, "
-                    "VP Brand/Creative)."
+                    "VP Brand/Creative). "
+                    "Global / multi-market; building or transforming a "
+                    "creative function; consumer tech, platforms, and "
+                    "culture-shaping brands. "
+                    "Creatively ambitious, and unmistakably themselves."
                 ]},
             ],
         },
@@ -219,6 +225,25 @@ SPECIMEN_FAMILIES = [
     "head of creative",
     "head of brand",
     "vp brand/creative",
+]
+
+# Families first, then coherent ROLE SPACE concepts in first-seen order.
+# "and unmistakably themselves" is authorized prose and must not appear.
+SPECIMEN_INCLUDE = [
+    "ecd",
+    "creative director",
+    "group cd",
+    "executive cd",
+    "head of creative",
+    "head of brand",
+    "vp brand/creative",
+    "senior creative/brand leadership",
+    "global / multi-market",
+    "building or transforming a creative function",
+    "consumer tech",
+    "platforms",
+    "culture-shaping brands",
+    "creatively ambitious",
 ]
 
 # Fictional Brief with different seat language. Must not yield SPECIMEN_FAMILIES.
@@ -369,6 +394,21 @@ def test_compile_specimen_5d260731_no_punctuation_junk():
           "vp brand/creative" in cfg["search_queries"])
     check("CQ parenthetical concept intact or absent",
           all("(" not in t or ")" in t for t in cfg["include"]))
+
+
+def test_compile_specimen_5d260731_include_coherent():
+    cfg = hr.compile_from_content(SPECIMEN_5d260731)
+    check("CQ include exact", cfg["include"] == SPECIMEN_INCLUDE)
+    check("CQ include no unmistakably scrap",
+          "and unmistakably themselves" not in cfg["include"])
+    check("CQ include no conjunction scraps",
+          not any(t.startswith(("and ", "or ", "but ", "not "))
+                  for t in cfg["include"]))
+    check("CQ queries stay seven families",
+          cfg["search_queries"] == SPECIMEN_FAMILIES)
+    check("CQ queries have Creative Director",
+          "creative director" in cfg["search_queries"])
+    check("CQ queries no bare cd", "cd" not in cfg["search_queries"])
 
 
 def test_compile_specimen_5d260731_deterministic():

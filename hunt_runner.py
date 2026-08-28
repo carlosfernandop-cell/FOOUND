@@ -234,6 +234,11 @@ _CLAUSE_STARTS = (
     "across ", "for a ", "for the ", "with ", "from ", "into ",
     "among ",
 )
+_CONJ_LEAD = re.compile(r"^(and|or|but|nor)\s+", re.I)
+_PRONOUN_TAILS = frozenset({
+    "themselves", "itself", "himself", "herself", "ourselves",
+    "myself", "them", "they", "it",
+})
 _SEAT_PREFIX = re.compile(
     r"^(?:the\s+)?seat\s+is\s+|^seat\s*:?\s+|^roles?\s*:?\s+|^titles?\s*:?\s+",
     re.I,
@@ -251,6 +256,43 @@ def _is_clause_fragment(phrase: str) -> bool:
     if any(m in p for m in _CLAUSE_MARKERS):
         return True
     return bool(re.search(r"\b(build|transform|inherit)\b", p))
+
+
+def _is_prose_scrap(phrase: str) -> bool:
+    """Conjunction-led leftovers, punctuation junk, residual sentence tails."""
+    p = _norm_phrase(phrase)
+    if not p or not _balanced_punct(p):
+        return True
+    if p.startswith(("and ", "or ", "but ", "nor ", "not ")):
+        return True
+    if _is_clause_fragment(p):
+        return True
+    words = [w for w in p.split() if w not in {"/", "-", "–", "—"}]
+    if not words:
+        return True
+    if words[0] in {"and", "or", "but", "nor", "not"}:
+        return True
+    if words[-1] in _PRONOUN_TAILS:
+        return True
+    return False
+
+
+def _normalize_concept(raw: str) -> str | None:
+    """Keep a coherent hunt concept; drop scraps. Do not invent terms."""
+    p = _norm_phrase(raw)
+    if not p:
+        return None
+    if _CONJ_LEAD.match(p):
+        p = _CONJ_LEAD.sub("", p, count=1).strip()
+    if not p or not _usable_term(p):
+        return None
+    if _looks_like_role_title(p) or _looks_like_role_title(_as_family(p)):
+        return None
+    if _is_prose_scrap(p):
+        return None
+    if not re.search(r"[a-z]", p):
+        return None
+    return p
 
 
 def _looks_like_role_title(phrase: str) -> bool:
@@ -400,11 +442,16 @@ def _extract_role_families(text: str) -> list[str]:
 
 def _extract_concepts(text: str) -> list[str]:
     found: list[str] = []
+    candidates: list[str] = []
     for item in _list_items(text):
-        v = _norm_phrase(item)
-        if not v or _looks_like_role_title(v) or _is_clause_fragment(v):
-            continue
-        if _usable_term(v) and re.search(r"[a-z]", v):
+        candidates.append(item)
+        if "(" in item:
+            pre = item.split("(", 1)[0].strip()
+            if pre:
+                candidates.append(pre)
+    for raw in candidates:
+        v = _normalize_concept(raw)
+        if v:
             _add_unique(found, v)
     return found
 
@@ -503,7 +550,9 @@ def compile_from_content(content, compiled_at: str | None = None,
 
     Role-family titles are extracted as whole seat names. search_queries is
     that family set (usable market queries), never ambition prose.
-    include may add intact concepts. accepted_locations stay geography.
+    include holds role families plus coherent hunt concepts only —
+    no conjunction-led scraps or residual sentence tails.
+    accepted_locations stay geography.
     Move-kind text is intent: only exact seat titles found there authorize.
 
     READY iff the Brief authorized executable hunt input (role families and
@@ -533,7 +582,10 @@ def compile_from_content(content, compiled_at: str | None = None,
         fam = _as_family(item)
         if _looks_like_role_title(item) or _looks_like_role_title(fam):
             _add_unique(families, fam)
-    bags["include"] = [x for x in bags["include"] if _norm_phrase(x) != "cd"]
+    bags["include"] = [
+        x for x in bags["include"]
+        if _norm_phrase(x) != "cd" and not _is_prose_scrap(x)
+    ]
 
     concepts: list[str] = []
     subjects_used: list[str] = []
