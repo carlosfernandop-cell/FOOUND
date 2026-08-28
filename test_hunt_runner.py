@@ -171,9 +171,10 @@ STRUCTURED = {
 }
 
 # Specimen Brief 5d260731 — authorized №001 text as stored
-# (subjects THE MOVE / ROLE SPACE / WHERE). THE MOVE is ambition prose;
-# ROLE SPACE names the seat families. This is a test fixture, not a
-# compiler catalog: hunt_runner must derive these titles from the text.
+# (subjects THE MOVE / ROLE SPACE / WHERE). THE MOVE is ambition prose
+# plus a seat line that names ECD exactly. ROLE SPACE writes the seat
+# list; bare CD in that list is Creative Director. Fixture only — not
+# a compiler catalog.
 SPECIMEN_5d260731 = {
     "chapters": [
         {
@@ -182,7 +183,7 @@ SPECIMEN_5d260731 = {
                 {"handle": "Lead", "lines": [
                     "Lead the creative function for a culture-shaping brand. "
                     "Across markets. Build or transform that function. "
-                    "Not inherit a finished one."
+                    "Not inherit a finished one. The seat is ECD."
                 ]},
             ],
         },
@@ -190,9 +191,9 @@ SPECIMEN_5d260731 = {
             "title": "ROLE SPACE",
             "subjects": [
                 {"handle": "Craft", "lines": [
-                    "The seat is senior creative and brand leadership (CD / Creative). "
-                    "Head of Creative, ECD, Head of Brand, Creative Director, "
-                    "Group CD, Executive CD, VP Brand/Creative."
+                    "Seat: senior creative/brand leadership (CD, Group CD, "
+                    "Executive CD, Head of Creative, Head of Brand, "
+                    "VP Brand/Creative)."
                 ]},
             ],
         },
@@ -207,14 +208,16 @@ SPECIMEN_5d260731 = {
     ]
 }
 
-# Locked clean families for THIS specimen Brief only — how the Brief writes them.
+# Locked clean families for THIS specimen Brief only — how Brand writes them.
+# First-seen order: ECD on THE MOVE seat line, then ROLE SPACE list with
+# bare CD expanded to Creative Director.
 SPECIMEN_FAMILIES = [
-    "head of creative",
     "ecd",
-    "head of brand",
     "creative director",
     "group cd",
     "executive cd",
+    "head of creative",
+    "head of brand",
     "vp brand/creative",
 ]
 
@@ -320,6 +323,9 @@ def test_compile_specimen_5d260731_families():
     cfg = hr.compile_from_content(SPECIMEN_5d260731)
     check("CQ specimen ready", hr.readiness_of(cfg) == "ready")
     check("CQ specimen families", cfg["search_queries"] == SPECIMEN_FAMILIES)
+    check("CQ has Creative Director", "creative director" in cfg["search_queries"])
+    check("CQ no bare cd family",
+          "cd" not in cfg["search_queries"] and "cd" not in cfg["include"])
     check("CQ families are include",
           all(f in cfg["include"] for f in SPECIMEN_FAMILIES))
     check("CQ no invented Global Creative Director",
@@ -327,6 +333,9 @@ def test_compile_specimen_5d260731_families():
           and "global creative director" not in cfg["include"])
     check("CQ ECD not expanded",
           "executive creative director" not in cfg["search_queries"])
+    check("CQ Group CD stays abbreviated", "group cd" in cfg["search_queries"])
+    check("CQ Executive CD stays abbreviated",
+          "executive cd" in cfg["search_queries"])
     check("CQ move prose not queries",
           not any(x in cfg["search_queries"] for x in (
               "across markets",

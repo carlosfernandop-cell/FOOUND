@@ -235,7 +235,7 @@ _CLAUSE_STARTS = (
     "among ",
 )
 _SEAT_PREFIX = re.compile(
-    r"^(?:the\s+)?seat\s+is\s+|^roles?\s*:?\s+|^titles?\s*:?\s+",
+    r"^(?:the\s+)?seat\s+is\s+|^seat\s*:?\s+|^roles?\s*:?\s+|^titles?\s*:?\s+",
     re.I,
 )
 _HEAD_OF = re.compile(
@@ -284,6 +284,39 @@ def _looks_like_role_title(phrase: str) -> bool:
     return False
 
 
+def _as_family(phrase: str) -> str:
+    """Bare CD is Creative Director. Group/Executive CD and ECD stay as written."""
+    p = _norm_phrase(phrase)
+    if p == "cd":
+        return "creative director"
+    return p
+
+
+def _split_list_outside_parens(text: str) -> list[str]:
+    """Comma/semicolon split that does not cut inside '(...)'."""
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in text or "":
+        if ch == "(":
+            depth += 1
+            buf.append(ch)
+        elif ch == ")":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+        elif ch in ",;" and depth == 0:
+            part = "".join(buf).strip()
+            if part:
+                parts.append(part)
+            buf = []
+        else:
+            buf.append(ch)
+    part = "".join(buf).strip()
+    if part:
+        parts.append(part)
+    return parts
+
+
 def _maybe_split_slash_titles(part: str) -> list[str]:
     raw = (part or "").strip()
     if not raw:
@@ -294,6 +327,17 @@ def _maybe_split_slash_titles(part: str) -> list[str]:
     if len(pieces) >= 2 and all(_looks_like_role_title(p) for p in pieces):
         return pieces
     return [raw]
+
+
+def _expand_part(part: str) -> list[str]:
+    raw = (part or "").strip()
+    if not raw:
+        return []
+    out = _maybe_split_slash_titles(raw)
+    for inner in re.findall(r"\(([^)]*)\)", raw):
+        for piece in _split_list_outside_parens(inner):
+            out.extend(_maybe_split_slash_titles(piece))
+    return out
 
 
 def _list_items(text: str) -> list[str]:
@@ -307,9 +351,8 @@ def _list_items(text: str) -> list[str]:
         sentence = _SEAT_PREFIX.sub("", sentence).strip()
         if not sentence:
             continue
-        parts = [x.strip() for x in re.split(r"\s*[,;]\s*", sentence) if x.strip()]
-        for part in parts:
-            items.extend(_maybe_split_slash_titles(part))
+        for part in _split_list_outside_parens(sentence):
+            items.extend(_expand_part(part))
     return items
 
 
@@ -343,13 +386,15 @@ def _add_unique(dest: list[str], raw: str) -> bool:
 def _extract_role_families(text: str) -> list[str]:
     found: list[str] = []
     for item in _list_items(text):
-        if _looks_like_role_title(item):
-            _add_unique(found, item)
+        fam = _as_family(item)
+        if _looks_like_role_title(item) or _looks_like_role_title(fam):
+            _add_unique(found, fam)
             continue
         # Mine titles inside this item only — never stitch across commas.
         for span in _iter_title_spans(item):
-            if _looks_like_role_title(span):
-                _add_unique(found, span)
+            inner = _as_family(span)
+            if _looks_like_role_title(span) or _looks_like_role_title(inner):
+                _add_unique(found, inner)
     return found
 
 
@@ -483,10 +528,12 @@ def compile_from_content(content, compiled_at: str | None = None,
 
     families: list[str] = []
     for item in bags["search_queries"]:
-        _add_unique(families, item)
+        _add_unique(families, _as_family(item))
     for item in bags["include"]:
-        if _looks_like_role_title(item):
-            _add_unique(families, item)
+        fam = _as_family(item)
+        if _looks_like_role_title(item) or _looks_like_role_title(fam):
+            _add_unique(families, fam)
+    bags["include"] = [x for x in bags["include"] if _norm_phrase(x) != "cd"]
 
     concepts: list[str] = []
     subjects_used: list[str] = []
