@@ -15,11 +15,13 @@ on:
       - "job_alerts.py"
       - "foound_agent.py"
       - "foound_state.py"
+      - "hunt_runner.py"
       - "test_*.py"
       - "render_edition.py"
       - "tests/**"
       - "golden_edition.html"
       - ".github/workflows/agent-readiness.yml"
+      - ".github/workflows/hunt.yml"
   pull_request:
   workflow_dispatch:
 
@@ -36,13 +38,16 @@ jobs:
         run: pip install requests
 
       - name: Everything compiles
-        run: python3 -m py_compile job_alerts.py foound_agent.py foound_state.py
+        run: python3 -m py_compile job_alerts.py foound_agent.py foound_state.py hunt_runner.py
 
       - name: No one-person literals in the per-agent path
         run: python3 test_no_agent_literals.py job_alerts.py
 
       - name: Private-state module behaves
         run: python3 test_foound_state.py
+
+      - name: Hunt runner vertical slice
+        run: python3 test_hunt_runner.py
 
       - name: Orchestration works end to end
         run: python3 test_main_endtoend.py

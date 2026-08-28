@@ -1,0 +1,40 @@
+# FOOUND Hunt Runner v1 — manual fire only (workflow_dispatch).
+# First-real-hunt vertical slice: compile_brief, refresh_readiness,
+# first_edition. Do not schedule overnight. Cadence is a later decision.
+#
+# Concurrency group: two fires can never run simultaneously (belt; the
+# row-level claim is the suspenders — correctness never depends on
+# Actions behaving).
+#
+# PUBLIC REPO: these logs are public. The runner logs ids/counts/enums only —
+# never Brief copy, seat titles, URLs, prompts, or model output.
+#
+# Does not run job_alerts.py, does not write docs/, does not publish
+# GitHub Pages, does not set publish_public.
+
+name: hunt-runner
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: hunt-runner
+  cancel-in-progress: false
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install requests==2.33.1
+      - name: Run one hunt cycle
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python hunt_runner.py

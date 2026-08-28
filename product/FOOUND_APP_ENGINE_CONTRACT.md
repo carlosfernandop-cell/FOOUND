@@ -141,6 +141,66 @@ handles.
 - `commission_agent()` remains the put-to-work gate. No edition from
   Memory alone. No wake from a Brief merely existing.
 
+## First-real-hunt vertical slice (v1)
+
+*Locked with the first-real-hunt slice. App expresses intent. Supabase
+enforces state. Engine interprets. Path: active Brief → compile →
+readiness → commission recovery → one manual hunt → one private
+editions row.*
+
+- Compile only what the active Brief authorizes (`briefs.content`).
+  Confirmed Memory never becomes search authority. Do not flatten
+  confirms into hunt terms. Do not write `agent_config`.
+- v1 may see subjects titled THE MOVE / ROLE SPACE / WHERE on №001's
+  Brief. Those three labels are **not** permanent engine architecture.
+  The compiler walks titled units generically.
+- `compiled_config` (engine-written) carries: `subjects_used`,
+  `include[]`, `exclude_type[]`, `accepted_locations[]`,
+  `search_queries[]`, `seat_cap` (few, default 5), `compiled_at`,
+  `engine_sha`, `readiness_reasons[]`, and a temporary-architecture
+  note field.
+- Hunt jobs `compile_brief`, `refresh_readiness`, and `first_edition`
+  are claimed by `hunt_runner.py`, not `synthesis_runner.py`. Manual
+  fire only (`hunt.yml` workflow_dispatch). No overnight schedule.
+- `first_edition` writes one private `editions` row. `publish_public`
+  is false. Do not call or merge the public Shortlist publisher
+  (`job_alerts.yml` / `docs/` GitHub Pages / `publish_public`).
+- Zero seats is a successful empty edition. `jobs.error` is technical
+  failure only (`no_active_brief` / `no_compiled_config` /
+  `readiness_blocked` / named adapter errors).
+- v1 market memory is personal: this agent's prior private
+  `editions.payload` only. Do not use `public.market_seen` as personal
+  history.
+- Edition `html` is a machine artifact for the locked At Work picture:
+  seats as `{id, handle, line}`. No dummy seats.
+- `commission_agent()` at_work recovery (migration 011): if already
+  `at_work` AND readiness is `ready` AND editions count is 0 AND there
+  is no queued/running/done `first_edition` job → INSERT `first_edition`
+  (payload `brief_version`) and return `at_work`. No state reset. No
+  readiness bypass. Existing non-at_work gates unchanged.
+
+## Readiness (v1 temporary architecture)
+
+*This is temporary architecture, not the permanent readiness
+representation. We are avoiding new schema.*
+
+- Deterministic READY or BLOCKED with explicit reasons.
+- Persist as `briefs.readiness = 'ready' | 'not_ready'`.
+- BLOCKED reasons live inside `briefs.compiled_config`
+  (e.g. `readiness_reasons[]`), plus a `readiness_architecture` note
+  that this representation is temporary.
+- Never write `'limited'` from this slice. Never infer READY from
+  `agents.state = at_work`.
+- BLOCKED if there is no active Brief or the Brief does not authorize
+  enough to hunt (v1: no usable hunt authority in content — need
+  include terms and accepted locations).
+- READY if compile produced an executable hunt config from authorized
+  Brief subjects.
+- Schema still *allows* `'limited'` (005) and `commission_agent()`
+  still honors the existing limited-ack gate on non-at_work paths.
+  This slice does not invent limited-ack behavior and does not write
+  the value.
+
 ## Cross-boundary change protocol
 
 **Cross-boundary changes require contract review — both directions.**
