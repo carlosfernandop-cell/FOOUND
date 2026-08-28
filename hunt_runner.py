@@ -144,19 +144,46 @@ def _kind_hint(title: str) -> str | None:
     return "other"
 
 
+def _kind_of_subject(sub: dict) -> str:
+    """Bucket from chapter title first, then unit title. Handles are not keys."""
+    for title in (sub.get("context_title"), sub.get("title")):
+        kind = _kind_hint(title or "")
+        if kind in ("skip", "place", "role", "move"):
+            return kind
+    return _kind_hint(sub.get("title") or "") or "other"
+
+
+def _balanced_punct(phrase: str) -> bool:
+    if phrase.count("(") != phrase.count(")"):
+        return False
+    if phrase.count("[") != phrase.count("]"):
+        return False
+    if phrase.startswith(("(", ")", "/", ",", ";", "]")):
+        return False
+    if ")" in phrase and "(" not in phrase:
+        return False
+    if phrase.endswith("("):
+        return False
+    return True
+
+
 def _split_phrases(text: str) -> list[str]:
+    """Split authorized text into intact phrases.
+
+    Sentence / comma / semicolon / newline only. Does not cut on '/' or '('
+    so compounds like 'VP Product/Design' and 'design leadership (CPO / Design)'
+    stay whole.
+    """
     if not text:
         return []
     chunks: list[str] = []
-    for sentence in re.split(r"[.\n]+", text):
+    for sentence in re.split(r"[.\n!?]+", text):
         sentence = sentence.strip()
         if not sentence:
             continue
         if ":" in sentence:
             sentence = sentence.split(":", 1)[-1]
-        for part in re.split(r"[,;/]|(\band\b)", sentence):
-            if not part or part == "and":
-                continue
+        for part in re.split(r"\s*[,;]\s*", sentence):
             v = _norm_phrase(part)
             if v:
                 chunks.append(v)
@@ -166,8 +193,188 @@ def _split_phrases(text: str) -> list[str]:
 def _usable_term(phrase: str) -> bool:
     if not phrase or len(phrase) > 60:
         return False
-    words = phrase.split()
+    if not _balanced_punct(phrase):
+        return False
+    words = [w for w in phrase.split() if w not in {"/", "-", "–", "—"}]
     return 1 <= len(words) <= 7
+
+
+# Role-title grammar — generic seat language, not a catalog of any Brief.
+_ROLE_ABBREV = frozenset({
+    "cd", "ecd", "gcd", "vp", "svp", "evp",
+    "cdo", "cmo", "cto", "ceo", "cfo", "coo", "cpo", "cro", "cxo",
+    "cio", "cco", "cao",
+})
+_ROLE_NUCLEI = frozenset({
+    "director", "designer", "engineer", "manager", "lead", "head",
+    "officer", "president", "partner", "architect", "producer",
+    "writer", "strategist", "editor", "curator", "researcher",
+    "specialist", "consultant", "founder", "chair", "chief",
+    "scientist", "analyst", "developer", "copywriter", "recruiter",
+})
+_ROLE_RANKS = frozenset({
+    "staff", "senior", "principal", "executive", "group", "global",
+    "associate", "junior", "vice", "assistant", "head", "vp",
+})
+_CRAFT_ADJECTIVES = frozenset({
+    "creative", "brand", "product", "design", "marketing", "experience",
+    "content", "art", "growth", "digital", "visual", "ux", "ui",
+    "research", "data", "software", "engineering", "sales", "account",
+    "media", "communications", "comms", "strategy", "operations",
+    "people", "talent", "studio", "editorial",
+})
+_TITLE_NOISE = frozenset({
+    "the", "a", "an", "is", "are", "as", "for", "to", "our", "their",
+    "my", "your", "and", "or",
+})
+_CLAUSE_MARKERS = ("that function", "finished one", "the function")
+_CLAUSE_STARTS = (
+    "lead the", "build ", "transform ", "inherit ", "not ",
+    "own the", "create ", "want ", "do not", "don't",
+    "across ", "for a ", "for the ", "with ", "from ", "into ",
+    "among ",
+)
+_SEAT_PREFIX = re.compile(
+    r"^(?:the\s+)?seat\s+is\s+|^roles?\s*:?\s+|^titles?\s*:?\s+",
+    re.I,
+)
+_HEAD_OF = re.compile(
+    r"^(?:head|director|vp|vice president|chief|lead) of "
+    r"[a-z][a-z&'-]*(?: [a-z][a-z&'-]*){0,2}$"
+)
+
+
+def _is_clause_fragment(phrase: str) -> bool:
+    p = _norm_phrase(phrase)
+    if any(p.startswith(s) for s in _CLAUSE_STARTS):
+        return True
+    if any(m in p for m in _CLAUSE_MARKERS):
+        return True
+    return bool(re.search(r"\b(build|transform|inherit)\b", p))
+
+
+def _looks_like_role_title(phrase: str) -> bool:
+    """True for a whole seat/role title. Rejects ambition clauses and junk."""
+    p = _norm_phrase(phrase)
+    if not _usable_term(p) or _is_clause_fragment(p):
+        return False
+    words = p.split()
+    if words and words[0] in _TITLE_NOISE:
+        return False
+    compact = p.replace(".", "")
+    if compact in _ROLE_ABBREV:
+        return True
+    if "/" in compact:
+        head = compact.split()[0]
+        if head in _ROLE_ABBREV or head in {"vp", "head", "director", "chief"}:
+            return 1 <= len(words) <= 4
+        return False
+    if _HEAD_OF.match(compact):
+        return True
+    if len(words) == 2 and words[0] in _ROLE_RANKS and words[1] in _ROLE_ABBREV:
+        return True
+    if len(words) >= 2 and words[-1] in _ROLE_NUCLEI:
+        if sum(1 for w in words if w in _ROLE_NUCLEI) > 1:
+            return False
+        return all(
+            w in _ROLE_RANKS or w in _CRAFT_ADJECTIVES or w in _ROLE_NUCLEI
+            or w in _ROLE_ABBREV
+            for w in words
+        )
+    return False
+
+
+def _maybe_split_slash_titles(part: str) -> list[str]:
+    raw = (part or "").strip()
+    if not raw:
+        return []
+    if "(" in raw and ")" in raw:
+        return [raw]
+    pieces = [p.strip() for p in re.split(r"\s*/\s*", raw) if p.strip()]
+    if len(pieces) >= 2 and all(_looks_like_role_title(p) for p in pieces):
+        return pieces
+    return [raw]
+
+
+def _list_items(text: str) -> list[str]:
+    items: list[str] = []
+    for sentence in re.split(r"[.\n!?]+", text or ""):
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        if ":" in sentence:
+            sentence = sentence.split(":", 1)[-1].strip()
+        sentence = _SEAT_PREFIX.sub("", sentence).strip()
+        if not sentence:
+            continue
+        parts = [x.strip() for x in re.split(r"\s*[,;]\s*", sentence) if x.strip()]
+        for part in parts:
+            items.extend(_maybe_split_slash_titles(part))
+    return items
+
+
+def _iter_title_spans(text: str) -> list[str]:
+    stripped = re.sub(r"\([^)]*\)", " ", text or "")
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9'/&-]*", stripped)
+    n = len(tokens)
+    used = [False] * n
+    hits: list[tuple[int, int, str]] = []
+    for length in range(min(6, n), 0, -1):
+        for i in range(0, n - length + 1):
+            if any(used[i:i + length]):
+                continue
+            phrase = " ".join(tokens[i:i + length])
+            if _looks_like_role_title(phrase):
+                hits.append((i, length, phrase))
+                for j in range(i, i + length):
+                    used[j] = True
+    hits.sort()
+    return [p for _, _, p in hits]
+
+
+def _add_unique(dest: list[str], raw: str) -> bool:
+    v = _norm_phrase(raw)
+    if not v or v in dest:
+        return False
+    dest.append(v)
+    return True
+
+
+def _extract_role_families(text: str) -> list[str]:
+    found: list[str] = []
+    for item in _list_items(text):
+        if _looks_like_role_title(item):
+            _add_unique(found, item)
+            continue
+        # Mine titles inside this item only — never stitch across commas.
+        for span in _iter_title_spans(item):
+            if _looks_like_role_title(span):
+                _add_unique(found, span)
+    return found
+
+
+def _extract_concepts(text: str) -> list[str]:
+    found: list[str] = []
+    for item in _list_items(text):
+        v = _norm_phrase(item)
+        if not v or _looks_like_role_title(v) or _is_clause_fragment(v):
+            continue
+        if _usable_term(v) and re.search(r"[a-z]", v):
+            _add_unique(found, v)
+    return found
+
+
+def _extract_locations(text: str) -> list[str]:
+    found: list[str] = []
+    for phrase in _split_phrases(text):
+        for part in re.split(r"\s+\band\b\s+", phrase):
+            v = _norm_phrase(part)
+            if not v or not _usable_term(v):
+                continue
+            if _is_clause_fragment(v) or _looks_like_role_title(v):
+                continue
+            _add_unique(found, v)
+    return found
 
 
 def _collect_structured(node, into: dict) -> None:
@@ -202,7 +409,12 @@ def extract_subjects(content: dict) -> list[dict]:
             k in unit for k in ("include", "accepted_locations", "search_queries")
         ):
             return
-        found.append({"title": title, "text": text, "fields": unit})
+        found.append({
+            "title": title,
+            "context_title": fallback_title,
+            "text": text,
+            "fields": unit,
+        })
 
     chapters = content.get("chapters")
     if isinstance(chapters, list):
@@ -244,9 +456,13 @@ def compile_from_content(content, compiled_at: str | None = None,
                          engine_sha: str | None = None) -> dict:
     """Derive compiled_config from Brief.content only.
 
-    READY iff the Brief authorized enough to hunt (v1: non-empty include
-    and non-empty accepted_locations). Otherwise not_ready with reasons.
-    Never writes 'limited'.
+    Role-family titles are extracted as whole seat names. search_queries is
+    that family set (usable market queries), never ambition prose.
+    include may add intact concepts. accepted_locations stay geography.
+    Move-kind text is intent: only exact seat titles found there authorize.
+
+    READY iff the Brief authorized executable hunt input (role families and
+    accepted locations). Otherwise not_ready with reasons. Never 'limited'.
     """
     if isinstance(content, str):
         try:
@@ -265,41 +481,58 @@ def compile_from_content(content, compiled_at: str | None = None,
     }
     _collect_structured(content, bags)
 
+    families: list[str] = []
+    for item in bags["search_queries"]:
+        _add_unique(families, item)
+    for item in bags["include"]:
+        if _looks_like_role_title(item):
+            _add_unique(families, item)
+
+    concepts: list[str] = []
     subjects_used: list[str] = []
     for sub in extract_subjects(content):
-        kind = _kind_hint(sub["title"])
+        kind = _kind_of_subject(sub)
         if kind == "skip":
             continue
         _collect_structured(sub["fields"], bags)
         contributed = False
-        for phrase in _split_phrases(sub["text"]):
-            if not _usable_term(phrase):
-                continue
-            if kind == "place":
-                if phrase not in bags["accepted_locations"]:
-                    bags["accepted_locations"].append(phrase)
+        if kind == "place":
+            for loc in _extract_locations(sub["text"]):
+                if _add_unique(bags["accepted_locations"], loc):
                     contributed = True
-            else:
-                # role / move / other / unclassified: hunt terms, not Memory.
-                if phrase not in bags["include"]:
-                    bags["include"].append(phrase)
+        else:
+            for fam in _extract_role_families(sub["text"]):
+                if _add_unique(families, fam):
                     contributed = True
+            if kind != "move":
+                for concept in _extract_concepts(sub["text"]):
+                    if concept in families:
+                        continue
+                    if _add_unique(concepts, concept):
+                        contributed = True
         if sub["title"] and (contributed or sub["text"] or kind in ("role", "place", "move")):
-            if sub["title"] not in subjects_used:
-                subjects_used.append(sub["title"])
+            for label in (sub.get("context_title"), sub["title"]):
+                if label and label not in subjects_used:
+                    subjects_used.append(label)
 
-    if not bags["search_queries"]:
-        bags["search_queries"] = list(bags["include"][:3])
+    for fam in families:
+        _add_unique(bags["include"], fam)
+    for concept in concepts:
+        _add_unique(bags["include"], concept)
+
+    bags["search_queries"] = list(families)
 
     reasons: list[str] = []
-    if not bags["include"] and not bags["accepted_locations"]:
+    has_families = bool(bags["search_queries"])
+    has_locs = bool(bags["accepted_locations"])
+    if not has_families and not has_locs and not bags["include"]:
         reasons.append("no_usable_hunt_authority")
-    if not bags["include"]:
+    if not has_families:
         reasons.append("no_include_terms")
-    if not bags["accepted_locations"]:
+    if not has_locs:
         reasons.append("no_accepted_locations")
 
-    executable = bool(bags["include"]) and bool(bags["accepted_locations"])
+    executable = has_families and has_locs
     readiness = "ready" if executable else "not_ready"
     if executable:
         reasons = []
@@ -326,7 +559,7 @@ def compile_from_content(content, compiled_at: str | None = None,
 def readiness_of(compiled: dict) -> str:
     if compiled.get("_readiness") in ("ready", "not_ready"):
         return compiled["_readiness"]
-    if compiled.get("include") and compiled.get("accepted_locations"):
+    if compiled.get("search_queries") and compiled.get("accepted_locations"):
         return "ready"
     return "not_ready"
 

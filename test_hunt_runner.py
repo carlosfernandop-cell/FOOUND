@@ -6,6 +6,9 @@ H3  first_edition empty → persisted empty edition, job done
 H4  same-day second first_edition → no-op, no rewrite
 H5  payload market-history fields present
 H6  subjects with other titles still compile (labels are not architecture)
+CQ  compile quality: specimen 5d260731 families; no punctuation junk;
+    deterministic; fictional Brief keeps its own titles; ready needs
+    families + locations
 H7  never writes 'limited'; never infers ready from at_work
 H8  empty html has no DUMMY ROLE and no dummy seats
 H9  compile does not read Memory; hunt does not touch market_seen / docs
@@ -167,6 +170,80 @@ STRUCTURED = {
     "seat_cap": 3,
 }
 
+# Specimen Brief 5d260731 — authorized №001 text as stored
+# (subjects THE MOVE / ROLE SPACE / WHERE). THE MOVE is ambition prose;
+# ROLE SPACE names the seat families. This is a test fixture, not a
+# compiler catalog: hunt_runner must derive these titles from the text.
+SPECIMEN_5d260731 = {
+    "chapters": [
+        {
+            "title": "THE MOVE",
+            "subjects": [
+                {"handle": "Lead", "lines": [
+                    "Lead the creative function for a culture-shaping brand. "
+                    "Across markets. Build or transform that function. "
+                    "Not inherit a finished one."
+                ]},
+            ],
+        },
+        {
+            "title": "ROLE SPACE",
+            "subjects": [
+                {"handle": "Craft", "lines": [
+                    "The seat is senior creative and brand leadership (CD / Creative). "
+                    "Head of Creative, ECD, Head of Brand, Creative Director, "
+                    "Group CD, Executive CD, VP Brand/Creative."
+                ]},
+            ],
+        },
+        {
+            "title": "WHERE",
+            "subjects": [
+                {"handle": "Geography", "lines": [
+                    "NYC, California, remote US, London, Paris."
+                ]},
+            ],
+        },
+    ]
+}
+
+# Locked clean families for THIS specimen Brief only — how the Brief writes them.
+SPECIMEN_FAMILIES = [
+    "head of creative",
+    "ecd",
+    "head of brand",
+    "creative director",
+    "group cd",
+    "executive cd",
+    "vp brand/creative",
+]
+
+# Fictional Brief with different seat language. Must not yield SPECIMEN_FAMILIES.
+FICTIONAL_OTHER_ROLES = {
+    "subjects": [
+        {
+            "title": "Ambition",
+            "text": (
+                "Across markets. Build or transform that function. "
+                "Not inherit a finished one."
+            ),
+        },
+        {
+            "title": "Craft",
+            "text": "Staff Product Designer / Design Director.",
+        },
+        {
+            "title": "Geography",
+            "text": "Berlin, Remote",
+        },
+    ]
+}
+
+FICTIONAL_FAMILIES = [
+    "staff product designer",
+    "design director",
+]
+
 
 def check(name, cond, detail=""):
     if not cond:
@@ -233,6 +310,107 @@ def test_h6_other_titles_compile():
           any("london" in x or "remote" in x for x in cfg["accepted_locations"]))
     used = " ".join(cfg["subjects_used"]).lower()
     check("H6 recorded other titles", "craft" in used and "geography" in used)
+
+
+def _without_compiled_at(cfg: dict) -> dict:
+    return {k: v for k, v in cfg.items() if k != "compiled_at"}
+
+
+def test_compile_specimen_5d260731_families():
+    cfg = hr.compile_from_content(SPECIMEN_5d260731)
+    check("CQ specimen ready", hr.readiness_of(cfg) == "ready")
+    check("CQ specimen families", cfg["search_queries"] == SPECIMEN_FAMILIES)
+    check("CQ families are include",
+          all(f in cfg["include"] for f in SPECIMEN_FAMILIES))
+    check("CQ no invented Global Creative Director",
+          "global creative director" not in cfg["search_queries"]
+          and "global creative director" not in cfg["include"])
+    check("CQ ECD not expanded",
+          "executive creative director" not in cfg["search_queries"])
+    check("CQ move prose not queries",
+          not any(x in cfg["search_queries"] for x in (
+              "across markets",
+              "build or transform that function",
+              "not inherit a finished one",
+          )))
+    locs = cfg["accepted_locations"]
+    check("CQ locations intact",
+          locs == ["nyc", "california", "remote us", "london", "paris"]
+          or all(x in locs for x in ("nyc", "california", "london", "paris")))
+    check("CQ remote US kept", any("remote" in x for x in locs))
+
+
+def test_compile_specimen_5d260731_no_punctuation_junk():
+    cfg = hr.compile_from_content(SPECIMEN_5d260731)
+    junk = {
+        "brand leadership (cd",
+        "creative)",
+        "vp brand",
+        "cd",
+    }
+    for term in cfg["include"] + cfg["search_queries"]:
+        check(f"CQ not junk {term!r}", term not in junk)
+        check(f"CQ balanced punct {term!r}",
+              term.count("(") == term.count(")"))
+        check(f"CQ no leading cut {term!r}",
+              not term.startswith(("(", ")", "/")))
+        check(f"CQ no trailing cut {term!r}",
+              not (term.endswith(")") and "(" not in term))
+    check("CQ compound slash kept",
+          "vp brand/creative" in cfg["search_queries"])
+    check("CQ parenthetical concept intact or absent",
+          all("(" not in t or ")" in t for t in cfg["include"]))
+
+
+def test_compile_specimen_5d260731_deterministic():
+    a = hr.compile_from_content(SPECIMEN_5d260731)
+    b = hr.compile_from_content(SPECIMEN_5d260731)
+    check("CQ same families twice", a["search_queries"] == b["search_queries"])
+    check("CQ minus compiled_at identical",
+          _without_compiled_at(a) == _without_compiled_at(b))
+    check("CQ compiled_at may differ or match",
+          isinstance(a["compiled_at"], str) and isinstance(b["compiled_at"], str))
+
+
+def test_compile_fictional_brief_own_families():
+    cfg = hr.compile_from_content(FICTIONAL_OTHER_ROLES)
+    check("CQ fictional ready", hr.readiness_of(cfg) == "ready")
+    check("CQ fictional families", cfg["search_queries"] == FICTIONAL_FAMILIES)
+    check("CQ fictional not specimen seven",
+          set(cfg["search_queries"]) != set(SPECIMEN_FAMILIES))
+    for locked in SPECIMEN_FAMILIES:
+        check(f"CQ fictional lacks {locked!r}",
+              locked not in cfg["search_queries"])
+    check("CQ fictional move prose not queries",
+          not any(x in cfg["search_queries"] for x in (
+              "across markets",
+              "build or transform that function",
+              "not inherit a finished one",
+          )))
+
+
+def test_compile_ready_requires_families_and_locations():
+    only_move = hr.compile_from_content(INCOMPLETE)
+    check("CQ incomplete not_ready", hr.readiness_of(only_move) == "not_ready")
+    check("CQ incomplete has reasons", len(only_move["readiness_reasons"]) >= 1)
+    check("CQ incomplete no_accepted_locations",
+          "no_accepted_locations" in only_move["readiness_reasons"])
+    locs_only = hr.compile_from_content({
+        "subjects": [{"title": "Geography", "text": "NYC, London"}]
+    })
+    check("CQ locations-only not_ready", hr.readiness_of(locs_only) == "not_ready")
+    check("CQ locations-only needs families",
+          "no_include_terms" in locs_only["readiness_reasons"])
+    fams_only = hr.compile_from_content({
+        "subjects": [{"title": "Craft", "text": "Design Director"}]
+    })
+    check("CQ families-only not_ready", hr.readiness_of(fams_only) == "not_ready")
+    check("CQ families-only needs locations",
+          "no_accepted_locations" in fams_only["readiness_reasons"])
+    ready = hr.compile_from_content(SPECIMEN_5d260731)
+    check("CQ specimen executable",
+          bool(ready["search_queries"]) and bool(ready["accepted_locations"]))
+    check("CQ specimen ready reasons empty", ready["readiness_reasons"] == [])
 
 
 def test_h6b_skip_market_and_avoid():
