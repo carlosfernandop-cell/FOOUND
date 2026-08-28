@@ -1,0 +1,83 @@
+# Disposable local run of sql/dev/run_011_harness.sh
+# Database foound_011_4919 created and DROPPED. Not production.
+# Date: 2026-08-28
+# Command: PGHOST=127.0.0.1 PGUSER=postgres PGPASSWORD=harness bash sql/dev/run_011_harness.sh
+
+==> creating disposable database foound_011_4919
+NOTICE:  database "foound_011_4919" does not exist, skipping
+DROP DATABASE
+CREATE DATABASE
+==> applying harness + 005 + 006 + 011 (not production)
+... (schema apply notices omitted; all succeeded)
+==> running sql/test_migration_011.sql
+GRANT
+GRANT
+GRANT
+DELETE 0
+INSERT 0 4
+INSERT 0 4
+INSERT 0 1
+INSERT 0 1
+SET
+DO   -- R1 at_work recovery inserts exactly one queued first_edition
+DO   -- R2 repeat commission no-op
+RESET
+DELETE 1
+INSERT 0 1
+SET
+DO   -- R3 done first_edition → no-op
+RESET
+DELETE 1
+INSERT 0 1
+SET
+DO   -- R4 editions row exists → no-op
+RESET
+SET
+DO   -- R5 not_ready at_work → no insert (no readiness bypass)
+RESET
+DELETE 1
+DELETE 0
+INSERT 0 1
+SET
+DO   -- R6 failed first_edition + ready + 0 editions → recover
+RESET
+INSERT 0 1
+SET
+DO   -- R7 non-at_work not_ready → blocked:market_not_ready
+RESET
+UPDATE 1
+SET
+DO   -- R8 non-at_work ready → flip + enqueue
+RESET
+INSERT 0 1
+SET
+DO   -- R9 limited-unacknowledged gate intact
+RESET
+                                            ?column?
+-------------------------------------------------------------------------------------------------
+ M011 OK: at_work recovery inserts one job then no-ops; no readiness bypass; 006 gates preserved
+(1 row)
+
+DELETE 4
+==> residue check (agents 96-99 must be gone)
+ leftover_011_agents
+---------------------
+                   0
+(1 row)
+
+M011 harness residue: 0
+==> dropping disposable database foound_011_4919
+DROP DATABASE
+M011 HARNESS OK
+
+# Proven:
+# - R1 at_work recovery inserts exactly one queued first_edition (brief_version=1), state stays at_work
+# - R2 repeat commission no-ops (still 1 job)
+# - R3 done first_edition → no-op
+# - R4 editions row exists → no-op
+# - R5 not_ready at_work → no insert (no readiness bypass)
+# - R6 failed first_edition + ready + zero editions → recover (queued insert; total 2)
+# - R7 non-at_work not_ready → blocked:market_not_ready
+# - R8 non-at_work ready → flip + enqueue
+# - R9 limited-unacknowledged gate remains intact (no state flip, no enqueue)
+# - teardown: leftover_011_agents = 0; disposable DB dropped

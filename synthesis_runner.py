@@ -3,7 +3,9 @@
 Contract: Synthesis Runner v1 plan + Amendment A + Amendment A.1 + Migration 008.
 
 The runner is deliberately THIN. It discovers, reads, interprets, validates,
-and calls the doors. It never reimplements database truth:
+and calls the doors. It never reimplements database truth.
+Hunt-family jobs (compile_brief, refresh_readiness, first_edition) are
+claimed by hunt_runner.py, not this module.
 
   claim      -> claim_synthesis_batch(job)        (the only way in)
   settle     -> settle_synthesis_results(job,...) (the only successful ending:
