@@ -777,11 +777,32 @@ def _fallback_role_key(title: str, company: str, location: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def role_families(compiled: dict) -> list[str]:
+    """ROLE bag: seat titles from compiled search_queries[], never include[].
+
+    include[] mixes families with Craft CONTEXT and THE MOVE intent.
+    A title earns the seat only by matching a family. Hand-built test
+    configs that omit search_queries still work when every include item
+    is itself a family; Craft leftovers never become families here.
+    """
+    queries = [k for k in (compiled.get("search_queries") or []) if k]
+    if queries:
+        return list(queries)
+    include = [k for k in (compiled.get("include") or []) if k]
+    return [k for k in include if _looks_like_role_title(k) or _looks_like_role_title(_as_family(k))]
+
+
+def _family_in_title(family: str, title_l: str) -> bool:
+    """Substring match of a seat family. Whole-phrase only — not tokens."""
+    return bool(family) and family in title_l
+
+
 def passes_title(compiled: dict, title: str) -> bool:
+    """ROLE gate. Fail ROLE = out. CONTEXT/MANDATE cannot rescue."""
     t = (title or "").lower()
-    include = compiled.get("include") or []
+    families = role_families(compiled)
     exclude = compiled.get("exclude_type") or []
-    if not include or not any(k in t for k in include):
+    if not families or not any(_family_in_title(k, t) for k in families):
         return False
     if any(k in t for k in exclude):
         return False
@@ -913,10 +934,15 @@ def build_payload(seats: list[dict], compiled: dict,
 
 # ---------------------------------------------------------------------------
 # Judgment — compiled Brief authority, not Shortlist rank_with_fit.
-# Eligible candidates are scored (title fit, location fit, exclude-cleared)
-# then ranked. The seat set is the top of that ranking, not first-N after
-# a filter. rank_with_fit is intentionally not reused: it needs Candidate
-# profile.md, AgentConfig, JD fetches, and Anthropic, and it logs titles.
+# Brand/CoS lock (same Brief, three jobs — not a fourth chapter):
+#   ROLE     = the seat. search_queries[] families. Fail ROLE = out.
+#   CONTEXT  = Craft company types from include[] that are not families.
+#              Ranks only after ROLE. Never earns the seat.
+#   MANDATE  = THE MOVE intent, derived from include[] move-concepts.
+#              Ranks only after ROLE. Never earns the seat.
+# Then location fit, exclude, rank-then-cap. No mandate[] SQL column;
+# no compiled_config.mandate key — derived at judgment from include[].
+# rank_with_fit is intentionally not reused.
 # ---------------------------------------------------------------------------
 
 Collector = Callable[[dict], list[dict]]
@@ -926,17 +952,68 @@ HUNT_PUBLISH_PUBLIC = False  # this slice never publishes
 _JUNIOR_TOKENS = ("junior", "associate", "assistant", "coordinator")
 _SENIOR_TOKENS = ("head of", "vp ", "vp,", "vice president", "executive", "group ")
 
+# THE MOVE markers already present as include[] concepts. Not a catalog of
+# any Brief's seats — only how a leftover include phrase is classified
+# as MANDATE vs CONTEXT at judgment.
+_MANDATE_MARKERS = (
+    "building or transforming",
+    "build or transform",
+    "creatively ambitious",
+    "ambitious",
+)
 
-def title_fit(title: str, include: list[str]) -> tuple[int, list[str]]:
+
+def context_concepts(compiled: dict) -> list[str]:
+    """Craft company-type leftovers in include[] that are not ROLE families."""
+    families = set(role_families(compiled))
+    out: list[str] = []
+    for item in compiled.get("include") or []:
+        if not item or item in families or _is_mandate_concept(item):
+            continue
+        out.append(item)
+    return out
+
+
+def mandate_concepts(compiled: dict) -> list[str]:
+    """THE MOVE leftovers in include[]. Derived; not a compiled_config key."""
+    families = set(role_families(compiled))
+    out: list[str] = []
+    for item in compiled.get("include") or []:
+        if not item or item in families:
+            continue
+        if _is_mandate_concept(item):
+            out.append(item)
+    return out
+
+
+def _is_mandate_concept(phrase: str) -> bool:
+    p = _norm_phrase(phrase)
+    if not p:
+        return False
+    return any(m in p for m in _MANDATE_MARKERS)
+
+
+def _job_craft_text(job: dict) -> str:
+    """Company / body fields for CONTEXT and MANDATE. Title is not CONTEXT."""
+    parts: list[str] = []
+    for key in ("company", "description", "text", "snippet", "summary", "body"):
+        v = job.get(key)
+        if isinstance(v, str) and v.strip():
+            parts.append(v)
+    return " ".join(parts).lower()
+
+
+def title_fit(title: str, families: list[str]) -> tuple[int, list[str]]:
+    """ROLE score. families is search_queries[], never the full include[] bag."""
     t = (title or "").lower()
-    matched = [k for k in include if k and k in t]
+    matched = [k for k in families if _family_in_title(k, t)]
     if not matched:
         return 0, []
     longest = max(len(k) for k in matched)
     reasons = ["title_fit"]
     score = longest + 3 * len(matched)
     compact = _norm_phrase(t)
-    if compact in include or any(compact == k for k in include):
+    if compact in families or any(compact == k for k in families):
         score += 12
         reasons.append("title_exact_authority")
     elif any(compact.startswith(k) for k in matched):
@@ -949,6 +1026,26 @@ def title_fit(title: str, include: list[str]) -> tuple[int, list[str]]:
         score -= 8
         reasons.append("title_juniority")
     return score, reasons
+
+
+def context_fit(job: dict, concepts: list[str]) -> tuple[int, list[str]]:
+    """CONTEXT rank. Company/text only — 'platforms' in a title is not CONTEXT."""
+    hay = _job_craft_text(job)
+    matched = [k for k in concepts if k and k in hay]
+    if not matched:
+        return 0, []
+    longest = max(len(k) for k in matched)
+    return longest + 2 * len(matched), ["context_fit"]
+
+
+def mandate_fit(job: dict, concepts: list[str]) -> tuple[int, list[str]]:
+    """MANDATE rank. Does not earn the seat."""
+    hay = _job_craft_text(job)
+    matched = [k for k in concepts if k and k in hay]
+    if not matched:
+        return 0, []
+    longest = max(len(k) for k in matched)
+    return longest + 2 * len(matched), ["mandate_fit"]
 
 
 def location_fit(location: str, accepted: list[str]) -> tuple[int, list[str]]:
@@ -972,14 +1069,17 @@ def location_fit(location: str, accepted: list[str]) -> tuple[int, list[str]]:
 
 
 def judge_seats(raw: list[dict], compiled: dict) -> list[dict]:
-    """Eligibility gates, then rank by Brief-authority scores, then cap.
+    """ROLE gate, then CONTEXT / MANDATE / location rank, then cap.
 
-    survived_because names judgment reasons (title_fit / location_fit /
-    exclude_cleared / ranked_above_peers), not filter-only labels.
+    survived_because names judgment reasons (title_fit / context_fit /
+    mandate_fit / location_fit / exclude_cleared / ranked_above_peers).
+    CONTEXT and MANDATE never appear unless ROLE already passed.
     """
     cap = int(compiled.get("seat_cap") or DEFAULT_SEAT_CAP)
     cap = max(1, min(cap, MAX_SEAT_CAP))
-    include = list(compiled.get("include") or [])
+    families = role_families(compiled)
+    context = context_concepts(compiled)
+    mandate = mandate_concepts(compiled)
     accepted = list(compiled.get("accepted_locations") or [])
     eligible, seen = [], set()
     for job in raw:
@@ -993,11 +1093,13 @@ def judge_seats(raw: list[dict], compiled: dict) -> list[dict]:
         if not key or key in seen:
             continue
         seen.add(key)
-        t_score, t_reasons = title_fit(title, include)
-        l_score, l_reasons = location_fit(loc, accepted)
+        t_score, t_reasons = title_fit(title, families)
         if t_score <= 0:
             continue
-        reasons = t_reasons + l_reasons + ["exclude_cleared"]
+        c_score, c_reasons = context_fit(job, context)
+        m_score, m_reasons = mandate_fit(job, mandate)
+        l_score, l_reasons = location_fit(loc, accepted)
+        reasons = t_reasons + c_reasons + m_reasons + l_reasons + ["exclude_cleared"]
         eligible.append({
             "role_key": key,
             "title": title,
@@ -1009,10 +1111,18 @@ def judge_seats(raw: list[dict], compiled: dict) -> list[dict]:
             "source": job.get("source") or "hunt",
             "survived_because": reasons,
             "_title_score": t_score,
+            "_context_score": c_score,
+            "_mandate_score": m_score,
             "_location_score": l_score,
         })
     eligible.sort(
-        key=lambda s: (-s["_title_score"], -s["_location_score"], s["role_key"])
+        key=lambda s: (
+            -s["_title_score"],
+            -s["_context_score"],
+            -s["_mandate_score"],
+            -s["_location_score"],
+            s["role_key"],
+        )
     )
     ranked_out = len(eligible) > cap
     seats = []
