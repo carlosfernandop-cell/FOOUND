@@ -689,9 +689,11 @@ def current_engine_sha() -> str:
 
 # ---------------------------------------------------------------------------
 # role_key — durable NEW/RESURFACED identity. Precedence (first wins):
-#   1. stable provider posting ID on the adapter row
-#   2. canonical job/apply URL (lowercase, no trailing slash, no utm/query junk)
-#   3. normalized fallback title|company|location
+#   1. source-qualified provider posting ID → id:{source}:{posting_id}
+#   2. canonical job/apply URL (lowercase, no trailing slash; strip tracking
+#      junk; keep ATS job-id query params such as gh_jid)
+#   3. normalized fallback tcl:{title}|{company}|{location}
+# Never a bare id:{posting_id}: two ATSs/boards can share a numeric id.
 # title|company alone is not durable enough: two openings can collapse, and
 # a title tweak on the same posting must not look new.
 # ---------------------------------------------------------------------------
@@ -701,11 +703,25 @@ _PROVIDER_ID_KEYS = (
     "requisition_id", "req_id", "position_id", "positionId",
     "gh_id", "ashby_id", "lever_id",
 )
+# Hunt-runner tags on a row, not an ATS/board namespace.
+_HUNT_SOURCE_TAGS = frozenset({"adapter", "hunt"})
+_SOURCE_FIELD_KEYS = ("provider", "ats")
+_ID_KEY_SOURCE = {
+    "gh_id": "greenhouse",
+    "ashby_id": "ashby",
+    "lever_id": "lever",
+}
+# Tracking / attribution only. Never put an ATS job-id key here.
 _JUNK_QUERY = {
     "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
     "utm_id", "gclid", "fbclid", "mc_cid", "mc_eid", "ref", "source",
-    "gh_src", "gh_jid",
+    "gh_src",
 }
+# Identity-bearing ATS query keys found in this repo. Must survive canonicalize.
+# gh_jid is the Greenhouse job id (e.g. stripe.com/jobs/search?gh_jid=…,
+# careers.duolingo.com/jobs/…?gh_jid=…). No other ATS job-id query key
+# appears in this repo; gh_src stays junk (source attribution).
+_IDENTITY_QUERY = frozenset({"gh_jid"})
 
 
 def canonical_job_url(url: str) -> str:
@@ -724,41 +740,69 @@ def canonical_job_url(url: str) -> str:
     if netloc.startswith("www."):
         netloc = netloc[4:]
     path = (parsed.path or "").rstrip("/")
-    kept = [
-        (k, v) for k, v in parse_qsl(parsed.query, keep_blank_values=True)
-        if k.lower() not in _JUNK_QUERY and not k.lower().startswith("utm_")
-    ]
+    kept = []
+    for k, v in parse_qsl(parsed.query, keep_blank_values=True):
+        lk = k.lower()
+        if lk in _IDENTITY_QUERY:
+            kept.append((k, v))
+            continue
+        if lk in _JUNK_QUERY or lk.startswith("utm_"):
+            continue
+        kept.append((k, v))
     query = urlencode(kept, doseq=True)
     return urlunparse((scheme, netloc, path, "", query, ""))
 
 
-def _provider_posting_id(row: dict) -> str:
+def _norm_source(value) -> str:
+    if value is None or isinstance(value, bool):
+        return ""
+    text = _norm_phrase(str(value)).replace(" ", "-").replace(":", "-")
+    return text.strip("-")
+
+
+def _provider_posting_id(row: dict) -> tuple[str, str]:
+    """Return (normalized posting id, field name that supplied it)."""
     for key in _PROVIDER_ID_KEYS:
         val = row.get(key)
         if val is None or isinstance(val, bool):
             continue
         text = str(val).strip()
         if text:
-            return _norm_phrase(text)
-    return ""
+            return _norm_phrase(text), key
+    return "", ""
+
+
+def _provider_source(row: dict, id_key: str = "") -> str:
+    """ATS/board namespace for id:{source}:{posting_id}. Never a hunt tag."""
+    for key in _SOURCE_FIELD_KEYS:
+        src = _norm_source(row.get(key))
+        if src:
+            return src
+    src = _norm_source(row.get("source"))
+    if src and src not in _HUNT_SOURCE_TAGS:
+        return src
+    return _ID_KEY_SOURCE.get(id_key, "")
 
 
 def role_key(row, company: str | None = None) -> str:
-    """Durable seat identity. Accepts an adapter row, or (title, company)
-    for the legacy two-arg form (maps to fallback without location)."""
-    if isinstance(row, str):
-        return _fallback_role_key(row, company or "", "")
+    """Durable seat identity from an adapter row. Single definition.
+
+    company, if given, overrides row company on the tcl: fallback only.
+    A string first argument is not a key (the two-arg title/company form
+    is gone).
+    """
     if not isinstance(row, dict):
         return ""
-    pid = _provider_posting_id(row)
-    if pid:
-        return f"id:{pid}"
+    pid, id_key = _provider_posting_id(row)
+    src = _provider_source(row, id_key)
+    if pid and src:
+        return f"id:{src}:{pid}"
     url = canonical_job_url(row.get("url") or "")
     if url:
         return f"url:{url}"
     return _fallback_role_key(
         row.get("title") or "",
-        row.get("company") or "",
+        row.get("company") if company is None else company,
         row.get("location") or "",
     )
 
