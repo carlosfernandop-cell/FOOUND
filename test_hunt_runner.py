@@ -16,6 +16,7 @@ H10 commission recovery predicate: insert once, then no-op
 H11 judgment: stronger-fit beats weaker-fit; not cap-alone
 H12 role_key precedence + title tweak on same posting id
 H13 adapter isolation smoke: SCRAPERS import without publisher
+J3 ROLE gate: search_queries families, not include[] (platforms is CONTEXT)
 """
 
 from __future__ import annotations
@@ -666,6 +667,7 @@ def test_refresh_compiles_if_missing():
 def test_seat_cap():
     compiled = hr.compile_from_content({
         "include": ["director"],
+        "search_queries": ["director"],
         "accepted_locations": ["remote"],
         "seat_cap": 2,
     })
@@ -786,6 +788,7 @@ def test_judgment_stronger_beats_weaker():
     the first eligible. Judgment must keep the stronger Brief fit."""
     compiled = {
         "include": ["creative director", "head of creative"],
+        "search_queries": ["creative director", "head of creative"],
         "exclude_type": ["intern"],
         "accepted_locations": ["new york", "remote"],
         "seat_cap": 1,
@@ -816,6 +819,7 @@ def test_judgment_stronger_beats_weaker():
 def test_judgment_not_cap_alone():
     compiled = {
         "include": ["director"],
+        "search_queries": ["director"],
         "exclude_type": [],
         "accepted_locations": ["london", "remote"],
         "seat_cap": 1,
@@ -838,6 +842,142 @@ def test_judgment_not_cap_alone():
                 break
     check("J2 cap-alone would have kept Early", first_n[0]["company"] == "Early")
     check("J2 they differ", seats[0]["company"] != first_n[0]["company"])
+
+
+# Private edition 1c0a8068 (hunt-runner #1) — five seats as written.
+# ROLE is the seat. "platforms" is CONTEXT (a market), not a job family.
+FIXTURE_1c0a8068_KEEP = [
+    {"title": "Creative Director, Marketing",
+     "company": "Duolingo", "location": "London",
+     "url": "https://example.invalid/duolingo-cd"},
+    {"title": "Creative Director, Marketing Campaigns",
+     "company": "Suno", "location": "NYC",
+     "url": "https://example.invalid/suno-cd"},
+]
+FIXTURE_1c0a8068_DROP = [
+    {"title": "Solutions Architect, Platforms (Presales)",
+     "company": "Stripe", "location": "London",
+     "url": "https://example.invalid/stripe-sa"},
+    {"title": "Senior Manager, Interactive World Model Platforms",
+     "company": "Nvidia", "location": "California",
+     "url": "https://example.invalid/nvidia-mgr"},
+    {"title": "Senior Software Engineer - GPU Local AI Platforms",
+     "company": "Nvidia", "location": "California",
+     "url": "https://example.invalid/nvidia-swe"},
+]
+
+
+def test_judgment_role_gate_fixture_1c0a8068():
+    """Replay the five written seats against №001 compiled families.
+
+    include[] still contains platforms / consumer tech / culture-shaping
+    brands. Those are CONTEXT. They must not pass ROLE.
+    """
+    compiled = hr.compile_from_content(SPECIMEN_5d260731)
+    check("J3 specimen ready", hr.readiness_of(compiled) == "ready")
+    check("J3 ROLE families are the seven",
+          compiled["search_queries"] == SPECIMEN_FAMILIES)
+    check("J3 platforms is include CONTEXT",
+          "platforms" in compiled["include"])
+    check("J3 platforms is not a ROLE family",
+          "platforms" not in compiled["search_queries"])
+    check("J3 consumer tech is CONTEXT",
+          "consumer tech" in compiled["include"]
+          and "consumer tech" not in compiled["search_queries"])
+    check("J3 culture-shaping brands is CONTEXT",
+          "culture-shaping brands" in compiled["include"]
+          and "culture-shaping brands" not in compiled["search_queries"])
+    families = hr.role_families(compiled)
+    check("J3 role_families == search_queries", families == SPECIMEN_FAMILIES)
+    ctx = hr.context_concepts(compiled)
+    check("J3 context has platforms", "platforms" in ctx)
+    check("J3 context has no families",
+          not any(f in ctx for f in SPECIMEN_FAMILIES))
+    man = hr.mandate_concepts(compiled)
+    check("J3 mandate from include move-concepts",
+          "building or transforming a creative function" in man
+          or "creatively ambitious" in man)
+    check("J3 mandate has no families",
+          not any(f in man for f in SPECIMEN_FAMILIES))
+
+    for job in FIXTURE_1c0a8068_KEEP:
+        check(f"J3 KEEP ROLE {job['company']}",
+              hr.passes_title(compiled, job["title"]))
+        score, reasons = hr.title_fit(job["title"], families)
+        check(f"J3 KEEP title_fit {job['company']}",
+              score > 0 and "title_fit" in reasons)
+
+    for job in FIXTURE_1c0a8068_DROP:
+        check(f"J3 DROP ROLE {job['company']} {job['title'][:24]}",
+              not hr.passes_title(compiled, job["title"]))
+        score, reasons = hr.title_fit(job["title"], families)
+        check(f"J3 DROP no ROLE score {job['company']}",
+              score == 0 and reasons == [])
+        # Old bug: include[] substring would have passed on "platforms".
+        old = [k for k in compiled["include"] if k and k in job["title"].lower()]
+        check(f"J3 DROP would have matched include {job['company']}",
+              "platforms" in old)
+
+    raw = FIXTURE_1c0a8068_KEEP + FIXTURE_1c0a8068_DROP
+    seats = hr.judge_seats(raw, compiled)
+    kept = {(s["company"], s["title"]) for s in seats}
+    check("J3 keep Duolingo",
+          ("Duolingo", "Creative Director, Marketing") in kept)
+    check("J3 keep Suno",
+          ("Suno", "Creative Director, Marketing Campaigns") in kept)
+    check("J3 drop Stripe",
+          all(s["company"] != "Stripe" for s in seats))
+    check("J3 drop Nvidia",
+          all(s["company"] != "Nvidia" for s in seats))
+    check("J3 only the two ROLE seats", len(seats) == 2)
+
+    # CONTEXT / MANDATE must not rescue a ROLE failure even when the
+    # company/text bag is stuffed with Craft leftovers.
+    rescued = hr.judge_seats([{
+        "title": "Solutions Architect, Platforms (Presales)",
+        "company": "consumer tech platforms culture-shaping brands",
+        "location": "London",
+        "description": "building or transforming a creative function; "
+                       "creatively ambitious",
+        "url": "https://example.invalid/rescue",
+    }], compiled)
+    check("J3 no CONTEXT/MANDATE rescue", rescued == [])
+
+
+def test_judgment_fictional_brief_uses_its_families():
+    """A Staff Product Designer brief hunts ITS families, not №001's seven."""
+    compiled = hr.compile_from_content(FICTIONAL_OTHER_ROLES)
+    check("J3f fictional families",
+          compiled["search_queries"] == FICTIONAL_FAMILIES)
+    check("J3f not the seven",
+          set(compiled["search_queries"]) != set(SPECIMEN_FAMILIES))
+    for locked in SPECIMEN_FAMILIES:
+        check(f"J3f lacks {locked!r}",
+              locked not in compiled["search_queries"])
+    check("J3f Staff PD passes ROLE",
+          hr.passes_title(compiled, "Staff Product Designer"))
+    check("J3f Design Director passes ROLE",
+          hr.passes_title(compiled, "Design Director"))
+    check("J3f specimen CD fails this Brief's ROLE",
+          not hr.passes_title(compiled, "Creative Director, Marketing"))
+    check("J3f Stripe platforms fails this Brief's ROLE",
+          not hr.passes_title(
+              compiled, "Solutions Architect, Platforms (Presales)"))
+    seats = hr.judge_seats(
+        FIXTURE_1c0a8068_KEEP
+        + FIXTURE_1c0a8068_DROP
+        + [{
+            "title": "Staff Product Designer",
+            "company": "OtherCo",
+            "location": "Berlin",
+            "url": "https://example.invalid/spd",
+        }],
+        compiled,
+    )
+    check("J3f only its family survives",
+          len(seats) == 1 and seats[0]["title"] == "Staff Product Designer")
+    check("J3f Duolingo/Suno not borrowed from №001",
+          all(s["company"] not in ("Duolingo", "Suno") for s in seats))
 
 
 def test_role_key_precedence():
@@ -871,6 +1011,7 @@ def test_role_key_precedence():
 def test_role_key_history_title_tweak_same_id():
     compiled = {
         "include": ["creative director"],
+        "search_queries": ["creative director"],
         "accepted_locations": ["remote"],
         "seat_cap": 5,
         "exclude_type": [],
