@@ -25,20 +25,33 @@ Contract:
 Privacy: the engine repo is PUBLIC and GitHub Actions logs are public.
 Logging is ids / counts / enums / timings ONLY. Never Brief copy, seat
 titles, URLs, prompts, or model output.
+
+Editorial PORT (final seats only): after judge_seats + attach_market_fields,
+restore posted_at, call existing job_alerts.fetch_jd_text / score_fit with
+Candidate profile.md as personal context (not hunt authority), and assemble
+why-now via job_alerts.why_now_text (Shortlist _argument). Do not call
+rank_with_fit, do not change judge_seats, do not rewrite the editorial prompt.
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import html
+import io
 import json
 import logging
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
+from types import SimpleNamespace
 from typing import Callable, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
+# One-shot enrich must never rewrite the first written hunt edition.
+PROTECTED_EDITION_PREFIXES = ("1c0a8068",)
 
 log = logging.getLogger("hunt_runner")
 
@@ -912,10 +925,15 @@ def attach_market_fields(seats: list[dict], history: dict[str, str],
 
 # ---------------------------------------------------------------------------
 # Machine edition HTML — locked At Work seat shape {id, handle, line}.
+# Original editorial slots (.plabel / .ptext) sit on the visible list item.
 # ---------------------------------------------------------------------------
 
 def render_edition_html(seats: list[dict]) -> str:
-    """Machine artifact. No dummy seats. No 'DUMMY ROLE' string."""
+    """Machine artifact. No dummy seats. No 'DUMMY ROLE' string.
+
+    #foound-seats stays {id, handle, line} so At Work bind does not break.
+    Visible items carry the original three plabel/ptext slots.
+    """
     picture = [
         {
             "id": s["role_key"],
@@ -926,12 +944,30 @@ def render_edition_html(seats: list[dict]) -> str:
     ]
     payload = json.dumps(picture, ensure_ascii=False, separators=(",", ":"))
     items = []
-    for s in picture:
+    for s, pic in zip(seats, picture):
+        why = html.escape(s.get("ai_why") or "")
+        pause = (s.get("ai_pause") or "").strip()
+        why_now = s.get("why_now") or ""
+        pause_block = ""
+        if pause:
+            pause_block = (
+                "<div class=\"plabel\">What gives me pause</div>"
+                f"<p class=\"ptext\">{html.escape(pause)}</p>"
+            )
         items.append(
-            "<li data-id=\"{id}\" data-handle=\"{handle}\" data-line=\"{line}\"></li>".format(
-                id=html.escape(s["id"], quote=True),
-                handle=html.escape(s["handle"], quote=True),
-                line=html.escape(s["line"], quote=True),
+            "<li data-id=\"{id}\" data-handle=\"{handle}\" data-line=\"{line}\">"
+            "<div class=\"plabel\">Why I chose it</div>"
+            "<p class=\"ptext\">{why}</p>"
+            "{pause_block}"
+            "<div class=\"plabel\">Why now</div>"
+            "<p class=\"ptext\">{why_now}</p>"
+            "</li>".format(
+                id=html.escape(pic["id"], quote=True),
+                handle=html.escape(pic["handle"], quote=True),
+                line=html.escape(pic["line"], quote=True),
+                why=why,
+                pause_block=pause_block,
+                why_now=why_now,
             )
         )
     outcome = "empty" if not seats else "seats"
@@ -953,27 +989,302 @@ def _seat_line(seat: dict) -> str:
     return title or loc
 
 
+def iso_posted_at(value) -> Optional[str]:
+    """Serialize posted_at for the private edition payload. None stays None."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def seat_payload(s: dict) -> dict:
+    return {
+        "role_key": s["role_key"],
+        "title": s.get("title") or "",
+        "company": s.get("company") or "",
+        "location": s.get("location") or "",
+        "url": s.get("url") or "",
+        "first_seen": s.get("first_seen") or "",
+        "previously_seen": bool(s.get("previously_seen")),
+        "source": s.get("source") or "hunt",
+        "new_or_resurfaced": s.get("new_or_resurfaced") or "new",
+        "survived_because": list(s.get("survived_because") or []),
+        "posted_at": iso_posted_at(s.get("posted_at")),
+        "ai_why": s.get("ai_why") or "",
+        "ai_pause": s.get("ai_pause") or "",
+        "why_now": s.get("why_now") or "",
+    }
+
+
 def build_payload(seats: list[dict], compiled: dict,
                   engine_sha: str) -> dict:
     return {
         "engine_sha": engine_sha,
         "compiled_config_hash": compiled_config_hash(compiled),
-        "seats": [
-            {
-                "role_key": s["role_key"],
-                "title": s.get("title") or "",
-                "company": s.get("company") or "",
-                "location": s.get("location") or "",
-                "url": s.get("url") or "",
-                "first_seen": s.get("first_seen") or "",
-                "previously_seen": bool(s.get("previously_seen")),
-                "source": s.get("source") or "hunt",
-                "new_or_resurfaced": s.get("new_or_resurfaced") or "new",
-                "survived_because": list(s.get("survived_because") or []),
-            }
-            for s in seats
-        ],
+        "seats": [seat_payload(s) for s in seats],
     }
+
+
+# ---------------------------------------------------------------------------
+# Final-seat editorial annotation — after judgment, before persist.
+# judge_seats is unchanged. rank_with_fit is not used.
+# ---------------------------------------------------------------------------
+
+@contextlib.contextmanager
+def _silent_stdio():
+    """Swallow score_fit / fetch prints. Public Actions logs must not
+    contain titles, URLs, prompts, or model output."""
+    with contextlib.redirect_stdout(io.StringIO()), \
+            contextlib.redirect_stderr(io.StringIO()):
+        yield
+
+
+def carry_posted_at(seats: list[dict], raw: list[dict] | None) -> list[dict]:
+    """Re-attach posted_at that judge_seats currently drops. Bug fix, not redesign."""
+    by_key: dict[str, object] = {}
+    for job in raw or []:
+        if not isinstance(job, dict):
+            continue
+        key = role_key(job)
+        if not key or "posted_at" not in job:
+            continue
+        if key not in by_key:
+            by_key[key] = job.get("posted_at")
+    out = []
+    for seat in seats:
+        row = dict(seat)
+        if row.get("posted_at") in (None, "") and row.get("role_key") in by_key:
+            row["posted_at"] = by_key[row["role_key"]]
+        out.append(row)
+    return out
+
+
+def _has_anthropic_key(ja) -> bool:
+    return bool(os.environ.get("ANTHROPIC_API_KEY") or getattr(ja, "ANTHROPIC_KEY", ""))
+
+
+def _score_agent(ja, agent_id=None, agent_no=None):
+    """Load THIS client's AgentConfig for score_fit. Never default to 001.
+
+    №001 is the result when the commissioned/edition agent *is* №001
+    (agent_id '001' or agents.agent_no == 1). A future agent does not
+    inherit Carlos's Candidate profile.
+    """
+    loader = getattr(ja, "load_agent_config", None)
+    keys = []
+    if agent_no == 1 or str(agent_id or "") in ("001", "1"):
+        keys.append("001")
+    elif agent_id:
+        keys.append(str(agent_id))
+    if callable(loader):
+        for key in keys:
+            try:
+                return loader(key)
+            except Exception:
+                continue
+    return SimpleNamespace(
+        priority_companies=set(),
+        profile_path="",
+        agent_id=str(agent_id or ""),
+    )
+
+
+def _lookup_agent_no(db, agent_id) -> Optional[int]:
+    if not agent_id or db is None:
+        return None
+    fn = getattr(db, "agent_no", None)
+    if not callable(fn):
+        return None
+    try:
+        n = fn(agent_id)
+    except Exception:
+        return None
+    try:
+        return int(n) if n is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def annotate_final_seats(
+    seats: list[dict],
+    raw: list[dict] | None = None,
+    *,
+    fetch_jd=None,
+    score=None,
+    profile: str | None = None,
+    agent=None,
+    agent_id=None,
+    agent_no=None,
+    now: datetime | None = None,
+) -> list[dict]:
+    """Explain already-judged seats. Does not select or re-rank.
+
+    Profile is THAT client's Candidate personal context for score_fit.
+    Brief is not fed in. Hunt authority stays on judge_seats.
+    """
+    seats = carry_posted_at(seats, raw)
+    if not seats:
+        return seats
+
+    ja = None
+
+    def _ja():
+        nonlocal ja
+        if ja is None:
+            ja = _import_job_alerts_adapters()
+        return ja
+
+    injected = fetch_jd is not None or score is not None
+    if not injected:
+        ja = _ja()
+        if _has_anthropic_key(ja):
+            fetch_jd = ja.fetch_jd_text
+            score = ja.score_fit
+        else:
+            fetch_jd = lambda _url: ""
+            score = lambda *_a, **_k: (None, None, None)
+
+    if fetch_jd is None:
+        fetch_jd = lambda _url: ""
+    if score is None:
+        score = lambda *_a, **_k: (None, None, None)
+
+    if profile is None:
+        if injected:
+            profile = ""
+        else:
+            ja = _ja()
+            if agent is None:
+                agent = _score_agent(ja, agent_id, agent_no)
+            load_profile = getattr(ja, "load_profile", None)
+            path = getattr(agent, "profile_path", None)
+            if callable(load_profile) and path:
+                with _silent_stdio():
+                    profile = load_profile(agent) or ""
+            else:
+                profile = ""
+    if agent is None:
+        agent = SimpleNamespace(
+            priority_companies=set(),
+            profile_path="",
+            agent_id=str(agent_id or ""),
+        )
+
+    why_now = None
+    if now is None:
+        now = datetime.now(timezone.utc)
+
+    out = []
+    scored = 0
+    for seat in seats:
+        row = dict(seat)
+        job = {
+            "title": row.get("title") or "",
+            "company": row.get("company") or "",
+            "location": row.get("location") or "",
+            "url": row.get("url") or "",
+            "posted_at": row.get("posted_at"),
+        }
+        jd = ""
+        try:
+            with _silent_stdio():
+                jd = fetch_jd(job.get("url") or "") or ""
+        except Exception:
+            jd = ""
+        try:
+            with _silent_stdio():
+                _fit, why, pause = score(agent, profile, job, jd)
+        except Exception:
+            why, pause = None, None
+        if why:
+            scored += 1
+        row["ai_why"] = why or ""
+        row["ai_pause"] = pause or ""
+        is_new = (row.get("new_or_resurfaced") or "") == "new"
+        if why_now is None:
+            why_now = getattr(_ja(), "why_now_text", None)
+        if callable(why_now):
+            row["why_now"] = why_now(row, is_new, now=now)
+        else:
+            row["why_now"] = ""
+        out.append(row)
+    log.info("annotated seats=%d scored=%d", len(out), scored)
+    return out
+
+
+def edition_protected(edition_id: str) -> bool:
+    eid = (edition_id or "").strip().lower()
+    return any(eid.startswith(p) for p in PROTECTED_EDITION_PREFIXES)
+
+
+def _uuid_prefix_bounds(prefix: str) -> Optional[tuple[str, str]]:
+    p = (prefix or "").strip().lower()
+    if len(p) != 8 or any(c not in "0123456789abcdef" for c in p):
+        return None
+    nxt = format(int(p, 16) + 1, "08x")
+    if len(nxt) != 8:
+        return None
+    return (
+        f"{p}-0000-0000-0000-000000000000",
+        f"{nxt}-0000-0000-0000-000000000000",
+    )
+
+
+def enrich_persisted_edition(
+    db: "HuntDb",
+    edition_id: str,
+    *,
+    fetch_jd=None,
+    score=None,
+    profile: str | None = None,
+    now: datetime | None = None,
+) -> dict:
+    """One-shot: annotate an already-persisted private edition. No hunt.
+
+    Refuses edition 1c0a8068. Intended for 30f7ee54 after merge. Do not
+    call this against production from hunt.yml.
+    """
+    if edition_protected(edition_id):
+        log.info("enrich refused edition=%s reason=protected",
+                 (edition_id or "")[:8])
+        raise HuntError("edition_persist_failed")
+    row = db.edition_by_id(edition_id)
+    if not row:
+        log.info("enrich missing edition=%s", (edition_id or "")[:8])
+        raise HuntError("edition_persist_failed")
+    resolved = str(row.get("id") or "")
+    if edition_protected(resolved):
+        log.info("enrich refused edition=%s reason=protected", resolved[:8])
+        raise HuntError("edition_persist_failed")
+    payload = row.get("payload") or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            payload = {}
+    seats = [dict(s) for s in (payload.get("seats") or []) if isinstance(s, dict)]
+    owner = row.get("agent_id")
+    seats = annotate_final_seats(
+        seats, raw=None, fetch_jd=fetch_jd, score=score,
+        profile=profile, now=now,
+        agent_id=owner, agent_no=_lookup_agent_no(db, owner),
+    )
+    new_payload = {
+        "engine_sha": payload.get("engine_sha") or "",
+        "compiled_config_hash": payload.get("compiled_config_hash") or "",
+        "seats": [seat_payload(s) for s in seats],
+    }
+    html_doc = render_edition_html(seats)
+    if "DUMMY ROLE" in html_doc:
+        raise HuntError("edition_persist_failed")
+    db.update_edition(resolved, {"payload": new_payload, "html": html_doc})
+    log.info("enriched edition=%s seats=%d", resolved[:8], len(seats))
+    return {"id": resolved, "seats": len(seats)}
 
 
 # ---------------------------------------------------------------------------
@@ -1265,6 +1576,15 @@ class HuntDb:
     def insert_edition(self, row: dict) -> None:
         raise NotImplementedError
 
+    def edition_by_id(self, edition_id: str) -> Optional[dict]:
+        raise NotImplementedError
+
+    def update_edition(self, edition_id: str, fields: dict) -> None:
+        raise NotImplementedError
+
+    def agent_no(self, agent_id: str) -> Optional[int]:
+        raise NotImplementedError
+
 
 class RestDb(HuntDb):
     """Production transport: Supabase PostgREST with the service key."""
@@ -1368,6 +1688,37 @@ class RestDb(HuntDb):
     def insert_edition(self, row: dict) -> None:
         self._post("editions", row)
 
+    def edition_by_id(self, edition_id: str) -> Optional[dict]:
+        cols = "id,agent_id,edition_date,brief_version,html,payload,outcome"
+        eid = (edition_id or "").strip()
+        if len(eid) >= 36:
+            rows = self._get(f"editions?id=eq.{eid}&select={cols}&limit=2")
+            return rows[0] if len(rows) == 1 else None
+        bounds = _uuid_prefix_bounds(eid)
+        if not bounds:
+            return None
+        lo, hi = bounds
+        rows = self._get(
+            f"editions?id=gte.{lo}&id=lt.{hi}&select={cols}&limit=2"
+        )
+        return rows[0] if len(rows) == 1 else None
+
+    def update_edition(self, edition_id: str, fields: dict) -> None:
+        self._patch(f"editions?id=eq.{edition_id}", fields)
+
+    def agent_no(self, agent_id: str) -> Optional[int]:
+        if not agent_id:
+            return None
+        rows = self._get(
+            f"agents?id=eq.{agent_id}&select=agent_no&limit=1"
+        )
+        if not rows:
+            return None
+        try:
+            return int(rows[0]["agent_no"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
 
 # ---------------------------------------------------------------------------
 # Processor
@@ -1385,11 +1736,16 @@ class RunReport:
 
 class Runner:
     def __init__(self, db: HuntDb, collector: Collector | None = None,
-                 today: date | None = None):
+                 today: date | None = None, fetch_jd=None, score=None,
+                 profile: str | None = None):
         self.db = db
         # Default collector is live adapters. Tests inject a local collector.
         self.collector = collector
         self.today = today or date.today()
+        # Editorial hooks (tests). Live path uses job_alerts defaults.
+        self.fetch_jd = fetch_jd
+        self.score = score
+        self.profile = profile
 
     def run(self, limit: int = MAX_JOBS_PER_RUN) -> list[RunReport]:
         reports = []
@@ -1512,6 +1868,16 @@ class Runner:
         seats = judge_seats(raw or [], compiled)
         history = personal_history(self.db.prior_edition_payloads(job["agent_id"]))
         seats = attach_market_fields(seats, history, self.today)
+        seats = annotate_final_seats(
+            seats, raw or [],
+            fetch_jd=self.fetch_jd,
+            score=self.score,
+            profile=self.profile,
+            agent_id=job.get("agent_id"),
+            agent_no=_lookup_agent_no(self.db, job.get("agent_id")),
+            now=datetime(self.today.year, self.today.month, self.today.day,
+                         12, 0, tzinfo=timezone.utc),
+        )
         sha = current_engine_sha()
         payload = build_payload(seats, compiled, sha)
         html_doc = render_edition_html(seats)
@@ -1549,12 +1915,47 @@ class Runner:
         return report
 
 
-def main() -> int:
+def _configure_logging() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"
     )
     for noisy in ("httpx", "httpcore", "anthropic", "urllib3", "requests"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+def run_enrich(edition_id: str) -> int:
+    """One-shot enrich. No hunt. No rewrite of 1c0a8068."""
+    _configure_logging()
+    if edition_protected(edition_id):
+        log.info("enrich refused edition=%s reason=protected",
+                 (edition_id or "")[:8])
+        return 2
+    base = os.environ["SUPABASE_URL"]
+    key = os.environ["SUPABASE_SERVICE_KEY"]
+    db = RestDb(base, key)
+    try:
+        result = enrich_persisted_edition(db, edition_id)
+    except HuntError as e:
+        log.info("enrich failed error=%s", e.name)
+        return 1
+    log.info("enrich done edition=%s seats=%s",
+             str(result.get("id") or "")[:8], result.get("seats"))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "--enrich-edition":
+        if len(argv) < 2 or not argv[1].strip():
+            _configure_logging()
+            log.info("enrich missing edition id")
+            return 2
+        return run_enrich(argv[1].strip())
+    if argv:
+        _configure_logging()
+        log.info("unknown args")
+        return 2
+    _configure_logging()
     base = os.environ["SUPABASE_URL"]
     key = os.environ["SUPABASE_SERVICE_KEY"]
     runner = Runner(db=RestDb(base, key))

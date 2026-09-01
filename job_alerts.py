@@ -1868,6 +1868,36 @@ requestAnimationFrame(function(){ requestAnimationFrame(function(){
 </html>
 """
 
+def why_now_text(job: dict, is_new: bool, now=None) -> str:
+    """Existing Shortlist why-now: new vs posted_at vs still-open.
+
+    Extracted from build_shortlist._argument so hunt seats reuse this
+    argument. Not a new model. `is_new` is Shortlist new_keys membership,
+    or hunt new_or_resurfaced == "new".
+    """
+    if now is None:
+        now = datetime.now(timezone.utc)
+    pa = job.get("posted_at")
+    if isinstance(pa, str):
+        pa = parse_iso(pa)
+    parts = []
+    if is_new:
+        parts.append("Surfaced for the first time this morning")
+    if pa is not None:
+        if getattr(pa, "tzinfo", None) is None:
+            pa = pa.replace(tzinfo=timezone.utc)
+        days = (now - pa).days
+        if days <= 0:
+            parts.append("posted today")
+        elif days == 1:
+            parts.append("posted yesterday")
+        else:
+            parts.append(f"posted {days} days ago")
+    parts.append("still open as of 8:00 AM ET")
+    whynow = " &middot; ".join(parts)
+    return whynow[0].upper() + whynow[1:]
+
+
 def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
                     state=None, report=None):
     """Render THE SHORTLIST from today's matches into the agent's output dir."""
@@ -1965,25 +1995,9 @@ def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
         if pause:
             blocks.append('        <div class="plabel">What gives me pause</div>\n')
             blocks.append(f'        <p class="ptext">{_html.escape(pause)}</p>\n')
-        # why now — computed from the run's real data
+        # why now — existing Shortlist argument (why_now_text)
         key = dedup_key(j["title"], j["company"])
-        pa = j.get("posted_at")
-        parts = []
-        if key in new_keys:
-            parts.append("Surfaced for the first time this morning")
-        if pa is not None:
-            if pa.tzinfo is None:
-                pa = pa.replace(tzinfo=timezone.utc)
-            days = (datetime.now(timezone.utc) - pa).days
-            if days <= 0:
-                parts.append("posted today")
-            elif days == 1:
-                parts.append("posted yesterday")
-            else:
-                parts.append(f"posted {days} days ago")
-        parts.append("still open as of 8:00 AM ET")
-        whynow = " &middot; ".join(parts)
-        whynow = whynow[0].upper() + whynow[1:]
+        whynow = why_now_text(j, key in new_keys)
         blocks.append('        <div class="plabel">Why now</div>\n')
         blocks.append(f'        <p class="ptext">{whynow}</p>\n')
         dl = j.get("deep")
