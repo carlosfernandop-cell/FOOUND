@@ -946,14 +946,19 @@ def render_edition_html(seats: list[dict]) -> str:
     items = []
     for s, pic in zip(seats, picture):
         why = html.escape(s.get("ai_why") or "")
-        pause = html.escape(s.get("ai_pause") or "")
+        pause = (s.get("ai_pause") or "").strip()
         why_now = s.get("why_now") or ""
+        pause_block = ""
+        if pause:
+            pause_block = (
+                "<div class=\"plabel\">What gives me pause</div>"
+                f"<p class=\"ptext\">{html.escape(pause)}</p>"
+            )
         items.append(
             "<li data-id=\"{id}\" data-handle=\"{handle}\" data-line=\"{line}\">"
             "<div class=\"plabel\">Why I chose it</div>"
             "<p class=\"ptext\">{why}</p>"
-            "<div class=\"plabel\">What gives me pause</div>"
-            "<p class=\"ptext\">{pause}</p>"
+            "{pause_block}"
             "<div class=\"plabel\">Why now</div>"
             "<p class=\"ptext\">{why_now}</p>"
             "</li>".format(
@@ -961,7 +966,7 @@ def render_edition_html(seats: list[dict]) -> str:
                 handle=html.escape(pic["handle"], quote=True),
                 line=html.escape(pic["line"], quote=True),
                 why=why,
-                pause=pause,
+                pause_block=pause_block,
                 why_now=why_now,
             )
         )
@@ -1063,14 +1068,46 @@ def _has_anthropic_key(ja) -> bool:
     return bool(os.environ.get("ANTHROPIC_API_KEY") or getattr(ja, "ANTHROPIC_KEY", ""))
 
 
-def _score_agent(ja):
+def _score_agent(ja, agent_id=None, agent_no=None):
+    """Load THIS client's AgentConfig for score_fit. Never default to 001.
+
+    №001 is the result when the commissioned/edition agent *is* №001
+    (agent_id '001' or agents.agent_no == 1). A future agent does not
+    inherit Carlos's Candidate profile.
+    """
     loader = getattr(ja, "load_agent_config", None)
+    keys = []
+    if agent_no == 1 or str(agent_id or "") in ("001", "1"):
+        keys.append("001")
+    elif agent_id:
+        keys.append(str(agent_id))
     if callable(loader):
-        try:
-            return loader("001")
-        except Exception:
-            pass
-    return SimpleNamespace(priority_companies=set(), profile_path="profile.md")
+        for key in keys:
+            try:
+                return loader(key)
+            except Exception:
+                continue
+    return SimpleNamespace(
+        priority_companies=set(),
+        profile_path="",
+        agent_id=str(agent_id or ""),
+    )
+
+
+def _lookup_agent_no(db, agent_id) -> Optional[int]:
+    if not agent_id or db is None:
+        return None
+    fn = getattr(db, "agent_no", None)
+    if not callable(fn):
+        return None
+    try:
+        n = fn(agent_id)
+    except Exception:
+        return None
+    try:
+        return int(n) if n is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def annotate_final_seats(
@@ -1081,12 +1118,14 @@ def annotate_final_seats(
     score=None,
     profile: str | None = None,
     agent=None,
+    agent_id=None,
+    agent_no=None,
     now: datetime | None = None,
 ) -> list[dict]:
     """Explain already-judged seats. Does not select or re-rank.
 
-    Profile is Candidate personal context for score_fit. Brief is not fed
-    in. Hunt authority stays on judge_seats / compiled_config.
+    Profile is THAT client's Candidate personal context for score_fit.
+    Brief is not fed in. Hunt authority stays on judge_seats.
     """
     seats = carry_posted_at(seats, raw)
     if not seats:
@@ -1121,15 +1160,20 @@ def annotate_final_seats(
         else:
             ja = _ja()
             if agent is None:
-                agent = _score_agent(ja)
+                agent = _score_agent(ja, agent_id, agent_no)
             load_profile = getattr(ja, "load_profile", None)
-            if callable(load_profile):
+            path = getattr(agent, "profile_path", None)
+            if callable(load_profile) and path:
                 with _silent_stdio():
                     profile = load_profile(agent) or ""
             else:
                 profile = ""
     if agent is None:
-        agent = SimpleNamespace(priority_companies=set(), profile_path="profile.md")
+        agent = SimpleNamespace(
+            priority_companies=set(),
+            profile_path="",
+            agent_id=str(agent_id or ""),
+        )
 
     why_now = None
     if now is None:
@@ -1224,9 +1268,11 @@ def enrich_persisted_edition(
         except json.JSONDecodeError:
             payload = {}
     seats = [dict(s) for s in (payload.get("seats") or []) if isinstance(s, dict)]
+    owner = row.get("agent_id")
     seats = annotate_final_seats(
         seats, raw=None, fetch_jd=fetch_jd, score=score,
         profile=profile, now=now,
+        agent_id=owner, agent_no=_lookup_agent_no(db, owner),
     )
     new_payload = {
         "engine_sha": payload.get("engine_sha") or "",
@@ -1536,6 +1582,9 @@ class HuntDb:
     def update_edition(self, edition_id: str, fields: dict) -> None:
         raise NotImplementedError
 
+    def agent_no(self, agent_id: str) -> Optional[int]:
+        raise NotImplementedError
+
 
 class RestDb(HuntDb):
     """Production transport: Supabase PostgREST with the service key."""
@@ -1656,6 +1705,19 @@ class RestDb(HuntDb):
 
     def update_edition(self, edition_id: str, fields: dict) -> None:
         self._patch(f"editions?id=eq.{edition_id}", fields)
+
+    def agent_no(self, agent_id: str) -> Optional[int]:
+        if not agent_id:
+            return None
+        rows = self._get(
+            f"agents?id=eq.{agent_id}&select=agent_no&limit=1"
+        )
+        if not rows:
+            return None
+        try:
+            return int(rows[0]["agent_no"])
+        except (KeyError, TypeError, ValueError):
+            return None
 
 
 # ---------------------------------------------------------------------------
@@ -1811,6 +1873,8 @@ class Runner:
             fetch_jd=self.fetch_jd,
             score=self.score,
             profile=self.profile,
+            agent_id=job.get("agent_id"),
+            agent_no=_lookup_agent_no(self.db, job.get("agent_id")),
             now=datetime(self.today.year, self.today.month, self.today.day,
                          12, 0, tzinfo=timezone.utc),
         )

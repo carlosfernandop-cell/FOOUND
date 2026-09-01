@@ -20,6 +20,7 @@ J3 ROLE gate: search_queries families, not include[] (platforms is CONTEXT)
 H14 final-seat editorial annotation: ai_why / ai_pause / why-now / posted_at
     persisted; original three plabels; judge_seats unchanged; no rank_with_fit
 H15 one-shot enrich of edition 30f7ee54; 1c0a8068 refused
+H16 score_fit uses the commissioned agent's Candidate, not hardcoded 001
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ class MemoryDb(hr.HuntDb):
         self.memory_reads = 0
         self.market_seen_reads = 0
         self.publish_calls = 0
+        self.agent_numbers: dict[str, int] = {}
 
     def add_brief(self, agent_id, content, compiled_config=None,
                   readiness=None, version=1, state="active"):
@@ -126,6 +128,9 @@ class MemoryDb(hr.HuntDb):
                 e.update(fields)
                 return
         raise KeyError(edition_id)
+
+    def agent_no(self, agent_id: str):
+        return self.agent_numbers.get(agent_id)
 
 
 # ---------------------------------------------------------------------------
@@ -746,6 +751,8 @@ def test_h8_html_seat_shape():
     blob = html_doc.split('id="foound-seats">')[1].split("</script>")[0]
     seats = json.loads(blob)
     check("H8 id/handle/line", set(seats[0]) == {"id", "handle", "line"})
+    check("H8 no empty pause plabel",
+          '<div class="plabel">What gives me pause</div>' not in html_doc)
     empty = hr.render_edition_html([])
     check("H8 empty no dummy", "DUMMY ROLE" not in empty)
     check("H8 empty array",
@@ -777,6 +784,19 @@ def test_h8_html_seat_shape():
           '<p class="ptext">Because the seat matches your pattern.</p>' in with_arg)
     check("H8 pause ptext",
           '<p class="ptext">Scope may be narrower than it reads.</p>' in with_arg)
+    no_pause = hr.render_edition_html([{
+        "role_key": "cd|acme",
+        "handle": "Acme",
+        "line": "Creative Director — Remote",
+        "ai_why": "A reason.",
+        "ai_pause": "",
+        "why_now": "Still open as of 8:00 AM ET",
+    }])
+    check("H8 omit empty pause block",
+          '<div class="plabel">What gives me pause</div>' not in no_pause)
+    check("H8 still has why and now",
+          '<div class="plabel">Why I chose it</div>' in no_pause
+          and '<div class="plabel">Why now</div>' in no_pause)
 
 
 # ---------------------------------------------------------------------------
@@ -1533,6 +1553,91 @@ def test_enrich_refuses_1c0a8068():
         check("H15 refuse named", e.name == "edition_persist_failed")
     keep = db.edition_by_id("1c0a8068")
     check("H15 refused leaves html", keep["html"] == "<html>keep</html>")
+
+
+def test_non_001_agent_does_not_load_001_profile():
+    """A commissioned non-001 agent must not be argued as Carlos."""
+    import builtins
+    db = MemoryDb()
+    aid = _ready_agent(db, SPECIMEN_5d260731)
+    check("H16 fixture is not 001", aid != "001")
+    db.agent_numbers[aid] = 2
+    raw = [{**FIXTURE_1c0a8068_KEEP[0],
+            "posted_at": datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)}]
+    db.add_job(aid, "first_edition")
+    ja = hr._import_job_alerts_adapters()
+    seen = []
+    orig = ja.load_agent_config
+
+    def watch(key, *a, **k):
+        seen.append(str(key))
+        return orig(key, *a, **k)
+
+    ja.load_agent_config = watch
+    opened = []
+    real_open = builtins.open
+
+    def guard(path, *a, **k):
+        opened.append(str(path))
+        return real_open(path, *a, **k)
+
+    builtins.open = guard
+    try:
+        reports = hr.Runner(
+            db, collector=lambda _c: raw, today=date(2026, 8, 28),
+        ).run()
+    finally:
+        builtins.open = real_open
+        ja.load_agent_config = orig
+    check("H16 edition ran", reports[0].action == "edition")
+    check("H16 did not request 001 config", "001" not in seen)
+    check("H16 did not open profile.md",
+          not any(str(p).replace("\\", "/").endswith("profile.md")
+                  for p in opened))
+    agent = hr._score_agent(ja, aid, 2)
+    check("H16 stub is not 001", getattr(agent, "agent_id", None) != "001")
+    check("H16 stub has no 001 profile_path",
+          getattr(agent, "profile_path", None) != "profile.md")
+
+
+def test_enrich_30f7ee54_resolves_to_001():
+    """Edition 30f7ee54 belongs to №001 — enrich must load that profile."""
+    db = MemoryDb()
+    owner = "aaaaaaaa-0000-4000-8000-000000000001"
+    db.agent_numbers[owner] = 1
+    db.editions.append({
+        "id": EDITION_30f7ee54,
+        "agent_id": owner,
+        "edition_date": "2026-08-28",
+        "payload": {
+            "engine_sha": "abc",
+            "compiled_config_hash": "d" * 64,
+            "seats": [{
+                "role_key": "url:https://example.invalid/duolingo-cd",
+                "title": "Creative Director, Marketing",
+                "company": "Duolingo",
+                "location": "London",
+                "url": "https://example.invalid/duolingo-cd",
+                "new_or_resurfaced": "new",
+            }],
+        },
+        "html": "<html>old</html>",
+        "outcome": "seats",
+    })
+    ja = hr._import_job_alerts_adapters()
+    seen = []
+    orig = ja.load_agent_config
+
+    def watch(key, *a, **k):
+        seen.append(str(key))
+        return orig(key, *a, **k)
+
+    ja.load_agent_config = watch
+    try:
+        hr.enrich_persisted_edition(db, "30f7ee54")
+    finally:
+        ja.load_agent_config = orig
+    check("H16 enrich asked for 001", "001" in seen)
 
 
 def test_hunt_path_never_calls_rank_with_fit():
