@@ -14,7 +14,7 @@ H8  empty html has no DUMMY ROLE and no dummy seats
 H9  compile does not read Memory; hunt does not touch market_seen / docs
 H10 commission recovery predicate: insert once, then no-op
 H11 judgment: stronger-fit beats weaker-fit; not cap-alone
-H12 role_key precedence + title tweak on same posting id
+H12 role_key precedence + source-qualified id + gh_jid identity
 H13 adapter isolation smoke: SCRAPERS import without publisher
 J3 ROLE gate: search_queries families, not include[] (platforms is CONTEXT)
 """
@@ -982,11 +982,13 @@ def test_judgment_fictional_brief_uses_its_families():
 
 def test_role_key_precedence():
     a = {"title": "CD", "company": "Acme", "location": "NYC",
-         "posting_id": "gh-99", "url": "https://Example.com/jobs/1?utm_source=x"}
+         "posting_id": "gh-99", "source": "greenhouse",
+         "url": "https://Example.com/jobs/1?utm_source=x"}
     b = {"title": "CD Tweaked", "company": "Acme", "location": "NYC",
-         "posting_id": "gh-99", "url": "https://example.com/jobs/2"}
-    check("RKp id wins", hr.role_key(a) == "id:gh-99")
-    check("RKp same id survives title tweak", hr.role_key(a) == hr.role_key(b))
+         "posting_id": "gh-99", "source": "greenhouse",
+         "url": "https://example.com/jobs/2"}
+    check("RKp id wins", hr.role_key(a) == "id:greenhouse:gh-99")
+    check("RKp same source+id survives title tweak", hr.role_key(a) == hr.role_key(b))
 
     u1 = {"title": "CD", "company": "Acme", "location": "NYC",
           "url": "https://WWW.Jobs.Example/apply/42/?utm_campaign=x&gclid=1"}
@@ -1016,19 +1018,91 @@ def test_role_key_history_title_tweak_same_id():
         "seat_cap": 5,
         "exclude_type": [],
     }
-    prior = [{"role_key": "id:board-7", "first_seen": "2026-07-01"}]
+    prior = [{"role_key": "id:greenhouse:board-7", "first_seen": "2026-07-01"}]
     hist = hr.personal_history([{"seats": prior}])
     today = [{
         "title": "Creative Director, Brand",
         "company": "Acme",
         "location": "Remote",
         "posting_id": "board-7",
+        "source": "greenhouse",
     }]
     seats = hr.attach_market_fields(hr.judge_seats(today, compiled), hist,
                                     date(2026, 8, 28))
     check("RKh same id resurfaced", seats[0]["previously_seen"] is True)
     check("RKh not new", seats[0]["new_or_resurfaced"] == "resurfaced")
     check("RKh first_seen kept", seats[0]["first_seen"] == "2026-07-01")
+    check("RKh source-qualified key", seats[0]["role_key"] == "id:greenhouse:board-7")
+
+
+def test_role_key_source_qualified():
+    """Same posting_id from two ATSs must not collapse. Same source+id is one key."""
+    gh = {"title": "CD", "company": "Acme", "location": "NYC",
+          "posting_id": "99", "source": "greenhouse"}
+    lever = {"title": "CD", "company": "Acme", "location": "NYC",
+             "posting_id": "99", "source": "lever"}
+    gh_again = {"title": "CD Tweaked", "company": "Acme", "location": "Remote",
+                "posting_id": "99", "source": "greenhouse"}
+    check("RKs two sources two keys", hr.role_key(gh) != hr.role_key(lever))
+    check("RKs greenhouse form", hr.role_key(gh) == "id:greenhouse:99")
+    check("RKs lever form", hr.role_key(lever) == "id:lever:99")
+    check("RKs same source+id one key", hr.role_key(gh) == hr.role_key(gh_again))
+    check("RKs never bare id", hr.role_key(gh) != "id:99")
+    check("RKs never bare prefix", not hr.role_key(gh).startswith("id:99"))
+
+    via_provider = {"title": "CD", "company": "Acme", "posting_id": "99",
+                    "provider": "ashby"}
+    check("RKs provider field", hr.role_key(via_provider) == "id:ashby:99")
+    via_gh_id = {"title": "CD", "company": "Acme", "gh_id": "99"}
+    check("RKs gh_id implies greenhouse", hr.role_key(via_gh_id) == "id:greenhouse:99")
+
+    no_src = {"title": "CD", "company": "Acme", "location": "NYC",
+              "posting_id": "99", "url": "https://jobs.example/x"}
+    check("RKs no source never bare id", hr.role_key(no_src) == "url:https://jobs.example/x")
+    hunt_tag = {"title": "CD", "company": "Acme", "location": "NYC",
+                "posting_id": "99", "source": "adapter",
+                "url": "https://jobs.example/y"}
+    check("RKs hunt tag is not a namespace",
+          hr.role_key(hunt_tag) == "url:https://jobs.example/y")
+
+
+def test_role_key_gh_jid_is_identity():
+    """Greenhouse URLs that differ only by gh_jid are two roles when no posting id."""
+    a = {"title": "Creative Director", "company": "Stripe", "location": "US",
+         "url": "https://stripe.com/jobs/search?gh_jid=8001341&utm_source=x&gh_src=abc"}
+    b = {"title": "Creative Director", "company": "Stripe", "location": "US",
+         "url": "https://stripe.com/jobs/search?gh_jid=8001342&utm_source=x&gh_src=abc"}
+    same = {"title": "Creative Director, Copy", "company": "Stripe", "location": "Remote",
+            "url": "https://stripe.com/jobs/search?gh_jid=8001341&utm_campaign=other&gh_src=zzz"}
+    check("RKg two gh_jid two url keys", hr.role_key(a) != hr.role_key(b))
+    check("RKg both url:", hr.role_key(a).startswith("url:") and hr.role_key(b).startswith("url:"))
+    check("RKg same gh_jid same key", hr.role_key(a) == hr.role_key(same))
+    check("RKg gh_jid kept", "gh_jid=8001341" in hr.role_key(a))
+    check("RKg other gh_jid kept", "gh_jid=8001342" in hr.role_key(b))
+    check("RKg tracking stripped",
+          "utm_" not in hr.role_key(a) and "gh_src" not in hr.role_key(a))
+    check("RKg exact form",
+          hr.role_key(a) == "url:https://stripe.com/jobs/search?gh_jid=8001341")
+
+    duo_a = {"title": "CD", "company": "Duolingo",
+             "url": "https://careers.duolingo.com/jobs/8442934002?gh_jid=8442934002"}
+    duo_b = {"title": "CD", "company": "Duolingo",
+             "url": "https://careers.duolingo.com/jobs/8442934002?gh_jid=8442932002"}
+    check("RKg path-same gh_jid-diff two keys", hr.role_key(duo_a) != hr.role_key(duo_b))
+
+
+def test_role_key_single_definition():
+    """One role_key(row, company=None). The two-arg title, company form is gone."""
+    import inspect
+    check("RKd one def", open(hr.__file__, encoding="utf-8").read().count("def role_key(") == 1)
+    params = list(inspect.signature(hr.role_key).parameters)
+    check("RKd row first", params[0] == "row")
+    check("RKd optional company", params == ["row", "company"])
+    check("RKd string title is not a key", hr.role_key("Creative Director", "Acme") == "")
+    check("RKd string not tcl", not str(hr.role_key("CD", "Acme")).startswith("tcl:"))
+    row = {"title": "CD", "company": "Acme", "location": "NYC"}
+    check("RKd row tcl", hr.role_key(row) == "tcl:cd|acme|nyc")
+    check("RKd company override", hr.role_key(row, company="Nova") == "tcl:cd|nova|nyc")
 
 
 def test_adapter_isolation_smoke():
