@@ -17,14 +17,18 @@ H11 judgment: stronger-fit beats weaker-fit; not cap-alone
 H12 role_key precedence + source-qualified id + gh_jid identity
 H13 adapter isolation smoke: SCRAPERS import without publisher
 J3 ROLE gate: search_queries families, not include[] (platforms is CONTEXT)
+H14 final-seat editorial annotation: ai_why / ai_pause / why-now / posted_at
+    persisted; original three plabels; judge_seats unchanged; no rank_with_fit
+H15 one-shot enrich of edition 30f7ee54; 1c0a8068 refused
 """
 
 from __future__ import annotations
 
+import inspect
 import json
 import re
 import uuid
-from datetime import date
+from datetime import date, datetime, timezone
 
 import hunt_runner as hr
 
@@ -106,7 +110,22 @@ class MemoryDb(hr.HuntDb):
         for e in self.editions:
             if e["agent_id"] == row["agent_id"] and e["edition_date"] == day:
                 raise RuntimeError("duplicate edition")
-        self.editions.append(dict(row))
+        rec = dict(row)
+        rec.setdefault("id", str(uuid.uuid4()))
+        self.editions.append(rec)
+
+    def edition_by_id(self, edition_id: str):
+        eid = (edition_id or "").strip().lower()
+        hits = [e for e in self.editions
+                if str(e.get("id") or "").lower().startswith(eid)]
+        return hits[0] if len(hits) == 1 else None
+
+    def update_edition(self, edition_id: str, fields: dict):
+        for e in self.editions:
+            if str(e.get("id")) == edition_id:
+                e.update(fields)
+                return
+        raise KeyError(edition_id)
 
 
 # ---------------------------------------------------------------------------
@@ -696,6 +715,12 @@ def test_h9_boundaries():
           not re.search(r"""open\([^)]*docs/|['\"]docs/""", src))
     check("H9 DUMMY ROLE rejected at persist",
           "if \"DUMMY ROLE\" in html_doc" in src)
+    check("H9 no rank_with_fit call",
+          not re.search(r"rank_with_fit\s*\(", src))
+    check("H9 no deep_look call",
+          not re.search(r"deep_look\s*\(", src))
+    check("H9 no write_brief call",
+          not re.search(r"write_brief\s*\(", src))
     check("H9 memory not imported as authority",
           "from memory" not in src and "table memory" not in src)
     db = MemoryDb()
@@ -725,6 +750,33 @@ def test_h8_html_seat_shape():
     check("H8 empty no dummy", "DUMMY ROLE" not in empty)
     check("H8 empty array",
           json.loads(empty.split('id="foound-seats">')[1].split("</script>")[0]) == [])
+    with_arg = hr.render_edition_html([{
+        "role_key": "cd|acme",
+        "handle": "Acme",
+        "line": "Creative Director — Remote",
+        "title": "Creative Director",
+        "company": "Acme",
+        "location": "Remote",
+        "ai_why": "Because the seat matches your pattern.",
+        "ai_pause": "Scope may be narrower than it reads.",
+        "why_now": "Surfaced for the first time this morning &middot; still open as of 8:00 AM ET",
+    }])
+    blob2 = with_arg.split('id="foound-seats">')[1].split("</script>")[0]
+    pictured = json.loads(blob2)
+    check("H8 bind shape still id/handle/line",
+          set(pictured[0]) == {"id", "handle", "line"})
+    check("H8 handle at rest", pictured[0]["handle"] == "Acme")
+    check("H8 line at rest", pictured[0]["line"] == "Creative Director — Remote")
+    check("H8 why plabel",
+          '<div class="plabel">Why I chose it</div>' in with_arg)
+    check("H8 pause plabel",
+          '<div class="plabel">What gives me pause</div>' in with_arg)
+    check("H8 now plabel",
+          '<div class="plabel">Why now</div>' in with_arg)
+    check("H8 why ptext",
+          '<p class="ptext">Because the seat matches your pattern.</p>' in with_arg)
+    check("H8 pause ptext",
+          '<p class="ptext">Scope may be narrower than it reads.</p>' in with_arg)
 
 
 # ---------------------------------------------------------------------------
@@ -1214,6 +1266,302 @@ def test_logs_have_no_brief_copy(caplog=None):
     check("log no company", "HiddenCo" not in blob)
     check("log no url", "secret.example" not in blob)
     check("log no brief copy", "culture-shaping" not in blob)
+
+
+# ---------------------------------------------------------------------------
+# H14 final-seat editorial PORT — edition 30f7ee54 proof seats
+# ---------------------------------------------------------------------------
+
+FROZEN_NOW = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+EDITION_30f7ee54 = "30f7ee54-0000-4000-8000-000000000001"
+EDITION_1c0a8068 = "1c0a8068-0000-4000-8000-000000000001"
+
+
+def _fake_score(_agent, profile, job, _jd):
+    # Profile is personal context. Brief must not be the ranker.
+    if profile and ("THE MOVE" in profile or "search_queries" in profile):
+        raise AssertionError("Brief fed into score_fit")
+    if job["company"] == "Duolingo":
+        return 68, "Duolingo is building a culturally fluent brand voice.", \
+            "Posting is thin; seniority needs verifying."
+    return 78, "Suno is building brand identity in real time.", \
+        "Title reads campaign-execution rather than full brand ownership."
+
+
+def _fake_jd(url):
+    return "JD TEXT" if url else ""
+
+
+def test_judge_seats_unchanged_by_editorial():
+    src = inspect.getsource(hr.judge_seats)
+    check("H14 judge_seats no score_fit", "score_fit" not in src)
+    check("H14 judge_seats no rank_with_fit", "rank_with_fit" not in src)
+    check("H14 judge_seats no fetch_jd", "fetch_jd" not in src)
+    check("H14 judge_seats no ai_why", "ai_why" not in src)
+    check("H14 judge_seats no why_now", "why_now" not in src)
+    check("H14 judge_seats no posted_at write", "posted_at" not in src)
+
+
+def test_why_now_reuses_shortlist_logic():
+    ja = hr._import_job_alerts_adapters()
+    job = {
+        "title": "Creative Director",
+        "company": "Acme",
+        "posted_at": datetime(2026, 8, 28, 8, 0, tzinfo=timezone.utc),
+    }
+    text_new = ja.why_now_text(job, True, now=FROZEN_NOW)
+    check("H14 new surfaces",
+          text_new.startswith("Surfaced for the first time this morning"))
+    check("H14 new posted today", "posted today" in text_new)
+    check("H14 still open", "still open as of 8:00 AM ET" in text_new)
+    older = {
+        "title": "Creative Director",
+        "company": "Acme",
+        "posted_at": datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc),
+    }
+    resurfaced = ja.why_now_text(older, False, now=FROZEN_NOW)
+    check("H14 resurfaced age",
+          resurfaced == "Posted 8 days ago &middot; still open as of 8:00 AM ET")
+    iso_job = {
+        "title": "Creative Director",
+        "company": "Acme",
+        "posted_at": "2026-08-20T12:00:00Z",
+    }
+    from_iso = ja.why_now_text(iso_job, False, now=FROZEN_NOW)
+    check("H14 iso posted_at", from_iso == resurfaced)
+
+
+def test_final_seat_editorial_annotation():
+    compiled = hr.compile_from_content(SPECIMEN_5d260731)
+    posted_duo = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
+    posted_suno = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+    raw = [
+        {**FIXTURE_1c0a8068_KEEP[0], "posted_at": posted_duo},
+        {**FIXTURE_1c0a8068_KEEP[1], "posted_at": posted_suno},
+    ]
+    judged = hr.judge_seats(raw, compiled)
+    check("H14 two ROLE seats", len(judged) == 2)
+    check("H14 judge drops posted_at",
+          all("posted_at" not in s for s in judged))
+    seats = hr.attach_market_fields(judged, {}, date(2026, 8, 28))
+    urls = []
+
+    def fetch(url):
+        urls.append(url)
+        return _fake_jd(url)
+
+    seats = hr.annotate_final_seats(
+        seats, raw, fetch_jd=fetch, score=_fake_score,
+        profile="# Candidate Profile\nAirbnb and Apple.",
+        now=FROZEN_NOW,
+    )
+    check("H14 fetched both JDs", len(urls) == 2)
+    by_co = {s["company"]: s for s in seats}
+    duo, suno = by_co["Duolingo"], by_co["Suno"]
+    check("H14 duo why", duo["ai_why"].startswith("Duolingo is building"))
+    check("H14 duo pause", "seniority" in duo["ai_pause"])
+    check("H14 duo posted_at restored", duo["posted_at"] == posted_duo)
+    check("H14 duo new", duo["new_or_resurfaced"] == "new")
+    check("H14 duo why-now new",
+          duo["why_now"].startswith("Surfaced for the first time this morning"))
+    check("H14 duo why-now age", "posted 8 days ago" in duo["why_now"])
+    check("H14 suno why", suno["ai_why"].startswith("Suno is building"))
+    check("H14 suno posted_at restored", suno["posted_at"] == posted_suno)
+    check("H14 suno why-now age", "posted 27 days ago" in suno["why_now"])
+
+    payload = hr.build_payload(seats, compiled, "sha")
+    for row in payload["seats"]:
+        for key in ("ai_why", "ai_pause", "why_now", "posted_at",
+                    "new_or_resurfaced"):
+            check(f"H14 payload {row['company']} {key}", key in row)
+        check(f"H14 payload {row['company']} posted iso",
+              isinstance(row["posted_at"], str) and "T" in row["posted_at"])
+        check(f"H14 payload {row['company']} why nonempty", bool(row["ai_why"]))
+        check(f"H14 payload {row['company']} pause nonempty",
+              bool(row["ai_pause"]))
+        check(f"H14 payload {row['company']} why_now nonempty",
+              bool(row["why_now"]))
+
+    html_doc = hr.render_edition_html(seats)
+    blob = html_doc.split('id="foound-seats">')[1].split("</script>")[0]
+    pictured = json.loads(blob)
+    check("H14 html bind locked",
+          all(set(p) == {"id", "handle", "line"} for p in pictured))
+    check("H14 html three plabels",
+          html_doc.count('<div class="plabel">Why I chose it</div>') == 2)
+    check("H14 html pause plabels",
+          html_doc.count('<div class="plabel">What gives me pause</div>') == 2)
+    check("H14 html now plabels",
+          html_doc.count('<div class="plabel">Why now</div>') == 2)
+    check("H14 html ptext", html_doc.count('<p class="ptext">') == 6)
+    check("H14 html has duo why",
+          "Duolingo is building a culturally fluent brand voice." in html_doc)
+    check("H14 html has suno why",
+          "Suno is building brand identity in real time." in html_doc)
+
+
+def test_first_edition_persists_editorial_fields():
+    db = MemoryDb()
+    aid = _ready_agent(db, SPECIMEN_5d260731)
+    posted = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
+    raw = [{**FIXTURE_1c0a8068_KEEP[0], "posted_at": posted},
+           {**FIXTURE_1c0a8068_KEEP[1], "posted_at": posted}]
+    db.add_job(aid, "first_edition")
+    runner = hr.Runner(
+        db, collector=lambda _c: raw, today=date(2026, 8, 28),
+        fetch_jd=_fake_jd, score=_fake_score,
+        profile="# Candidate Profile\nAirbnb.",
+    )
+    reports = runner.run()
+    check("H14 edition action", reports[0].action == "edition")
+    check("H14 two seats", reports[0].seats == 2)
+    ed = db.editions[-1]
+    seats = ed["payload"]["seats"]
+    check("H14 persisted count", len(seats) == 2)
+    for s in seats:
+        check("H14 persisted ai_why", bool(s.get("ai_why")))
+        check("H14 persisted ai_pause", bool(s.get("ai_pause")))
+        check("H14 persisted why_now", bool(s.get("why_now")))
+        check("H14 persisted posted_at", bool(s.get("posted_at")))
+        check("H14 persisted new_or_resurfaced", s.get("new_or_resurfaced") in
+              ("new", "resurfaced"))
+    check("H14 persisted html plabels",
+          '<div class="plabel">Why I chose it</div>' in ed["html"])
+    check("H14 persisted bind", 'id="foound-seats"' in ed["html"])
+
+
+def test_enrich_edition_30f7ee54_no_hunt():
+    db = MemoryDb()
+    keep_html = "<html>keep-1c0a8068</html>"
+    keep_payload = {"seats": [{"role_key": "old", "title": "Keep"}]}
+    db.editions.append({
+        "id": EDITION_1c0a8068,
+        "agent_id": "a-keep",
+        "edition_date": "2026-08-01",
+        "payload": keep_payload,
+        "html": keep_html,
+        "outcome": "seats",
+    })
+    seats_payload = [
+        {
+            "role_key": "url:https://example.invalid/duolingo-cd",
+            "title": "Creative Director, Marketing",
+            "company": "Duolingo",
+            "location": "London",
+            "url": "https://example.invalid/duolingo-cd",
+            "first_seen": "2026-08-28",
+            "previously_seen": False,
+            "source": "hunt",
+            "new_or_resurfaced": "new",
+            "survived_because": ["title_fit"],
+            "posted_at": "2026-08-20T12:00:00Z",
+        },
+        {
+            "role_key": "url:https://example.invalid/suno-cd",
+            "title": "Creative Director, Marketing Campaigns",
+            "company": "Suno",
+            "location": "NYC",
+            "url": "https://example.invalid/suno-cd",
+            "first_seen": "2026-08-01",
+            "previously_seen": True,
+            "source": "hunt",
+            "new_or_resurfaced": "resurfaced",
+            "survived_because": ["title_fit"],
+            "posted_at": "2026-08-01T12:00:00Z",
+        },
+    ]
+    db.editions.append({
+        "id": EDITION_30f7ee54,
+        "agent_id": "a-proof",
+        "edition_date": "2026-08-28",
+        "payload": {
+            "engine_sha": "abc",
+            "compiled_config_hash": "d" * 64,
+            "seats": seats_payload,
+        },
+        "html": "<html>old-30f7ee54</html>",
+        "outcome": "seats",
+    })
+    hunted = {"n": 0}
+
+    def boom_collect(_c):
+        hunted["n"] += 1
+        raise AssertionError("enrich must not hunt")
+
+    result = hr.enrich_persisted_edition(
+        db, "30f7ee54",
+        fetch_jd=_fake_jd, score=_fake_score,
+        profile="# Candidate Profile\nAirbnb.",
+        now=FROZEN_NOW,
+    )
+    check("H15 enrich id", result["id"] == EDITION_30f7ee54)
+    check("H15 enrich seats", result["seats"] == 2)
+    check("H15 no hunt", hunted["n"] == 0)
+    ed = db.edition_by_id("30f7ee54")
+    seats = ed["payload"]["seats"]
+    check("H15 duo why", "Duolingo" in seats[0]["ai_why"])
+    check("H15 suno why", "Suno" in seats[1]["ai_why"])
+    check("H15 why_now new",
+          seats[0]["why_now"].startswith("Surfaced for the first time this morning"))
+    check("H15 why_now resurfaced",
+          seats[1]["why_now"].startswith("Posted"))
+    check("H15 posted_at kept", bool(seats[0]["posted_at"]))
+    check("H15 html plabels",
+          '<div class="plabel">Why I chose it</div>' in ed["html"])
+    check("H15 html bind", 'id="foound-seats"' in ed["html"])
+    keep = db.edition_by_id("1c0a8068")
+    check("H15 1c0a8068 html untouched", keep["html"] == keep_html)
+    check("H15 1c0a8068 payload untouched",
+          keep["payload"] == keep_payload)
+
+
+def test_enrich_refuses_1c0a8068():
+    db = MemoryDb()
+    db.editions.append({
+        "id": EDITION_1c0a8068,
+        "agent_id": "a-keep",
+        "edition_date": "2026-08-01",
+        "payload": {"seats": []},
+        "html": "<html>keep</html>",
+        "outcome": "empty",
+    })
+    try:
+        hr.enrich_persisted_edition(db, "1c0a8068",
+                                    fetch_jd=_fake_jd, score=_fake_score)
+        check("H15 refuse 1c0a8068", False)
+    except hr.HuntError as e:
+        check("H15 refuse named", e.name == "edition_persist_failed")
+    keep = db.edition_by_id("1c0a8068")
+    check("H15 refused leaves html", keep["html"] == "<html>keep</html>")
+
+
+def test_hunt_path_never_calls_rank_with_fit():
+    src = open(hr.__file__, encoding="utf-8").read()
+    check("H14 source no rank_with_fit(",
+          not re.search(r"rank_with_fit\s*\(", src))
+    compiled = hr.compile_from_content(SPECIMEN_5d260731)
+    raw = list(FIXTURE_1c0a8068_KEEP)
+    hits = {"rank": 0}
+
+    def boom(*_a, **_k):
+        hits["rank"] += 1
+        raise AssertionError("rank_with_fit called")
+
+    ja = hr._import_job_alerts_adapters()
+    orig = ja.rank_with_fit
+    ja.rank_with_fit = boom
+    try:
+        seats = hr.annotate_final_seats(
+            hr.attach_market_fields(hr.judge_seats(raw, compiled), {},
+                                    date(2026, 8, 28)),
+            raw, fetch_jd=_fake_jd, score=_fake_score,
+            profile="# Candidate Profile\nAirbnb.",
+            now=FROZEN_NOW,
+        )
+    finally:
+        ja.rank_with_fit = orig
+    check("H14 annotate no rank", hits["rank"] == 0)
+    check("H14 annotate kept two", len(seats) == 2)
 
 
 def main():
