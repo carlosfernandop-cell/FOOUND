@@ -1,0 +1,25 @@
+name: enrich-30f7ee54-once
+# Throwaway. Do not merge. Not hunt.yml. One enrich of 30f7ee54.
+on:
+  workflow_dispatch:
+  push:
+    branches: [enrich-30f7ee54-once]
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 2c8a4e388a0282fb0f11a770390f0c72319d7f97
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install requests==2.33.1
+      - name: Enrich edition 30f7ee54 only
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python hunt_runner.py --enrich-edition 30f7ee54
