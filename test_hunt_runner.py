@@ -19,8 +19,12 @@ H13 adapter isolation smoke: SCRAPERS import without publisher
 J3 ROLE gate: search_queries families, not include[] (platforms is CONTEXT)
 H14 final-seat editorial annotation: ai_why / ai_pause / why-now / posted_at
     / fit persisted; original three plabels + .anno / .scoreline / .meta /
-    seclabels; fit_tier reused; judge_seats unchanged; no rank_with_fit
-H15 one-shot enrich of edition 30f7ee54 writes fit; 1c0a8068 refused
+    seclabels; fit_tier reused; judge_seats unchanged; no rank_with_fit;
+    after fit, final seats sort by fit for I'd start with
+H15 one-shot enrich of edition 30f7ee54 writes fit; 1c0a8068 refused;
+    existing fit is not re-scored just to reorder
+H17 lead order is fit descending on final seats (70 then 66); judge_seats
+    is not lead; same role_keys
 H16 score_fit uses the commissioned agent's Candidate, not hardcoded 001
 """
 
@@ -1394,11 +1398,17 @@ def test_final_seat_editorial_annotation():
     by_payload = {row["company"]: row for row in payload["seats"]}
     check("H14 payload duo fit", by_payload["Duolingo"]["fit"] == 68)
     check("H14 payload suno fit", by_payload["Suno"]["fit"] == 78)
-    check("H14 payload lead is first judged",
-          payload["seats"][0]["lead"] is True)
-    check("H14 payload not resorted",
-          [row["company"] for row in payload["seats"]]
+    check("H14 payload lead is highest fit",
+          payload["seats"][0]["lead"] is True
+          and payload["seats"][0]["company"] == "Suno")
+    check("H14 payload ordered by fit",
+          [row["company"] for row in payload["seats"]] == ["Suno", "Duolingo"]
+          and [row["company"] for row in payload["seats"]]
           == [s["company"] for s in seats])
+    check("H14 same role_keys",
+          {row["role_key"] for row in payload["seats"]}
+          == {s["role_key"] for s in seats}
+          == {s["role_key"] for s in judged})
     for row in payload["seats"]:
         for key in ("ai_why", "ai_pause", "why_now", "posted_at",
                     "new_or_resurfaced", "fit", "lead", "seclabel"):
@@ -1555,16 +1565,16 @@ def test_enrich_edition_30f7ee54_no_hunt():
     check("H15 no hunt", hunted["n"] == 0)
     ed = db.edition_by_id("30f7ee54")
     seats = ed["payload"]["seats"]
-    check("H15 duo why", "Duolingo" in seats[0]["ai_why"])
-    check("H15 suno why", "Suno" in seats[1]["ai_why"])
-    check("H15 duo fit", seats[0]["fit"] == 68)
-    check("H15 suno fit", seats[1]["fit"] == 78)
-    check("H15 lead first judged", seats[0]["lead"] is True and seats[0]["company"] == "Duolingo")
-    check("H15 not resorted", [s["company"] for s in seats] == ["Duolingo", "Suno"])
-    check("H15 why_now new",
-          seats[0]["why_now"].startswith("Surfaced for the first time this morning"))
+    check("H15 suno why", "Suno" in seats[0]["ai_why"])
+    check("H15 duo why", "Duolingo" in seats[1]["ai_why"])
+    check("H15 suno fit", seats[0]["fit"] == 78)
+    check("H15 duo fit", seats[1]["fit"] == 68)
+    check("H15 lead highest fit", seats[0]["lead"] is True and seats[0]["company"] == "Suno")
+    check("H15 ordered by fit", [s["company"] for s in seats] == ["Suno", "Duolingo"])
     check("H15 why_now resurfaced",
-          seats[1]["why_now"].startswith("Posted"))
+          seats[0]["why_now"].startswith("Posted"))
+    check("H15 why_now new",
+          seats[1]["why_now"].startswith("Surfaced for the first time this morning"))
     check("H15 posted_at kept", bool(seats[0]["posted_at"]))
     check("H15 html plabels",
           '<div class="plabel">Why I chose it</div>' in ed["html"])
@@ -1573,7 +1583,7 @@ def test_enrich_edition_30f7ee54_no_hunt():
     check("H15 html scoreline",
           '<div class="scoreline">68 &middot; Worth considering</div>' in ed["html"])
     check("H15 html lead seclabel",
-          'I&rsquo;d start with Duolingo' in ed["html"])
+          'I&rsquo;d start with Suno' in ed["html"])
     check("H15 html rest seclabel",
           '<div class="seclabel">Worth your attention</div>' in ed["html"])
     check("H15 html meta posted",
@@ -1764,7 +1774,7 @@ def test_fit_tier_reused_not_rewritten():
           "rank_with_fit" not in judge_src)
 
 
-def test_seclabels_do_not_resort():
+def test_seclabels_follow_fit_order():
     seats = [
         {"role_key": "a", "company": "First", "title": "CD",
          "location": "X", "fit": 70, "ai_why": "w", "ai_pause": "p",
@@ -1777,24 +1787,42 @@ def test_seclabels_do_not_resort():
          "why_now": "n"},
     ]
     labeled = hr.assign_editorial_labels(seats)
-    check("H14 label order kept",
-          [s["company"] for s in labeled] == ["First", "Second", "Third"])
-    check("H14 lead is first judged",
+    check("H14 label order by fit",
+          [s["company"] for s in labeled] == ["Second", "First", "Third"])
+    check("H14 lead is highest fit",
           labeled[0]["lead"] is True and labeled[0]["seclabel"].startswith(
-              "I'd start with First"))
-    check("H14 unusually strong",
+              "I'd start with Second"))
+    check("H14 unusually strong not used for 70",
           labeled[1]["lead"] is False
-          and labeled[1]["seclabel"] == "Unusually strong")
+          and labeled[1]["seclabel"] == "Worth your attention")
     check("H14 worth attention",
           labeled[2]["seclabel"] == "Worth your attention")
     html_doc = hr.render_edition_html(seats)
-    i0, i1, i2 = (html_doc.index(name) for name in ("First", "Second", "Third"))
-    check("H14 html not resorted", i0 < i1 < i2)
-    check("H14 html unusually strong",
-          '<div class="seclabel">Unusually strong</div>' in html_doc)
+    i0, i1, i2 = (html_doc.index(name) for name in ("Second", "First", "Third"))
+    check("H14 html ordered by fit", i0 < i1 < i2)
     check("H14 html worth attention",
           '<div class="seclabel">Worth your attention</div>' in html_doc)
     check("H14 html no rank_with_fit", "rank_with_fit" not in html_doc)
+    strong = [
+        {**seats[0], "fit": 66},
+        {**seats[1], "fit": 85},
+        {**seats[2], "fit": 82},
+    ]
+    strong_labeled = hr.assign_editorial_labels(strong)
+    check("H14 unusually strong remainder",
+          [s["company"] for s in strong_labeled] == ["Second", "Third", "First"])
+    check("H14 unusually strong label",
+          strong_labeled[1]["seclabel"] == "Unusually strong"
+          and strong_labeled[2]["seclabel"] == "Worth your attention")
+    tied = [
+        {**seats[0], "fit": 70},
+        {**seats[1], "fit": 70},
+        {**seats[2], "fit": 70},
+    ]
+    tied_labeled = hr.assign_editorial_labels(tied)
+    check("H14 ties stay stable",
+          [s["company"] for s in tied_labeled] == ["First", "Second", "Third"]
+          and tied_labeled[0]["seclabel"] == "I'd start with First")
 
 
 def test_meta_omits_posted_when_null():
@@ -1816,6 +1844,149 @@ def test_meta_omits_posted_when_null():
     check("H14 anno at 60", "{fit&nbsp;60}" in html_doc)
     check("H14 scoreline at 60",
           '<div class="scoreline">60 &middot; Worth considering</div>' in html_doc)
+
+
+def test_lead_follows_existing_fit_70_66():
+    """Production 30f7ee54 shape: Suno 70, Duolingo 66 already present.
+
+    Reorder from those numbers. Do not call score_fit. Same role_keys.
+    judge_seats order is not lead. Enrich still refuses 1c0a8068.
+    """
+    duo_key = "url:https://example.invalid/duolingo-cd"
+    suno_key = "url:https://example.invalid/suno-cd"
+    seats = [
+        {
+            "role_key": duo_key,
+            "title": "Creative Director, Marketing",
+            "company": "Duolingo",
+            "location": "London",
+            "url": "https://example.invalid/duolingo-cd",
+            "fit": 66,
+            "ai_why": "Duolingo why",
+            "ai_pause": "p",
+            "why_now": "n",
+            "new_or_resurfaced": "new",
+        },
+        {
+            "role_key": suno_key,
+            "title": "Creative Director, Marketing Campaigns",
+            "company": "Suno",
+            "location": "NYC",
+            "url": "https://example.invalid/suno-cd",
+            "fit": 70,
+            "ai_why": "Suno why",
+            "ai_pause": "p",
+            "why_now": "n",
+            "new_or_resurfaced": "resurfaced",
+        },
+    ]
+    keys_before = [s["role_key"] for s in seats]
+    labeled = hr.assign_editorial_labels(seats)
+    check("H17 order is 70 first",
+          [s["company"] for s in labeled] == ["Suno", "Duolingo"])
+    check("H17 I'd start with 70",
+          labeled[0]["lead"] is True
+          and labeled[0]["seclabel"] == "I'd start with Suno"
+          and labeled[0]["fit"] == 70)
+    check("H17 66 Worth your attention",
+          labeled[1]["lead"] is False
+          and labeled[1]["seclabel"] == "Worth your attention"
+          and labeled[1]["fit"] == 66)
+    check("H17 same role_keys",
+          [s["role_key"] for s in labeled] == [suno_key, duo_key]
+          and set(s["role_key"] for s in labeled) == set(keys_before))
+    check("H17 judge order not lead", labeled[0]["company"] != "Duolingo")
+    html_doc = hr.render_edition_html(seats)
+    check("H17 html I'd start with Suno",
+          "I&rsquo;d start with Suno" in html_doc)
+    check("H17 html 66 worth attention",
+          '<div class="seclabel">Worth your attention</div>' in html_doc)
+    check("H17 html Suno before Duolingo",
+          html_doc.index("Suno") < html_doc.index("Duolingo"))
+
+    db = MemoryDb()
+    keep_html = "<html>keep-1c0a8068-70-66</html>"
+    keep_payload = {"seats": [{"role_key": "old", "fit": 1}]}
+    db.editions.append({
+        "id": EDITION_1c0a8068,
+        "agent_id": "a-keep",
+        "edition_date": "2026-08-01",
+        "payload": keep_payload,
+        "html": keep_html,
+        "outcome": "seats",
+    })
+    db.editions.append({
+        "id": EDITION_30f7ee54,
+        "agent_id": "a-proof",
+        "edition_date": "2026-08-28",
+        "payload": {
+            "engine_sha": "abc",
+            "compiled_config_hash": "d" * 64,
+            "seats": seats,
+        },
+        "html": "<html>old-judge-order</html>",
+        "outcome": "seats",
+    })
+
+    def boom_score(*_a, **_k):
+        raise AssertionError("must not re-score existing fit")
+
+    def boom_jd(_url):
+        raise AssertionError("must not fetch JD to reorder")
+
+    result = hr.enrich_persisted_edition(
+        db, "30f7ee54", fetch_jd=boom_jd, score=boom_score,
+    )
+    check("H17 enrich id", result["id"] == EDITION_30f7ee54)
+    ed = db.edition_by_id("30f7ee54")
+    out = ed["payload"]["seats"]
+    check("H17 enrich 70 first",
+          [s["company"] for s in out] == ["Suno", "Duolingo"])
+    check("H17 enrich fits unchanged",
+          [s["fit"] for s in out] == [70, 66])
+    check("H17 enrich I'd start with Suno",
+          out[0]["lead"] is True and out[0]["seclabel"] == "I'd start with Suno")
+    check("H17 enrich 66 Worth your attention",
+          out[1]["seclabel"] == "Worth your attention")
+    check("H17 enrich same role_keys",
+          [s["role_key"] for s in out] == [suno_key, duo_key])
+    check("H17 enrich html Suno lead",
+          "I&rsquo;d start with Suno" in ed["html"])
+    check("H17 enrich html worth",
+          '<div class="seclabel">Worth your attention</div>' in ed["html"])
+
+    try:
+        hr.enrich_persisted_edition(db, "1c0a8068",
+                                    fetch_jd=boom_jd, score=boom_score)
+        check("H17 refuse 1c0a8068", False)
+    except hr.HuntError as e:
+        check("H17 refuse named", e.name == "edition_persist_failed")
+    keep = db.edition_by_id("1c0a8068")
+    check("H17 1c0a8068 html untouched", keep["html"] == keep_html)
+    check("H17 1c0a8068 payload untouched", keep["payload"] == keep_payload)
+
+    compiled = hr.compile_from_content(SPECIMEN_5d260731)
+    judged = hr.judge_seats(list(FIXTURE_1c0a8068_KEEP), compiled)
+    check("H17 judge_seats still two", len(judged) == 2)
+    check("H17 judge_seats sets no lead",
+          all("lead" not in s for s in judged))
+    scored = []
+    for seat, fit in zip(judged, (66, 70)):
+        row = dict(seat)
+        row["fit"] = fit
+        scored.append(row)
+    after = hr.assign_editorial_labels(scored)
+    check("H17 judge first is not lead",
+          after[0]["role_key"] == judged[1]["role_key"]
+          and after[0]["lead"] is True
+          and after[0]["fit"] == 70)
+    check("H17 judge first is remainder",
+          after[1]["role_key"] == judged[0]["role_key"]
+          and after[1]["seclabel"] == "Worth your attention")
+    src = inspect.getsource(hr.judge_seats)
+    check("H17 judge_seats source unchanged vs score", "score_fit" not in src)
+    check("H17 no rank_with_fit in hunt",
+          not re.search(r"rank_with_fit\s*\(", open(hr.__file__, encoding="utf-8").read()))
 
 
 def test_enrich_refuses_1c0a8068_still():

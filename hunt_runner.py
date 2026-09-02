@@ -30,8 +30,12 @@ Editorial PORT (final seats only): after judge_seats + attach_market_fields,
 restore posted_at, call existing job_alerts.fetch_jd_text / score_fit with
 Candidate profile.md as personal context (not hunt authority), and assemble
 why-now via job_alerts.why_now_text (Shortlist _argument). Persist the
-score_fit integer as seat `fit` (do not discard it). Do not call
-rank_with_fit, do not change judge_seats, do not rewrite the editorial prompt.
+score_fit integer as seat `fit` (do not discard it). After fit is written
+(or when seats already have fit), order those final seats by fit
+descending (stable on ties) and assign I'd start with / Unusually strong
+/ Worth your attention from that order. Do not call rank_with_fit, do
+not change judge_seats, do not re-sort the raw market, do not rewrite
+the editorial prompt.
 """
 
 from __future__ import annotations
@@ -939,9 +943,18 @@ def coerce_fit(value) -> Optional[int]:
 
 
 def assign_editorial_labels(seats: list[dict]) -> list[dict]:
-    """Shortlist seclabels. Lead = first judged seat. Do not re-sort."""
+    """Shortlist seclabels. Lead = highest fit among final seats.
+
+    Original job_alerts contract after seats have fit:
+    ranked.sort(key=lambda j: (j.get("fit") or -1), reverse=True)
+    lead_job = ranked[0] → I'd start with {company}
+    remaining fit>=80 → Unusually strong; else Worth your attention.
+    Stable on ties. Does not re-sort the raw market. judge_seats
+    eligibility is unchanged.
+    """
+    ordered = sorted(seats, key=lambda j: (j.get("fit") or -1), reverse=True)
     out = []
-    for i, seat in enumerate(seats):
+    for i, seat in enumerate(ordered):
         row = dict(seat)
         if i == 0:
             row["lead"] = True
@@ -1007,7 +1020,7 @@ def render_edition_html(seats: list[dict]) -> str:
     #foound-seats stays {id, handle, line} so At Work bind does not break.
     Visible items carry the original three plabel/ptext slots plus the
     original Shortlist fit slots: closed-row .anno, open .scoreline, .meta,
-    and edition seclabels. Lead is the first judged seat.
+    and edition seclabels. Lead is the highest-fit final seat.
     """
     seats = assign_editorial_labels(seats)
     picture = [
@@ -1219,10 +1232,12 @@ def annotate_final_seats(
     agent_no=None,
     now: datetime | None = None,
 ) -> list[dict]:
-    """Explain already-judged seats. Does not select or re-rank.
+    """Explain already-judged seats. Does not select.
 
-    Profile is THAT client's Candidate personal context for score_fit.
-    Brief is not fed in. Hunt authority stays on judge_seats.
+    Writes fit, then orders those final seats by fit descending for
+    lead/seclabel. Does not re-sort the raw market. Profile is THAT
+    client's Candidate personal context for score_fit. Brief is not
+    fed in. Hunt authority stays on judge_seats.
     """
     seats = carry_posted_at(seats, raw)
     if not seats:
@@ -1347,6 +1362,9 @@ def enrich_persisted_edition(
 
     Refuses edition 1c0a8068. Intended for 30f7ee54 after merge. Do not
     call this against production from hunt.yml.
+
+    If every final seat already has fit, reorder by that fit and rewrite
+    payload/HTML seclabels without score_fit. Re-scoring can change 66/70.
     """
     if edition_protected(edition_id):
         log.info("enrich refused edition=%s reason=protected",
@@ -1368,11 +1386,14 @@ def enrich_persisted_edition(
             payload = {}
     seats = [dict(s) for s in (payload.get("seats") or []) if isinstance(s, dict)]
     owner = row.get("agent_id")
-    seats = annotate_final_seats(
-        seats, raw=None, fetch_jd=fetch_jd, score=score,
-        profile=profile, now=now,
-        agent_id=owner, agent_no=_lookup_agent_no(db, owner),
-    )
+    if seats and all(coerce_fit(s.get("fit")) is not None for s in seats):
+        seats = assign_editorial_labels(seats)
+    else:
+        seats = annotate_final_seats(
+            seats, raw=None, fetch_jd=fetch_jd, score=score,
+            profile=profile, now=now,
+            agent_id=owner, agent_no=_lookup_agent_no(db, owner),
+        )
     new_payload = {
         "engine_sha": payload.get("engine_sha") or "",
         "compiled_config_hash": payload.get("compiled_config_hash") or "",
