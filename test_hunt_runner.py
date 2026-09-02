@@ -18,8 +18,9 @@ H12 role_key precedence + source-qualified id + gh_jid identity
 H13 adapter isolation smoke: SCRAPERS import without publisher
 J3 ROLE gate: search_queries families, not include[] (platforms is CONTEXT)
 H14 final-seat editorial annotation: ai_why / ai_pause / why-now / posted_at
-    persisted; original three plabels; judge_seats unchanged; no rank_with_fit
-H15 one-shot enrich of edition 30f7ee54; 1c0a8068 refused
+    / fit persisted; original three plabels + .anno / .scoreline / .meta /
+    seclabels; fit_tier reused; judge_seats unchanged; no rank_with_fit
+H15 one-shot enrich of edition 30f7ee54 writes fit; 1c0a8068 refused
 H16 score_fit uses the commissioned agent's Candidate, not hardcoded 001
 """
 
@@ -1390,9 +1391,17 @@ def test_final_seat_editorial_annotation():
     check("H14 suno why-now age", "posted 27 days ago" in suno["why_now"])
 
     payload = hr.build_payload(seats, compiled, "sha")
+    by_payload = {row["company"]: row for row in payload["seats"]}
+    check("H14 payload duo fit", by_payload["Duolingo"]["fit"] == 68)
+    check("H14 payload suno fit", by_payload["Suno"]["fit"] == 78)
+    check("H14 payload lead is first judged",
+          payload["seats"][0]["lead"] is True)
+    check("H14 payload not resorted",
+          [row["company"] for row in payload["seats"]]
+          == [s["company"] for s in seats])
     for row in payload["seats"]:
         for key in ("ai_why", "ai_pause", "why_now", "posted_at",
-                    "new_or_resurfaced"):
+                    "new_or_resurfaced", "fit", "lead", "seclabel"):
             check(f"H14 payload {row['company']} {key}", key in row)
         check(f"H14 payload {row['company']} posted iso",
               isinstance(row["posted_at"], str) and "T" in row["posted_at"])
@@ -1401,6 +1410,8 @@ def test_final_seat_editorial_annotation():
               bool(row["ai_pause"]))
         check(f"H14 payload {row['company']} why_now nonempty",
               bool(row["why_now"]))
+        check(f"H14 payload {row['company']} fit int",
+              isinstance(row["fit"], int) and 0 <= row["fit"] <= 100)
 
     html_doc = hr.render_edition_html(seats)
     blob = html_doc.split('id="foound-seats">')[1].split("</script>")[0]
@@ -1418,6 +1429,23 @@ def test_final_seat_editorial_annotation():
           "Duolingo is building a culturally fluent brand voice." in html_doc)
     check("H14 html has suno why",
           "Suno is building brand identity in real time." in html_doc)
+    check("H14 html anno duo", "{fit&nbsp;68}" in html_doc)
+    check("H14 html anno suno", "{fit&nbsp;78}" in html_doc)
+    check("H14 html scoreline duo",
+          '<div class="scoreline">68 &middot; Worth considering</div>' in html_doc)
+    check("H14 html scoreline suno",
+          '<div class="scoreline">78 &middot; Strong fit</div>' in html_doc)
+    check("H14 html lead seclabel",
+          "I&rsquo;d start with" in html_doc
+          and seats[0]["company"] in html_doc)
+    check("H14 html rest seclabel",
+          '<div class="seclabel">Worth your attention</div>' in html_doc)
+    check("H14 html meta salary", "Salary not posted" in html_doc)
+    check("H14 html meta posted duo",
+          '<span class="dim">posted Aug 20</span>' in html_doc)
+    check("H14 html meta posted suno",
+          '<span class="dim">posted Aug 1</span>' in html_doc)
+    check("H14 html meta loc duo", "<b>London</b>" in html_doc)
 
 
 def test_first_edition_persists_editorial_fields():
@@ -1443,11 +1471,19 @@ def test_first_edition_persists_editorial_fields():
         check("H14 persisted ai_pause", bool(s.get("ai_pause")))
         check("H14 persisted why_now", bool(s.get("why_now")))
         check("H14 persisted posted_at", bool(s.get("posted_at")))
+        check("H14 persisted fit", isinstance(s.get("fit"), int))
         check("H14 persisted new_or_resurfaced", s.get("new_or_resurfaced") in
               ("new", "resurfaced"))
+    check("H14 persisted duo fit",
+          next(s["fit"] for s in seats if s["company"] == "Duolingo") == 68)
+    check("H14 persisted suno fit",
+          next(s["fit"] for s in seats if s["company"] == "Suno") == 78)
     check("H14 persisted html plabels",
           '<div class="plabel">Why I chose it</div>' in ed["html"])
     check("H14 persisted bind", 'id="foound-seats"' in ed["html"])
+    check("H14 persisted html anno", "{fit&nbsp;68}" in ed["html"])
+    check("H14 persisted html scoreline",
+          '<div class="scoreline">78 &middot; Strong fit</div>' in ed["html"])
 
 
 def test_enrich_edition_30f7ee54_no_hunt():
@@ -1521,6 +1557,10 @@ def test_enrich_edition_30f7ee54_no_hunt():
     seats = ed["payload"]["seats"]
     check("H15 duo why", "Duolingo" in seats[0]["ai_why"])
     check("H15 suno why", "Suno" in seats[1]["ai_why"])
+    check("H15 duo fit", seats[0]["fit"] == 68)
+    check("H15 suno fit", seats[1]["fit"] == 78)
+    check("H15 lead first judged", seats[0]["lead"] is True and seats[0]["company"] == "Duolingo")
+    check("H15 not resorted", [s["company"] for s in seats] == ["Duolingo", "Suno"])
     check("H15 why_now new",
           seats[0]["why_now"].startswith("Surfaced for the first time this morning"))
     check("H15 why_now resurfaced",
@@ -1529,6 +1569,15 @@ def test_enrich_edition_30f7ee54_no_hunt():
     check("H15 html plabels",
           '<div class="plabel">Why I chose it</div>' in ed["html"])
     check("H15 html bind", 'id="foound-seats"' in ed["html"])
+    check("H15 html writes fit", "{fit&nbsp;68}" in ed["html"] and "{fit&nbsp;78}" in ed["html"])
+    check("H15 html scoreline",
+          '<div class="scoreline">68 &middot; Worth considering</div>' in ed["html"])
+    check("H15 html lead seclabel",
+          'I&rsquo;d start with Duolingo' in ed["html"])
+    check("H15 html rest seclabel",
+          '<div class="seclabel">Worth your attention</div>' in ed["html"])
+    check("H15 html meta posted",
+          '<span class="dim">posted Aug 20</span>' in ed["html"])
     keep = db.edition_by_id("1c0a8068")
     check("H15 1c0a8068 html untouched", keep["html"] == keep_html)
     check("H15 1c0a8068 payload untouched",
@@ -1667,6 +1716,130 @@ def test_hunt_path_never_calls_rank_with_fit():
         ja.rank_with_fit = orig
     check("H14 annotate no rank", hits["rank"] == 0)
     check("H14 annotate kept two", len(seats) == 2)
+    check("H14 annotate persisted fit",
+          {s["company"]: s["fit"] for s in seats}
+          == {"Duolingo": 68, "Suno": 78})
+
+
+def test_fit_tier_reused_not_rewritten():
+    src = open(hr.__file__, encoding="utf-8").read()
+    check("H14 no local fit_tier def", "def fit_tier" not in src)
+    for phrase in ("Exceptional fit", "Strong fit", "Worth considering",
+                   "Wildcard"):
+        check(f"H14 no rewritten {phrase}", phrase not in src)
+    ja = hr._import_job_alerts_adapters()
+    check("H14 fit_tier is job_alerts", hr._fit_tier_label is not ja.fit_tier)
+    seen = []
+    orig = ja.fit_tier
+
+    def watch(score):
+        seen.append(score)
+        return orig(score)
+
+    ja.fit_tier = watch
+    try:
+        html_doc = hr.render_edition_html([{
+            "role_key": "cd|acme",
+            "company": "Acme",
+            "title": "Creative Director",
+            "location": "Remote",
+            "fit": 85,
+            "ai_why": "A reason.",
+            "ai_pause": "",
+            "why_now": "Still open.",
+        }])
+    finally:
+        ja.fit_tier = orig
+    check("H14 fit_tier called with 85", seen == [85])
+    check("H14 scoreline uses existing tier",
+          '<div class="scoreline">85 &middot; Exceptional fit</div>' in html_doc)
+    check("H14 existing thresholds",
+          ja.fit_tier(85) == "Exceptional fit"
+          and ja.fit_tier(75) == "Strong fit"
+          and ja.fit_tier(60) == "Worth considering"
+          and ja.fit_tier(59) == "Wildcard")
+    judge_src = inspect.getsource(hr.judge_seats)
+    check("H14 judge_seats still no score_fit", "score_fit" not in judge_src)
+    check("H14 judge_seats still no rank_with_fit",
+          "rank_with_fit" not in judge_src)
+
+
+def test_seclabels_do_not_resort():
+    seats = [
+        {"role_key": "a", "company": "First", "title": "CD",
+         "location": "X", "fit": 70, "ai_why": "w", "ai_pause": "p",
+         "why_now": "n"},
+        {"role_key": "b", "company": "Second", "title": "CD",
+         "location": "X", "fit": 90, "ai_why": "w", "ai_pause": "p",
+         "why_now": "n"},
+        {"role_key": "c", "company": "Third", "title": "CD",
+         "location": "X", "fit": 65, "ai_why": "w", "ai_pause": "p",
+         "why_now": "n"},
+    ]
+    labeled = hr.assign_editorial_labels(seats)
+    check("H14 label order kept",
+          [s["company"] for s in labeled] == ["First", "Second", "Third"])
+    check("H14 lead is first judged",
+          labeled[0]["lead"] is True and labeled[0]["seclabel"].startswith(
+              "I'd start with First"))
+    check("H14 unusually strong",
+          labeled[1]["lead"] is False
+          and labeled[1]["seclabel"] == "Unusually strong")
+    check("H14 worth attention",
+          labeled[2]["seclabel"] == "Worth your attention")
+    html_doc = hr.render_edition_html(seats)
+    i0, i1, i2 = (html_doc.index(name) for name in ("First", "Second", "Third"))
+    check("H14 html not resorted", i0 < i1 < i2)
+    check("H14 html unusually strong",
+          '<div class="seclabel">Unusually strong</div>' in html_doc)
+    check("H14 html worth attention",
+          '<div class="seclabel">Worth your attention</div>' in html_doc)
+    check("H14 html no rank_with_fit", "rank_with_fit" not in html_doc)
+
+
+def test_meta_omits_posted_when_null():
+    html_doc = hr.render_edition_html([{
+        "role_key": "cd|acme",
+        "company": "Acme",
+        "title": "Creative Director",
+        "location": "Paris",
+        "fit": 60,
+        "posted_at": None,
+        "ai_why": "A reason.",
+        "ai_pause": "",
+        "why_now": "Still open.",
+    }])
+    check("H14 meta loc", "<b>Paris</b>" in html_doc)
+    check("H14 meta salary hardcoded", "Salary not posted" in html_doc)
+    check("H14 meta no posted span",
+          "posted " not in html_doc.split('<div class="meta">')[1].split("</div>")[0])
+    check("H14 anno at 60", "{fit&nbsp;60}" in html_doc)
+    check("H14 scoreline at 60",
+          '<div class="scoreline">60 &middot; Worth considering</div>' in html_doc)
+
+
+def test_enrich_refuses_1c0a8068_still():
+    """Refuse must stay in this PR. Edition 1c0a8068 is not rewritten."""
+    db = MemoryDb()
+    db.editions.append({
+        "id": EDITION_1c0a8068,
+        "agent_id": "a-keep",
+        "edition_date": "2026-08-01",
+        "payload": {"seats": [{"role_key": "old", "fit": 1}]},
+        "html": "<html>keep-1c0a8068-fit</html>",
+        "outcome": "seats",
+    })
+    try:
+        hr.enrich_persisted_edition(db, "1c0a8068",
+                                    fetch_jd=_fake_jd, score=_fake_score)
+        check("H15 refuse 1c0a8068 still", False)
+    except hr.HuntError as e:
+        check("H15 refuse named still", e.name == "edition_persist_failed")
+    keep = db.edition_by_id("1c0a8068")
+    check("H15 1c0a8068 html still untouched",
+          keep["html"] == "<html>keep-1c0a8068-fit</html>")
+    check("H15 1c0a8068 payload still untouched",
+          keep["payload"] == {"seats": [{"role_key": "old", "fit": 1}]})
 
 
 def main():
