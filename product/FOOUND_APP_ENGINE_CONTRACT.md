@@ -26,8 +26,9 @@ display (active? change effective? edition succeeded? waiting on me?).
 
 **Supabase owns (schema in engine repo `sql/`):** identity · authorization
 (RLS is the only isolation boundary) · client state and lifecycle ·
-approved gated functions (`commission_agent`, `pause_agent`, `resume_agent`,
-`archive_agent`) · Working Brief versions and the one-active invariant ·
+approved gated functions (`invite_agent`, `provision_agent`,
+`commission_agent`, `pause_agent`, `resume_agent`, `archive_agent`) ·
+Working Brief versions and the one-active invariant ·
 Evidence Ledger · config persistence · edition persistence · the `jobs`
 intent queue and its invariants.
 
@@ -53,9 +54,37 @@ client isolation (RLS's job) · any schema change.
 | `editions` (own) | read | render as delivered |
 | `signals` (own) | read/write | verdict loop (already live) |
 | `jobs` (own) | insert intent (`synthesize`, `compile_brief`, `refresh_readiness`); read status | never run/complete; `first_edition` only via `commission_agent()` |
-| `agents` (own) | read | state transitions only via functions |
+| `agents` (own) | read | born only via `provision_agent()`; later state transitions only via functions; no client INSERT |
 | `candidates` (own) | read | publication flow later, gated |
-| `agent_config`, `sources`, `agent_sources`, `market_seen`, `invitations` | none | engine/service territory |
+| `invite_agent(email)` | execute (owner / agent_no=1) | records `invitations` (`sent`, reserved serial); does not INSERT `agents`; does not copy №001 |
+| `provision_agent()` | execute (authenticated) | first session for an invited email INSERTs `agents` (`user_id`, reserved `agent_no`, `invited`); existing auth identity is reused; uninvited → `blocked:not_invited` |
+| `agent_config`, `sources`, `agent_sources`, `market_seen`, `invitations` | none | engine/service territory; invitations are written only through `invite_agent` |
+
+## Invite provision (V1 — migration 012)
+
+*Door 1 companion. App expresses invite/session intent. Supabase
+enforces who may become an agent. Engine does not copy №001.*
+
+- No public signup. Uninvited emails cannot receive an `agents` row.
+- `invite_agent(email)` is owner / `agent_no=1` only. It records a
+  `sent` invitation and reserves the next serial (`max(agents.agent_no,
+  invitations.agent_no)+1`). Re-invite of the same pending email is
+  idempotent (`sent`). An email that already has an agent returns
+  `blocked:already_agent`.
+- `provision_agent()` is the first-session gate. It matches
+  `auth.users.email` (existing identity — including the spike user)
+  to a `sent` invitation, INSERTs `agents (user_id, reserved agent_no,
+  state='invited')`, and marks the invitation `accepted`. It does not
+  mint a second auth user. It does not copy memory, briefs, or editions
+  from №001. Already provisioned returns the current state.
+- `invitations` stays service-territory (no client policies). The app
+  calls the two functions; it never INSERTs `agents`.
+- Prove 012 on disposable Postgres only — never the live FOOUND
+  project — via `sql/dev/run_012_harness.sh` or the `migration-012`
+  CI job (`postgres:16` service, database `foound_012`, no production
+  credentials). The harness applies `test_harness.sql` +
+  `000_harness_base.sql` + `005` + a local-only `agents_owner_read`
+  policy + `012` + `test_migration_012.sql`. It does not apply 006–011.
 
 ## The job boundary (V1)
 
