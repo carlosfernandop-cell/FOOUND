@@ -1423,8 +1423,13 @@ def test_r_first_edition_fail_closed():
     db.add_brief(aid, COMPLETE, compiled_config=None, readiness=None)
     jid = db.add_job(aid, "first_edition")
     _runner(db, []).run()
-    check("R no_compiled_config", db.jobs[jid]["error"] == "no_compiled_config")
-    check("R no edition on fail", db.editions == [])
+    # v1.2: no stored compiled_config is not a failure. The hunt compiles
+    # the active Brief.content itself; the stored column is a receipt.
+    check("R no stored config still hunts", db.jobs[jid]["status"] == "done"
+          and db.jobs[jid].get("error") in (None, ""), db.jobs[jid])
+    check("R fresh compile edition written", len(db.editions) == 1
+          and db.editions[0]["payload"]["authority"]["compiled_at_hunt"] is True)
+    db.editions.clear()
     aid2 = str(uuid.uuid4())
     compiled = hr.compile_from_content(INCOMPLETE)
     db.add_brief(aid2, INCOMPLETE, compiled_config=hr.persistable_compiled(compiled), readiness="not_ready")
@@ -1522,7 +1527,8 @@ def test_r_edition_html_contract():
     check("R payload brief_line", p["brief_line"] == "Adobe leads clear of the field.")
     check("R payload counts", p["counts"] == {"market_fetched": 3, "eligible": 3, "excluded": 0,
                                                "second_look": 0, "legacy_hits": 0, "read": 3,
-                                               "unread": 0, "seated": 2, "refused": 1}, p["counts"])
+                                               "unread": 0, "seated": 2, "refused": 1,
+                                               "model_reads_attempted": 3, "model_reads_failed": 0}, p["counts"])
     check("R fit_after not applied (deferred)", p["seats"][0]["fit"] == 82)
 
 
@@ -1636,6 +1642,260 @@ def test_r_h8_html_seat_shape_minimal():
 # ---------------------------------------------------------------------------
 # H9 · boundaries
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# A — v1.2: authority is compiled at hunt time; engine_reason; voice/clock
+# ---------------------------------------------------------------------------
+
+JUNK_STORED_CONFIG = {
+    # The retired compiler's shape: raw phrases, leaky include, cap 5.
+    "include": ["platforms", "consumer tech", "culture-shaping brands"],
+    "accepted_locations": ["nyc", "california", "major us hubs"],
+    "exclude_type": [],
+    "seat_cap": 5,
+    "readiness_reasons": [],
+}
+
+
+def test_a_stale_stored_config_is_never_authority():
+    """Stored compiled_config is a receipt. The hunt compiles Brief.content."""
+    raw = [
+        {"title": "Creative Director", "company": "Apple", "location": "Culver City",
+         "url": "https://apple/1"},
+        {"title": "Creative Director", "company": "Duolingo", "location": "New York, NY",
+         "url": "https://duo/1"},
+        {"title": "Solutions Architect, Platforms", "company": "Stripe", "location": "NYC",
+         "url": "https://stripe/1"},
+    ]
+    # (a) COMPLETE content + junk stored config + stored readiness "ready":
+    #     the junk must not shape eligibility.
+    db = MemoryDb()
+    aid = str(uuid.uuid4())
+    db.add_brief(aid, COMPLETE, compiled_config=dict(JUNK_STORED_CONFIG), readiness="ready", version=3)
+    db.add_job(aid, "first_edition")
+    seen_cfg = {}
+
+    def collector(cfg):
+        seen_cfg.update(cfg)
+        return raw
+
+    hr.Runner(db, collector=collector, today=FROZEN_TODAY, fetch_jd=lambda _u: "",
+              score=_score_by_title({}, default=(70, "w", "p")), profile=FIXTURE_PROFILE,
+              state_loader=lambda _a, _n: None).run()
+    fresh = hr.compile_from_content(COMPLETE)
+    p = db.editions[0]["payload"]
+    check("A collector saw fresh compilation, not junk", "platforms" not in (seen_cfg.get("include") or [])
+          and seen_cfg.get("families") == fresh["families"])
+    companies = sorted(s["company"] for s in p["seats"])
+    check("A Culver City + New York, NY eligible under fresh compile", companies == ["Apple", "Duolingo"], companies)
+    check("A platforms role never eligible", p["counts"]["eligible"] == 2 and p["refused"] == [])
+    a = p["authority"]
+    check("A authority fingerprints recorded", a["compiled_at_hunt"] is True
+          and a["brief_content_hash"] == hr.brief_content_hash(COMPLETE)
+          and a["compiled_config_hash"] == hr.compiled_config_hash(fresh)
+          and a["brief_version"] == 3 and a["stored_readiness"] == "ready" and a["hunt_readiness"] == "ready"
+          and len(a["brief_content_hash"]) == 64, a)
+    check("A compiled hash differs from junk", hr.compiled_config_hash(dict(JUNK_STORED_CONFIG)) != a["compiled_config_hash"])
+    check("A stored column untouched by the hunt", db.briefs[next(iter(db.briefs))]["compiled_config"] == JUNK_STORED_CONFIG)
+
+    # (b) INCOMPLETE content + a "ready"-looking stored config: fail closed on
+    #     the fresh compilation, before any adapter or model call.
+    db2 = MemoryDb()
+    aid2 = str(uuid.uuid4())
+    good = hr.persistable_compiled(hr.compile_from_content(COMPLETE))
+    db2.add_brief(aid2, INCOMPLETE, compiled_config=good, readiness="ready")
+    jid2 = db2.add_job(aid2, "first_edition")
+    calls = {"collector": 0, "score": 0}
+
+    def boom_collector(_c):
+        calls["collector"] += 1
+        return raw
+
+    def boom_score(*_a):
+        calls["score"] += 1
+        return (70, "w", "p")
+
+    hr.Runner(db2, collector=boom_collector, today=FROZEN_TODAY, fetch_jd=lambda _u: "",
+              score=boom_score, profile=FIXTURE_PROFILE, state_loader=lambda _a, _n: None).run()
+    check("A stored 'ready' cannot unblock incomplete content", db2.jobs[jid2]["error"] == "readiness_blocked")
+    check("A blocked before collection and judgment", calls == {"collector": 0, "score": 0} and db2.editions == [])
+
+    # (c) dry run: same rule, fixture carries the authority.
+    import tempfile, os
+    db3 = MemoryDb()
+    aid3 = str(uuid.uuid4())
+    db3.add_brief(aid3, COMPLETE, compiled_config=dict(JUNK_STORED_CONFIG), readiness="ready", version=2)
+    db3.agent_numbers[aid3] = 1
+    r = hr.Runner(db3, collector=lambda _c: raw, today=FROZEN_TODAY, fetch_jd=lambda _u: "",
+                  score=_score_by_title({}, default=(70, "w", "p")), profile=FIXTURE_PROFILE,
+                  state_loader=lambda _a, _n: None)
+    fd, path = tempfile.mkstemp(suffix=".json"); os.close(fd)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        r.dry_run(aid3, path)
+    fx = json.load(open(path, encoding="utf-8")); os.unlink(path)
+    check("A dry-run fixture compiled is fresh", "platforms" not in fx["compiled"]["include"]
+          and fx["compiled"]["families"] == fresh["families"])
+    check("A dry-run fixture authority + reason", fx["authority"]["compiled_at_hunt"] is True
+          and fx["authority"]["brief_version"] == 2 and fx["engine_reason"] == "ai")
+    check("A dry-run operator line fingerprints",
+          f"brief={hr.brief_content_hash(COMPLETE)[:8]}" in out.getvalue()
+          and f"compile={hr.compiled_config_hash(fresh)[:8]}" in out.getvalue()
+          and " v=2" in out.getvalue() and "reason=ai" in out.getvalue(), out.getvalue())
+    check("A dry-run wrote nothing", db3.editions == [] and db3.jobs == {}
+          and db3.briefs[next(iter(db3.briefs))]["compiled_config"] == JUNK_STORED_CONFIG)
+
+
+def test_a_engine_reason_enum():
+    raw = [{"title": "Creative Director A", "company": "A", "location": "Remote", "url": "https://x/a"},
+           {"title": "Creative Director B", "company": "B", "location": "Remote", "url": "https://x/b"}]
+    ja = hr._import_job_alerts_adapters()
+    check("A enum fixed", hr.ENGINE_REASONS == ("ai", "no_key", "authentication_failed",
+                                                "all_model_reads_failed", "no_candidate_context"))
+
+    def run(score, model_probe=None, key=None):
+        db = MemoryDb()
+        aid = _ready_agent(db, STRUCTURED, agent_no=7)
+        db.add_job(aid, "first_edition")
+        saved = ja.ANTHROPIC_KEY
+        if key is not None:
+            ja.ANTHROPIC_KEY = key
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                hr.Runner(db, collector=lambda _c: raw, today=FROZEN_TODAY, fetch_jd=lambda _u: "",
+                          score=score, profile=FIXTURE_PROFILE, state_loader=lambda _a, _n: None,
+                          model_probe=model_probe).run()
+        finally:
+            ja.ANTHROPIC_KEY = saved
+        p = db.editions[0]["payload"]
+        return p, out.getvalue()
+
+    p, line = run(_score_by_title({}, default=(70, "w", "p")))
+    check("A ai", p["engine"] == "ai" and p["engine_reason"] == "ai" and "reason=ai" in line)
+    check("A ai counters", p["counts"]["model_reads_attempted"] == 2 and p["counts"]["model_reads_failed"] == 0)
+
+    p, line = run(None, key="")
+    check("A no_key", p["engine"] == "heuristic" and p["engine_reason"] == "no_key" and "reason=no_key" in line)
+    check("A no_key attempted nothing", p["counts"]["model_reads_attempted"] == 0)
+
+    probes = []
+
+    def probe_auth():
+        probes.append(1)
+        return "authentication_failed"
+
+    p, line = run(lambda *_a: (None, None, None), model_probe=probe_auth)
+    check("A authentication_failed", p["engine"] == "heuristic" and p["engine_reason"] == "authentication_failed"
+          and "reason=authentication_failed" in line and len(probes) == 1)
+    check("A failed counters", p["counts"]["model_reads_attempted"] == 2 and p["counts"]["model_reads_failed"] == 2)
+
+    p, line = run(lambda *_a: (None, None, None), model_probe=lambda: "all_model_reads_failed")
+    check("A all_model_reads_failed", p["engine_reason"] == "all_model_reads_failed")
+
+    p, _ = run(lambda *_a: (None, None, None), model_probe=lambda: "not an enum value")
+    check("A probe answer outside enum collapses to all_model_reads_failed", p["engine_reason"] == "all_model_reads_failed")
+
+    # Partial failure is still an AI day.
+    flaky = {"n": 0}
+
+    def half(_a, _p, job, _jd):
+        flaky["n"] += 1
+        return (70, "w", "p") if flaky["n"] == 1 else (None, None, None)
+
+    p, _ = run(half)
+    check("A one success = ai", p["engine"] == "ai" and p["engine_reason"] == "ai"
+          and p["counts"]["model_reads_failed"] == 1)
+
+    # The probe is never consulted when judgment succeeded or no key exists.
+    called = []
+    run(_score_by_title({}, default=(70, "w", "p")), model_probe=lambda: called.append(1) or "ai")
+    run(None, model_probe=lambda: called.append(1) or "ai", key="")
+    check("A probe not called on ai / no_key days", called == [])
+
+    # No secrets or raw errors anywhere in the ledger.
+    blob = json.dumps(p)
+    check("A reason is enum only", all(v in hr.ENGINE_REASONS for v in [p["engine_reason"]])
+          and "Traceback" not in blob and "x-api-key" not in blob)
+
+
+def test_a_classify_model_failure_offline():
+    class JA: ANTHROPIC_KEY = ""
+    check("A classify no key", hr.classify_model_failure(JA()) == "no_key")
+
+    class R:
+        def __init__(self, code, msg=""):
+            self.status_code = code; self._m = msg
+        def json(self): return {"error": {"message": self._m}}
+
+    import requests
+    saved = requests.post
+    seen = {}
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        seen["url"] = url; seen["max_tokens"] = json["max_tokens"]
+        return fake_post.resp
+
+    requests.post = fake_post
+    try:
+        class JK: ANTHROPIC_KEY = "k"; CLAUDE_MODEL = "m"
+        for code, msg, want in ((401, "", "authentication_failed"), (403, "", "authentication_failed"),
+                                (400, "workspace header required", "authentication_failed"),
+                                (400, "invalid request", "all_model_reads_failed"),
+                                (500, "", "all_model_reads_failed"), (200, "", "all_model_reads_failed")):
+            fake_post.resp = R(code, msg)
+            check(f"A classify {code} {msg!r}", hr.classify_model_failure(JK()) == want)
+        check("A classify probe is minimal", seen["max_tokens"] == 1 and "api.anthropic.com" in seen["url"])
+
+        def raiser(*_a, **_k):
+            raise ConnectionError("down")
+
+        requests.post = raiser
+        check("A classify network error", hr.classify_model_failure(JK()) == "all_model_reads_failed")
+    finally:
+        requests.post = saved
+
+
+def test_a_voice_name_and_clock():
+    raw = [{"title": "Creative Director", "company": "Acme", "location": "Remote", "url": "https://x/1"}]
+    db = MemoryDb()
+    aid = _ready_agent(db, STRUCTURED, agent_no=1)   # №001 → base name "Carlos", Eastern clock
+    db.add_job(aid, "first_edition")
+    _runner(db, raw, score=_score_by_title({}, default=(70, "w", "p"))).run()
+    h = db.editions[0]["html"]
+    check("A greeting carries the agent's name", ", Carlos.</p>" in h and 'class="brief">Good ' in h, h[:400])
+    check("A old literal clock gone", "Compiled 8:00 AM ET" not in h)
+    import re
+    m = re.search(r"Compiled (\d{1,2}:\d{2} [AP]M E[DS]T)", h)
+    check("A colophon shows an actual Eastern time", m is not None, h[h.find("Compiled"):h.find("Compiled") + 40])
+
+    db2 = MemoryDb()
+    aid2 = _ready_agent(db2, STRUCTURED, agent_no=9)
+    db2.add_job(aid2, "first_edition")
+    _runner(db2, raw, score=_score_by_title({}, default=(70, "w", "p"))).run()
+    h2 = db2.editions[0]["html"]
+    check("A non-001 without a name greets plainly", re.search(r'class="brief">Good (morning|afternoon|evening)\.</p>', h2) is not None)
+    check("A non-001 clock is UTC", re.search(r"Compiled \d{1,2}:\d{2} [AP]M UTC", h2) is not None)
+
+    from datetime import datetime as _dt
+    t = _dt(2026, 9, 2, 17, 18, tzinfo=timezone.utc)
+    check("A clock helper ET", hr.compiled_clock(t, 1) == "1:18 PM EDT")
+    check("A clock helper UTC", hr.compiled_clock(t, 2) == "5:18 PM UTC")
+    check("A daypart follows local clock", hr._daypart(hr.local_now(t, 1).hour) == "afternoon"
+          and hr._daypart(hr.local_now(_dt(2026, 9, 2, 12, 30, tzinfo=timezone.utc), 1).hour) == "morning")
+
+
+def test_a_fingerprints_are_deterministic():
+    c1 = hr.brief_content_hash(COMPLETE)
+    c2 = hr.brief_content_hash(json.loads(json.dumps(COMPLETE)))
+    check("A brief hash stable across serialisation", c1 == c2 and len(c1) == 64)
+    check("A brief hash accepts JSON string", hr.brief_content_hash(json.dumps(COMPLETE)) == c1)
+    alt = dict(COMPLETE); alt["_note"] = "x"
+    check("A brief hash changes with content", hr.brief_content_hash(alt) != c1)
+    k1 = hr.compiled_config_hash(hr.compile_from_content(COMPLETE))
+    k2 = hr.compiled_config_hash(hr.compile_from_content(COMPLETE))
+    check("A compiled hash deterministic", k1 == k2)
+
 
 def test_h9_boundaries():
     src = open(hr.__file__, encoding="utf-8").read()

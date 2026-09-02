@@ -90,7 +90,6 @@ READINESS_ARCHITECTURE_NOTE = (
 
 NAMED_ERRORS = {
     "no_active_brief",
-    "no_compiled_config",
     "readiness_blocked",
     "compile_failed",
     "hunt_adapter_failed",
@@ -1345,6 +1344,8 @@ def build_payload(seats: list[dict], compiled: dict, engine_sha: str,
             "refused_shown": list(ledger.get("refused_shown") or []),
             "unread": list(ledger.get("unread") or []),
             "engine": ledger.get("engine") or "",
+            "engine_reason": ledger.get("engine_reason") or "",
+            "authority": dict(ledger.get("authority") or {}),
             "brief_line": ledger.get("brief_line") or "",
             "deep": ledger.get("deep"),
             "read_budget": ledger.get("read_budget"),
@@ -1573,12 +1574,80 @@ def _daypart(hour: int) -> str:
     return "morning" if hour < 12 else ("afternoon" if hour < 18 else "evening")
 
 
+def agent_timezone(agent_no: int | None) -> str:
+    """Move 1: №001 keeps the original edition's Eastern clock; everyone
+    else reads UTC until Move 2 carries a timezone per agent."""
+    return "America/New_York" if agent_no == 1 else "UTC"
+
+
+def local_now(now: datetime, agent_no: int | None) -> datetime:
+    try:
+        from zoneinfo import ZoneInfo
+        return now.astimezone(ZoneInfo(agent_timezone(agent_no)))
+    except Exception:
+        return now
+
+
+def compiled_clock(now: datetime, agent_no: int | None) -> str:
+    """Colophon 'Compiled …' — the actual run time in the agent's timezone."""
+    ln = local_now(now, agent_no)
+    return ln.strftime("%-I:%M %p ") + (ln.tzname() or "UTC")
+
+
+def brief_content_hash(content) -> str:
+    """Fingerprint of the authority the hunt compiled from (Brief.content)."""
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except json.JSONDecodeError:
+            content = {"_raw": content}
+    blob = json.dumps(content if content is not None else {}, sort_keys=True,
+                      separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+ENGINE_REASONS = ("ai", "no_key", "authentication_failed",
+                  "all_model_reads_failed", "no_candidate_context")
+
+
+def classify_model_failure(ja) -> str:
+    """After AI judgment has already failed: one minimal probe call to name
+    the class. Returns an ENGINE_REASONS value. Never logs the response."""
+    key = getattr(ja, "ANTHROPIC_KEY", "") or ""
+    if not key:
+        return "no_key"
+    try:
+        import requests
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": getattr(ja, "CLAUDE_MODEL", "claude-sonnet-5"),
+                  "max_tokens": 1, "messages": [{"role": "user", "content": "OK"}]},
+            timeout=30,
+        )
+        if r.status_code in (401, 403):
+            return "authentication_failed"
+        if r.status_code == 400:
+            # Identity-linked keys without a workspace header answer 400 here.
+            try:
+                msg = str((r.json().get("error") or {}).get("message") or "")
+            except Exception:
+                msg = ""
+            if "workspace" in msg.lower() or "authenticat" in msg.lower():
+                return "authentication_failed"
+        return "all_model_reads_failed"
+    except Exception:
+        return "all_model_reads_failed"
+
+
 def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
              compiled: dict, raw: list[dict], prior_payloads: list[dict],
              state, today: date, now: datetime, profile: str | None = None,
              fetch_jd=None, score=None, deep=None, brief_line_fn=None,
              name: str = "", edition_no: int | None = None,
-             sources: int | None = None, read_budget: int = PRIVATE_READ_BUDGET) -> dict:
+             sources: int | None = None, read_budget: int = PRIVATE_READ_BUDGET,
+             model_probe=None) -> dict:
     """Stages 2–11 of the Move 1 loop, pure with respect to the database.
 
     Returns {seats, html, payload, outcome, counts, engine}. Raises
@@ -1634,8 +1703,21 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
     key_fn = lambda j: j.get("role_key") or role_key(j)
 
     # 8. judgment: the original loop, private budget -------------------------
-    with _judgment_hooks(ja, fetch_jd=fetch_jd, score=score, profile=ctx_profile,
+    model_reads = {"attempted": 0, "failed": 0}
+    real_score = score if score is not None else getattr(ja, "score_fit")
+
+    def counted_score(a, p, job, jd):
+        model_reads["attempted"] += 1
+        out = real_score(a, p, job, jd)
+        if not out or out[0] is None:
+            model_reads["failed"] += 1
+        return out
+
+    had_key = bool(getattr(ja, "ANTHROPIC_KEY", ""))
+    with _judgment_hooks(ja, fetch_jd=fetch_jd, score=counted_score, profile=ctx_profile,
                          deep=deep, brief=brief_line_fn):
+        if score is None and not had_key:
+            ja.ANTHROPIC_KEY = ""   # keep the live no-key path honest under the hook
         with _silent_stdio():
             ranked_all, used_ai = ja.rank_with_fit(
                 agent, eligible, new_keys, second_look,
@@ -1676,8 +1758,23 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
     seats = assign_editorial_labels(ranked)
     n_read = sum(1 for j in ranked_all if j.get("fit") is not None) if used_ai else len(ranked_all)
 
+    # engine reason (enum only) ----------------------------------------------
+    if used_ai:
+        engine_reason = "ai"
+    elif not had_key and score is None:
+        engine_reason = "no_key"
+    elif model_reads["attempted"] and model_reads["failed"] >= model_reads["attempted"]:
+        probe = model_probe if model_probe is not None else classify_model_failure
+        engine_reason = probe(ja) if model_probe is None else model_probe()
+        if engine_reason not in ENGINE_REASONS or engine_reason == "ai":
+            engine_reason = "all_model_reads_failed"
+    else:
+        engine_reason = "all_model_reads_failed"
+
     # voice -------------------------------------------------------------------
-    greeting = f"Good {_daypart(now.hour)}, {name}." if name else f"Good {_daypart(now.hour)}."
+    voice_name = name or (getattr(agent, "name", "") or "")
+    daypart = _daypart(local_now(now, agent_no).hour)
+    greeting = f"Good {daypart}, {voice_name}." if voice_name else f"Good {daypart}."
     cascade = [f"I searched {len(raw or []):,} jobs overnight."]
     if n == 0:
         cascade.append("Nothing cleared the bar today.")
@@ -1701,6 +1798,8 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
         "unread": len(unread),
         "seated": n,
         "refused": len(rejects),
+        "model_reads_attempted": model_reads["attempted"],
+        "model_reads_failed": model_reads["failed"],
     }
     ledger = {
         "counts": counts,
@@ -1708,6 +1807,17 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
         "refused_shown": [r["role_key"] for r in shown],
         "unread": unread,
         "engine": "ai" if used_ai else "heuristic",
+        "engine_reason": engine_reason,
+        "authority": {
+            "brief_id": str(brief.get("id") or ""),
+            "brief_version": brief.get("version"),
+            "brief_content_hash": brief_content_hash(brief.get("content")),
+            "compiled_config_hash": compiled_config_hash(compiled),
+            "compiled_at_hunt": True,
+            "stored_readiness": brief.get("readiness"),
+            "hunt_readiness": readiness_of(compiled),
+            "compiler_engine_sha": current_engine_sha(),
+        },
         "brief_line": brief_line or "",
         "deep": deep_out,
         "read_budget": read_budget,
@@ -1723,7 +1833,7 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
         "colophon": {
             "edition": f"{edition_no:03d}" if edition_no else "",
             "datelong": today.strftime("%A, %B %d, %Y").replace(" 0", " "),
-            "compiled": now.strftime("%-I:%M %p UTC") if agent_no != 1 else "8:00 AM ET",
+            "compiled": compiled_clock(now, agent_no),
             "sources": sources or 0,
         },
     }
@@ -1736,18 +1846,29 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
         "outcome": "empty" if not seats else "seats",
         "counts": counts,
         "engine": ledger["engine"],
+        "engine_reason": engine_reason,
+        "authority": ledger["authority"],
     }
 
 
-def operator_line(agent_no, counts: dict, engine: str, outcome: str) -> str:
-    """One public-safe line: numbers and enums only."""
+def operator_line(agent_no, counts: dict, engine: str, outcome: str,
+                  engine_reason: str = "", authority: dict | None = None) -> str:
+    """One public-safe line: numbers, enums and hashes only."""
     c = counts or {}
+    a = authority or {}
+    tail = ""
+    if engine_reason:
+        tail += f" reason={engine_reason}"
+    if a:
+        tail += (f" brief={str(a.get('brief_content_hash') or '')[:8]}"
+                 f" compile={str(a.get('compiled_config_hash') or '')[:8]}"
+                 f" v={a.get('brief_version')}")
     return (
         f"[operator] agent=№{int(agent_no or 0):03d} "
         f"market={c.get('market_fetched', 0)} eligible={c.get('eligible', 0)} "
         f"excluded={c.get('excluded', 0)} read={c.get('read', 0)} "
         f"unread={c.get('unread', 0)} seated={c.get('seated', 0)} "
-        f"refused={c.get('refused', 0)} engine={engine} outcome={outcome}"
+        f"refused={c.get('refused', 0)} engine={engine} outcome={outcome}{tail}"
     )
 
 
@@ -1995,7 +2116,8 @@ class Runner:
     def __init__(self, db: HuntDb, collector: Collector | None = None,
                  today: date | None = None, fetch_jd=None, score=None,
                  profile: str | None = None, deep=None, brief_line_fn=None,
-                 state_loader=None, read_budget: int = PRIVATE_READ_BUDGET):
+                 state_loader=None, read_budget: int = PRIVATE_READ_BUDGET,
+                 model_probe=None):
         self.db = db
         # Default collector is live adapters. Tests inject a local collector.
         self.collector = collector
@@ -2009,6 +2131,8 @@ class Runner:
         # Verdict state loader (tests inject). Live path: foound_state.
         self.state_loader = state_loader
         self.read_budget = read_budget
+        # Model-failure classifier (tests inject). Live path: one probe call.
+        self.model_probe = model_probe
 
     def run(self, limit: int = MAX_JOBS_PER_RUN) -> list[RunReport]:
         reports = []
@@ -2100,6 +2224,18 @@ class Runner:
         return report
 
 
+    @staticmethod
+    def _compile_for_hunt(brief: dict) -> dict:
+        """v1.2: the hunt's authority is the active Brief.content, compiled
+        now, every run. The stored `compiled_config` is a receipt written by
+        the compile/readiness jobs; it is never an input to eligibility.
+        Readiness is judged on this fresh compilation, not the stored column.
+        """
+        compiled = compile_from_content(brief.get("content") or {})
+        if readiness_of(compiled) != "ready":
+            raise HuntError("readiness_blocked")
+        return compiled
+
     def _first_edition(self, job: dict, report: RunReport) -> RunReport:
         existing = self.db.editions_for_day(job["agent_id"], self.today)
         if existing:
@@ -2111,13 +2247,7 @@ class Runner:
             return report
 
         brief = self._load_active(job["agent_id"])
-        compiled = brief.get("compiled_config")
-        if not compiled:
-            raise HuntError("no_compiled_config")
-        readiness = brief.get("readiness")
-        if readiness != "ready":
-            raise HuntError("readiness_blocked")
-
+        compiled = self._compile_for_hunt(brief)
         result = self._hunt(job["agent_id"], brief, compiled, job_id=job["id"])
         version = brief.get("version")
         job_payload = job.get("payload") or {}
@@ -2146,7 +2276,9 @@ class Runner:
         log.info("first_edition job=%s outcome=%s seats=%d", job["id"],
                  result["outcome"], len(result["seats"]))
         print(operator_line(result.get("agent_no"), result["counts"],
-                            result["engine"], result["outcome"]))
+                            result["engine"], result["outcome"],
+                            engine_reason=result.get("engine_reason", ""),
+                            authority=result.get("authority")))
         report.action = "edition"
         report.seats = len(result["seats"])
         report.detail["outcome"] = result["outcome"]
@@ -2189,7 +2321,7 @@ class Runner:
             profile=self.profile, fetch_jd=self.fetch_jd, score=self.score,
             deep=self.deep, brief_line_fn=self.brief_line_fn,
             edition_no=edition_no, sources=sources,
-            read_budget=self.read_budget,
+            read_budget=self.read_budget, model_probe=self.model_probe,
         )
         if "DUMMY ROLE" in result["html"]:
             raise HuntError("edition_persist_failed")
@@ -2204,12 +2336,12 @@ class Runner:
         `fixture_path` — a local file outside the repo — for the operator only.
         """
         brief = self._load_active(agent_id)
-        compiled = brief.get("compiled_config") or compile_from_content(brief.get("content") or {})
-        if readiness_of(compiled) != "ready" and brief.get("readiness") != "ready":
-            raise HuntError("readiness_blocked")
+        compiled = self._compile_for_hunt(brief)
         result = self._hunt(agent_id, brief, compiled, job_id="dry-run", dry_run=True)
         line = operator_line(result.get("agent_no"), result["counts"],
-                             result["engine"], result["outcome"])
+                             result["engine"], result["outcome"],
+                             engine_reason=result.get("engine_reason", ""),
+                             authority=result.get("authority"))
         print(line)
         if fixture_path:
             rows = []
@@ -2230,6 +2362,8 @@ class Runner:
                     "date": self.today.isoformat(),
                     "counts": result["counts"],
                     "engine": result["engine"],
+                    "engine_reason": result.get("engine_reason"),
+                    "authority": result.get("authority"),
                     "compiled": {k: compiled.get(k) for k in (
                         "families", "include", "location_phrases",
                         "accepted_locations", "exclude_type",
