@@ -1,41 +1,38 @@
-"""FOOUND Hunt Runner v1 — first-real-hunt vertical slice.
+"""FOOUND Hunt Runner — Move 1: ONE JUDGE.
 
-Path: active Brief → compile → readiness → commission recovery →
-one manual first_edition → one private editions row.
-
-This module claims compile_brief, refresh_readiness, and first_edition.
-It does not claim synthesize jobs (see synthesis_runner.py).
-
-Contract:
-  · Working Brief is the only hunt authority. Compile only Brief.content.
+Contract (ratified 2026-09-02, plan v1.1):
+  · The Working Brief defines the eligible universe. The original
+    job_alerts judgment loop decides quality inside it. One engine writes
+    one edition. Nothing else ranks.
+  · Brief → AgentConfig: role families through ROLE_SYNONYMS (broad
+    substring phrases, as the original include list was written);
+    places through LOCATION_GAZETTEER (ordinary meaning, engine data);
+    exclusions = Brief exclusions ∪ engine defaults; priority houses and
+    seat cap from the Brief only. No concept mining. CONTEXT / MANDATE do
+    not exist as deterministic objects.
+  · Eligibility = job_alerts.passes_title + passes_location on that
+    AgentConfig, dedup on role_key. Nothing else gates.
+  · The person's PASS / APPLIED verdicts leave the universe before judgment
+    (foound_state). RECONSIDER forces a full read. Identity is role_key;
+    legacy title|company keys are a read-only compatibility fallback.
+  · Judgment = job_alerts.rank_with_fit with the private read budget, then
+    job_alerts.seat_edition (floor 60 · cap · lead · refusals), deep look on
+    the lead, write_brief for the statline, why_now_text per seat.
+  · A client with no Candidate Context is refused with no_candidate_context
+    before any model call. №001's interim context is profile.md.
   · Confirmed Memory is never search authority. Do not read memory.
-  · Never write agent_config. Never write Candidate.
-  · Never call the public Shortlist publisher (publish_shortlist / docs /
-    GitHub Pages). publish_public is always false here.
-  · Readiness is temporary architecture: briefs.readiness = ready|not_ready;
-    BLOCKED reasons live in compiled_config.readiness_reasons. Never write
-    'limited'. Never infer READY from agents.state = at_work.
-  · v1 may see subjects titled THE MOVE / ROLE SPACE / WHERE on №001's
-    Brief. Those labels are not permanent engine architecture.
-  · Zero seats is SUCCESS: an honest empty edition. jobs.error is technical
-    failure only.
-  · v1 market memory is personal: this agent's prior private editions.payload
-    only. Do not use public.market_seen.
+  · Never write agent_config. Never write Candidate. Never publish public.
+  · Zero eligible seats is SUCCESS: an honest empty edition.
+  · v1 market memory is personal: this agent's prior private
+    editions.payload only. Do not use public.market_seen.
+  · Isolation: C1/C2 are met by this module's compilation and read budget
+    only — never by changing MAX_CANDIDATES_TO_SCORE, FOOUND_FLOOR, the cap,
+    or any public job_alerts behaviour.
 
 Privacy: the engine repo is PUBLIC and GitHub Actions logs are public.
 Logging is ids / counts / enums / timings ONLY. Never Brief copy, seat
-titles, URLs, prompts, or model output.
-
-Editorial PORT (final seats only): after judge_seats + attach_market_fields,
-restore posted_at, call existing job_alerts.fetch_jd_text / score_fit with
-Candidate profile.md as personal context (not hunt authority), and assemble
-why-now via job_alerts.why_now_text (Shortlist _argument). Persist the
-score_fit integer as seat `fit` (do not discard it). After fit is written
-(or when seats already have fit), order those final seats by fit
-descending (stable on ties) and assign I'd start with / Unusually strong
-/ Worth your attention from that order. Do not call rank_with_fit, do
-not change judge_seats, do not re-sort the raw market, do not rewrite
-the editorial prompt.
+titles, URLs, prompts, or model output. Adapter and scorer stdout is
+swallowed. The refusal ledger lives only in editions.payload.
 """
 
 from __future__ import annotations
@@ -55,15 +52,27 @@ from types import SimpleNamespace
 from typing import Callable, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-# One-shot enrich must never rewrite the first written hunt edition.
-PROTECTED_EDITION_PREFIXES = ("1c0a8068",)
-
 log = logging.getLogger("hunt_runner")
 
-DEFAULT_SEAT_CAP = 5
+# Seat cap: the original Shortlist's eleven, unless the Brief says otherwise.
+DEFAULT_SEAT_CAP = 11
 MAX_SEAT_CAP = 20
 HUNT_JOB_TYPES = ("compile_brief", "refresh_readiness", "first_edition")
 MAX_JOBS_PER_RUN = 10
+
+# Move 1 read budget for the private hunt. Fixed for Stage 1 by contract:
+# do not raise it to satisfy C2 — report the contract result instead.
+# The public Shortlist keeps job_alerts.MAX_CANDIDATES_TO_SCORE untouched.
+PRIVATE_READ_BUDGET = 40
+
+# Engine-default exclusions (not client data): the original Shortlist's
+# exclude_type, applied to every agent on top of the Brief's own.
+ENGINE_DEFAULT_EXCLUDES = ("intern", "internship", "part-time", "part time", "contractor")
+
+# Engine-default market queries for the two query-driven adapters
+# (Workday, Netflix). Broad on purpose; the include list does the precise
+# filtering afterwards — exactly the original's arrangement.
+ENGINE_DEFAULT_SEARCH_QUERIES = ("creative director", "brand", "creative lead")
 
 # Temporary v1 kind hints — NOT permanent subject architecture.
 # Any non-skipped subject title may authorize hunt; these only bucket text.
@@ -86,6 +95,8 @@ NAMED_ERRORS = {
     "compile_failed",
     "hunt_adapter_failed",
     "edition_persist_failed",
+    "no_candidate_context",
+    "no_role_families",
 }
 
 
@@ -97,6 +108,147 @@ class HuntError(Exception):
             name = "compile_failed"
         super().__init__(name)
         self.name = name
+
+
+# ---------------------------------------------------------------------------
+# ROLE_SYNONYMS — engine data. A Brief family expands to the substring
+# phrases the original include list used. Matching is job_alerts.passes_title
+# (lowercase substring), so "creative director" already covers Senior /
+# Group / Executive / Associate / Technical CD.
+# ---------------------------------------------------------------------------
+
+ROLE_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "cd": ("creative director", "director of creative", "director, creative"),
+    "creative director": ("creative director", "director of creative", "director, creative"),
+    "ecd": ("executive creative",),
+    "executive cd": ("executive creative",),
+    "executive creative director": ("executive creative",),
+    "gcd": ("group creative",),
+    "group cd": ("group creative",),
+    "group creative director": ("group creative",),
+    "head of creative": ("head of creative", "creative lead"),
+    "head of brand": ("head of brand", "brand director", "director of brand",
+                      "director, brand", "brand lead"),
+    "vp brand/creative": ("vp of creative", "vp, creative", "vp creative",
+                          "vp of brand", "vp, brand", "vp brand"),
+    "vp brand": ("vp of brand", "vp, brand", "vp brand"),
+    "vp of brand": ("vp of brand", "vp, brand", "vp brand"),
+    "vp creative": ("vp of creative", "vp, creative", "vp creative"),
+    "vp of creative": ("vp of creative", "vp, creative", "vp creative"),
+    "brand marketing director": ("brand marketing director",),
+    "design director": ("design director",),
+    "chief creative officer": ("chief creative", "cco"),
+    "cco": ("chief creative", "cco"),
+    "chief brand officer": ("chief brand",),
+    "cbo": ("chief brand",),
+}
+
+
+def expand_role_family(family: str) -> list[str]:
+    """One Brief family → its include phrases. Unknown titles map to themselves."""
+    f = _norm_phrase(family)
+    if not f:
+        return []
+    return list(ROLE_SYNONYMS.get(f, (f,)))
+
+
+# ---------------------------------------------------------------------------
+# LOCATION_GAZETTEER — engine data, organised by ordinary meaning.
+# Design test for every row: does the expansion reflect what the phrase
+# means for ANY client? Never "does it recover one client's missing jobs".
+# Expansions are unions. Matching stays job_alerts.passes_location
+# (word-boundary regex); empty location passes; "N locations" passes.
+# ---------------------------------------------------------------------------
+
+_GAZ_NEW_YORK = ("new york", "nyc", "brooklyn", "manhattan", "new york city")
+_GAZ_LA = ("los angeles", "culver city", "santa monica", "burbank", "venice",
+           "playa vista", "el segundo", "pasadena")
+_GAZ_BAY = ("san francisco", "bay area", "oakland", "mountain view", "menlo park",
+            "palo alto", "cupertino", "sunnyvale", "san jose", "santa clara",
+            "los gatos", "redwood city", "san mateo")
+_GAZ_CALIFORNIA = _GAZ_LA + _GAZ_BAY + ("california", "san diego", "sacramento")
+_GAZ_US_HUBS = _GAZ_NEW_YORK + _GAZ_LA + _GAZ_BAY + (
+    "chicago", "seattle", "bellevue", "redmond", "boston", "cambridge", "austin",
+    "miami", "washington", "denver", "boulder", "atlanta", "portland", "pittsburgh",
+    "philadelphia", "dallas", "houston", "minneapolis", "nashville", "phoenix",
+    "san diego",
+)
+_GAZ_US = ("united states", "usa", "us", "north america") + _GAZ_US_HUBS
+_GAZ_REMOTE = ("remote", "work from home", "wfh", "distributed")
+_GAZ_CANADA = ("canada", "toronto", "montreal", "vancouver", "ottawa", "calgary")
+_GAZ_UK = ("london", "united kingdom", "uk", "england", "manchester", "edinburgh",
+           "bristol", "scotland", "wales")
+_GAZ_FRANCE = ("paris", "france", "lyon")
+_GAZ_EU_CITIES = ("london", "paris", "berlin", "amsterdam", "dublin", "madrid",
+                  "lisbon", "rome", "milan", "stockholm", "copenhagen", "oslo",
+                  "helsinki", "zurich", "vienna", "brussels", "warsaw", "prague",
+                  "athens")
+_GAZ_EU_COUNTRIES = ("europe", "emea", "united kingdom", "uk", "england", "ireland",
+                     "france", "germany", "netherlands", "spain", "portugal", "italy",
+                     "switzerland", "sweden", "denmark", "norway", "finland",
+                     "austria", "belgium", "poland", "czech republic", "greece")
+_GAZ_EUROPE = _GAZ_EU_CITIES + _GAZ_EU_COUNTRIES
+
+# phrase → (meaning, tokens). A phrase absent here maps to itself and is
+# reported as unmapped_location_phrase (non-blocking). Grow by adding rows.
+LOCATION_GAZETTEER: dict[str, tuple[str, tuple[str, ...]]] = {}
+
+
+def _gaz(meaning: str, tokens: tuple[str, ...], *phrases: str) -> None:
+    for p in phrases:
+        LOCATION_GAZETTEER[p] = (meaning, tokens)
+
+
+_gaz("the New York metro", _GAZ_NEW_YORK,
+     "nyc", "new york", "new york city", "manhattan", "brooklyn", "new york, ny")
+_gaz("the Los Angeles metro", _GAZ_LA,
+     "los angeles", "la", "socal", "southern california")
+_gaz("the Bay Area", _GAZ_BAY,
+     "san francisco", "sf", "bay area", "silicon valley")
+_gaz("the state of California", _GAZ_CALIFORNIA,
+     "california", "ca")
+_gaz("the largest US job markets", _GAZ_US_HUBS,
+     "major us hubs", "us hubs", "major cities", "big us cities", "major us cities",
+     "us major hubs")
+_gaz("the United States", _GAZ_US,
+     "united states", "usa", "us", "anywhere in the us", "north america", "u.s.",
+     "u.s.a.")
+_gaz("remote work", _GAZ_REMOTE,
+     "remote", "work from home", "wfh", "distributed")
+_gaz("remote work in the United States (a posting located simply 'US' is this)",
+     _GAZ_REMOTE + ("united states", "usa", "us"),
+     "remote us", "remote (us)", "us remote", "remote-us", "remote, us",
+     "remote usa", "remote in the us")
+_gaz("Toronto", ("toronto",), "toronto")
+_gaz("Montreal", ("montreal",), "montreal")
+_gaz("Vancouver", ("vancouver",), "vancouver")
+_gaz("Canada", _GAZ_CANADA, "canada")
+_gaz("London", ("london",), "london")
+_gaz("the United Kingdom", _GAZ_UK,
+     "uk", "united kingdom", "england", "britain", "great britain")
+_gaz("Paris", ("paris",), "paris")
+_gaz("France", _GAZ_FRANCE, "france")
+for _city in ("berlin", "amsterdam", "dublin", "madrid", "barcelona", "lisbon",
+              "milan", "rome", "stockholm", "copenhagen", "oslo", "helsinki",
+              "zurich", "geneva", "vienna", "brussels", "munich", "warsaw",
+              "prague", "athens"):
+    _gaz(_city.title(), (_city,), _city)
+_gaz("Europe's capital and major cities", _GAZ_EUROPE,
+     "major european capitals", "european capitals", "europe", "eu", "emea",
+     "major european cities", "the major european capitals")
+
+
+def expand_location_phrase(phrase: str) -> tuple[list[str], bool]:
+    """One Brief place phrase → gazetteer tokens. (tokens, mapped)."""
+    p = _norm_phrase(phrase).strip(" .")
+    p = re.sub(r"^(?:and|or|plus|also)\s+", "", p)
+    p = re.sub(r"^the\s+", "", p)
+    if not p:
+        return [], True
+    hit = LOCATION_GAZETTEER.get(p) or LOCATION_GAZETTEER.get("the " + p)
+    if hit:
+        return list(hit[1]), True
+    return [p], False
 
 
 # ---------------------------------------------------------------------------
@@ -295,24 +447,6 @@ def _is_prose_scrap(phrase: str) -> bool:
     return False
 
 
-def _normalize_concept(raw: str) -> str | None:
-    """Keep a coherent hunt concept; drop scraps. Do not invent terms."""
-    p = _norm_phrase(raw)
-    if not p:
-        return None
-    if _CONJ_LEAD.match(p):
-        p = _CONJ_LEAD.sub("", p, count=1).strip()
-    if not p or not _usable_term(p):
-        return None
-    if _looks_like_role_title(p) or _looks_like_role_title(_as_family(p)):
-        return None
-    if _is_prose_scrap(p):
-        return None
-    if not re.search(r"[a-z]", p):
-        return None
-    return p
-
-
 def _looks_like_role_title(phrase: str) -> bool:
     """True for a whole seat/role title. Rejects ambition clauses and junk."""
     p = _norm_phrase(phrase)
@@ -458,20 +592,6 @@ def _extract_role_families(text: str) -> list[str]:
     return found
 
 
-def _extract_concepts(text: str) -> list[str]:
-    found: list[str] = []
-    candidates: list[str] = []
-    for item in _list_items(text):
-        candidates.append(item)
-        if "(" in item:
-            pre = item.split("(", 1)[0].strip()
-            if pre:
-                candidates.append(pre)
-    for raw in candidates:
-        v = _normalize_concept(raw)
-        if v:
-            _add_unique(found, v)
-    return found
 
 
 def _extract_locations(text: str) -> list[str]:
@@ -486,7 +606,6 @@ def _extract_locations(text: str) -> list[str]:
             _add_unique(found, v)
     return found
 
-
 def _collect_structured(node, into: dict) -> None:
     if not isinstance(node, dict):
         return
@@ -495,6 +614,15 @@ def _collect_structured(node, into: dict) -> None:
             for item in _as_str_list(node.get(key)):
                 if item not in into[key]:
                     into[key].append(item)
+    # Priority houses keep their casing: they are matched against adapter
+    # labels (job_alerts SCRAPERS) at AgentConfig time.
+    pri = node.get("priority_companies")
+    if isinstance(pri, str):
+        pri = [pri]
+    if isinstance(pri, (list, tuple)):
+        for item in pri:
+            if isinstance(item, str) and item.strip() and item.strip() not in into["priority_companies"]:
+                into["priority_companies"].append(item.strip())
     cap = node.get("seat_cap")
     if isinstance(cap, int) and 1 <= cap <= MAX_SEAT_CAP:
         into["seat_cap"] = cap
@@ -561,20 +689,25 @@ def extract_subjects(content: dict) -> list[dict]:
             add({"title": str(key), "lines": val})
     return found
 
-
 def compile_from_content(content, compiled_at: str | None = None,
                          engine_sha: str | None = None) -> dict:
-    """Derive compiled_config from Brief.content only.
+    """Derive compiled_config from Brief.content only (Move 1).
 
-    Role-family titles are extracted as whole seat names. search_queries is
-    that family set (usable market queries), never ambition prose.
-    include holds role families plus coherent hunt concepts only —
-    no conjunction-led scraps or residual sentence tails.
-    accepted_locations stay geography.
-    Move-kind text is intent: only exact seat titles found there authorize.
+    Structured keys win (search_queries / include / exclude_type /
+    accepted_locations / priority_companies / seat_cap). Prose subjects
+    contribute TITLES (role families) and PLACES only. No concept mining:
+    CONTEXT and MANDATE are the model's job, from the JD and the
+    Candidate Context, never a substring bag.
 
-    READY iff the Brief authorized executable hunt input (role families and
-    accepted locations). Otherwise not_ready with reasons. Never 'limited'.
+    families      = Brief role families as written (for the receipt)
+    include       = families expanded through ROLE_SYNONYMS (substring gate)
+    location_phrases = Brief places as written
+    accepted_locations = places expanded through LOCATION_GAZETTEER
+    exclude_type  = Brief exclusions ∪ ENGINE_DEFAULT_EXCLUDES
+    search_queries = engine default market queries (Workday / Netflix)
+    priority_companies = structured only
+
+    READY iff ≥1 include phrase and ≥1 accepted location. Never 'limited'.
     """
     if isinstance(content, str):
         try:
@@ -589,6 +722,7 @@ def compile_from_content(content, compiled_at: str | None = None,
         "exclude_type": [],
         "accepted_locations": [],
         "search_queries": [],
+        "priority_companies": [],
         "seat_cap": DEFAULT_SEAT_CAP,
     }
     _collect_structured(content, bags)
@@ -600,12 +734,12 @@ def compile_from_content(content, compiled_at: str | None = None,
         fam = _as_family(item)
         if _looks_like_role_title(item) or _looks_like_role_title(fam):
             _add_unique(families, fam)
-    bags["include"] = [
-        x for x in bags["include"]
-        if _norm_phrase(x) != "cd" and not _is_prose_scrap(x)
-    ]
+        elif item and not _is_prose_scrap(item) and _norm_phrase(item) != "cd":
+            # A structured include phrase that is not a recognisable title is
+            # still an authorized substring (the Brief said so explicitly).
+            _add_unique(families, _norm_phrase(item))
 
-    concepts: list[str] = []
+    location_phrases: list[str] = list(bags["accepted_locations"])
     subjects_used: list[str] = []
     for sub in extract_subjects(content):
         kind = _kind_of_subject(sub)
@@ -615,54 +749,72 @@ def compile_from_content(content, compiled_at: str | None = None,
         contributed = False
         if kind == "place":
             for loc in _extract_locations(sub["text"]):
-                if _add_unique(bags["accepted_locations"], loc):
+                if _add_unique(location_phrases, loc):
                     contributed = True
         else:
             for fam in _extract_role_families(sub["text"]):
                 if _add_unique(families, fam):
                     contributed = True
-            if kind != "move":
-                for concept in _extract_concepts(sub["text"]):
-                    if concept in families:
-                        continue
-                    if _add_unique(concepts, concept):
-                        contributed = True
         if sub["title"] and (contributed or sub["text"] or kind in ("role", "place", "move")):
             for label in (sub.get("context_title"), sub["title"]):
                 if label and label not in subjects_used:
                     subjects_used.append(label)
+    for loc in bags["accepted_locations"]:
+        _add_unique(location_phrases, loc)
 
+    include: list[str] = []
     for fam in families:
-        _add_unique(bags["include"], fam)
-    for concept in concepts:
-        _add_unique(bags["include"], concept)
+        for phrase in expand_role_family(fam):
+            _add_unique(include, phrase)
 
-    bags["search_queries"] = list(families)
+    accepted: list[str] = []
+    unmapped: list[str] = []
+    for phrase in location_phrases:
+        tokens, mapped = expand_location_phrase(phrase)
+        for t in tokens:
+            _add_unique(accepted, t)
+        if not mapped:
+            _add_unique(unmapped, _norm_phrase(phrase))
+
+    exclude: list[str] = []
+    for x in list(bags["exclude_type"]) + list(ENGINE_DEFAULT_EXCLUDES):
+        _add_unique(exclude, x)
+
+    priority: list[str] = []
+    for p in bags["priority_companies"]:
+        if isinstance(p, str) and p.strip() and p.strip() not in priority:
+            priority.append(p.strip())
 
     reasons: list[str] = []
-    has_families = bool(bags["search_queries"])
-    has_locs = bool(bags["accepted_locations"])
-    if not has_families and not has_locs and not bags["include"]:
+    has_families = bool(include)
+    has_locs = bool(accepted)
+    if not has_families and not has_locs:
         reasons.append("no_usable_hunt_authority")
     if not has_families:
-        reasons.append("no_include_terms")
+        reasons.append("no_role_families")
     if not has_locs:
         reasons.append("no_accepted_locations")
+    for u in unmapped:
+        reasons.append(f"unmapped_location_phrase:{u}")
 
     executable = has_families and has_locs
     readiness = "ready" if executable else "not_ready"
     if executable:
-        reasons = []
+        # Unmapped phrases are informational only; they never block.
+        reasons = [r for r in reasons if r.startswith("unmapped_location_phrase:")]
 
     compiled_at = compiled_at or datetime.now(timezone.utc).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
     cfg = {
         "subjects_used": subjects_used,
-        "include": bags["include"],
-        "exclude_type": bags["exclude_type"],
-        "accepted_locations": bags["accepted_locations"],
-        "search_queries": bags["search_queries"],
+        "families": families,
+        "include": include,
+        "exclude_type": exclude,
+        "location_phrases": location_phrases,
+        "accepted_locations": accepted,
+        "search_queries": list(ENGINE_DEFAULT_SEARCH_QUERIES),
+        "priority_companies": priority,
         "seat_cap": bags["seat_cap"],
         "compiled_at": compiled_at,
         "engine_sha": engine_sha or current_engine_sha(),
@@ -676,7 +828,7 @@ def compile_from_content(content, compiled_at: str | None = None,
 def readiness_of(compiled: dict) -> str:
     if compiled.get("_readiness") in ("ready", "not_ready"):
         return compiled["_readiness"]
-    if compiled.get("search_queries") and compiled.get("accepted_locations"):
+    if compiled.get("include") and compiled.get("accepted_locations"):
         return "ready"
     return "not_ready"
 
@@ -687,14 +839,15 @@ def persistable_compiled(compiled: dict) -> dict:
 
 def compiled_config_hash(compiled: dict) -> str:
     body = {
-        k: compiled.get(k)
-        for k in (
-            "subjects_used", "include", "exclude_type",
-            "accepted_locations", "search_queries", "seat_cap",
-        )
+        "families": compiled.get("families") or [],
+        "include": compiled.get("include") or [],
+        "exclude_type": compiled.get("exclude_type") or [],
+        "accepted_locations": compiled.get("accepted_locations") or [],
+        "priority_companies": compiled.get("priority_companies") or [],
+        "seat_cap": compiled.get("seat_cap"),
     }
-    blob = json.dumps(body, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+    raw = json.dumps(body, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def current_engine_sha() -> str:
@@ -834,54 +987,6 @@ def _fallback_role_key(title: str, company: str, location: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Eligibility gates (not judgment). Local copies of job_alerts.passes_*
-# so tests never import job_alerts.py (that module requires publisher secrets).
-# ---------------------------------------------------------------------------
-
-
-def role_families(compiled: dict) -> list[str]:
-    """ROLE bag: seat titles from compiled search_queries[], never include[].
-
-    include[] mixes families with Craft CONTEXT and THE MOVE intent.
-    A title earns the seat only by matching a family. Hand-built test
-    configs that omit search_queries still work when every include item
-    is itself a family; Craft leftovers never become families here.
-    """
-    queries = [k for k in (compiled.get("search_queries") or []) if k]
-    if queries:
-        return list(queries)
-    include = [k for k in (compiled.get("include") or []) if k]
-    return [k for k in include if _looks_like_role_title(k) or _looks_like_role_title(_as_family(k))]
-
-
-def _family_in_title(family: str, title_l: str) -> bool:
-    """Substring match of a seat family. Whole-phrase only — not tokens."""
-    return bool(family) and family in title_l
-
-
-def passes_title(compiled: dict, title: str) -> bool:
-    """ROLE gate. Fail ROLE = out. CONTEXT/MANDATE cannot rescue."""
-    t = (title or "").lower()
-    families = role_families(compiled)
-    exclude = compiled.get("exclude_type") or []
-    if not families or not any(_family_in_title(k, t) for k in families):
-        return False
-    if any(k in t for k in exclude):
-        return False
-    return True
-
-
-def passes_location(compiled: dict, location: str) -> bool:
-    if not location:
-        return True
-    loc = location.lower()
-    if re.search(r"\d+\s+locations", loc):
-        return True
-    accepted = compiled.get("accepted_locations") or []
-    return any(re.search(rf"\b{re.escape(a)}\b", loc) for a in accepted)
-
-
-# ---------------------------------------------------------------------------
 # Personal market memory — prior private editions.payload only.
 # ---------------------------------------------------------------------------
 
@@ -949,8 +1054,7 @@ def assign_editorial_labels(seats: list[dict]) -> list[dict]:
     ranked.sort(key=lambda j: (j.get("fit") or -1), reverse=True)
     lead_job = ranked[0] → I'd start with {company}
     remaining fit>=80 → Unusually strong; else Worth your attention.
-    Stable on ties. Does not re-sort the raw market. judge_seats
-    eligibility is unchanged.
+    Stable on ties. Does not re-sort the raw market.
     """
     ordered = sorted(seats, key=lambda j: (j.get("fit") or -1), reverse=True)
     out = []
@@ -1014,14 +1118,23 @@ def _meta_html(seat: dict) -> str:
     )
 
 
-def render_edition_html(seats: list[dict]) -> str:
-    """Machine artifact. No dummy seats. No 'DUMMY ROLE' string.
+def _plabel(label: str, text: str, escape: bool = True) -> str:
+    body = html.escape(text) if escape else text
+    return f'<div class="plabel">{label}</div><p class="ptext">{body}</p>'
 
-    #foound-seats stays {id, handle, line} so At Work bind does not break.
-    Visible items carry the original three plabel/ptext slots plus the
-    original Shortlist fit slots: closed-row .anno, open .scoreline, .meta,
-    and edition seclabels. Lead is the highest-fit final seat.
+
+def render_edition_html(seats: list[dict], context: dict | None = None) -> str:
+    """The private edition, one artifact, engine-authored (Move 1).
+
+    Locked for the At Work bind: #foound-seats stays [{id, handle, line}];
+    every item carries data-id = role_key plus the original entry's data-*
+    fields, .anno, .role, .scoreline, the three plabel/ptext slots (pause
+    only when present), .meta and a.apply. Added for Move 3 (ignored by
+    today's app): the voice (p.brief / .cascade / .statline), seclabels,
+    "I kept looking", Found, not FOOUND, and the colophon.
+    No dummy seats. No 'DUMMY ROLE' string.
     """
+    context = context or {}
     seats = assign_editorial_labels(seats)
     picture = [
         {
@@ -1032,59 +1145,130 @@ def render_edition_html(seats: list[dict]) -> str:
         for s in seats
     ]
     payload = json.dumps(picture, ensure_ascii=False, separators=(",", ":"))
+
+    def esc(v) -> str:
+        return html.escape(str(v or ""), quote=True)
+
     items = []
     prev_label = None
-    for s, pic in zip(seats, picture):
+    for i, (s, pic) in enumerate(zip(seats, picture), start=1):
         label = s.get("seclabel") or ""
         if label and label != prev_label:
             items.append(_seclabel_html(s))
             prev_label = label
-        why = html.escape(s.get("ai_why") or "")
-        pause = (s.get("ai_pause") or "").strip()
-        why_now = s.get("why_now") or ""
-        pause_block = ""
-        if pause:
-            pause_block = (
-                "<div class=\"plabel\">What gives me pause</div>"
-                f"<p class=\"ptext\">{html.escape(pause)}</p>"
-            )
         fit = coerce_fit(s.get("fit"))
         anno = f'<span class="anno">{{fit&nbsp;{fit}}}</span>' if fit is not None else ""
         scoreline = ""
         if fit is not None:
             tier = html.escape(_fit_tier_label(fit))
             scoreline = f'<div class="scoreline">{fit} &middot; {tier}</div>'
+        blocks = [_plabel("Why I chose it", s.get("ai_why") or "")]
+        pause = (s.get("ai_pause") or "").strip()
+        if pause:
+            blocks.append(_plabel("What gives me pause", pause))
+        blocks.append(_plabel("Why now", s.get("why_now") or "", escape=False))
+        dl = s.get("deep") if isinstance(s.get("deep"), dict) else None
+        if dl:
+            rows = []
+            for k, lab in (("role", "Role"), ("moment", "Moment"), ("leadership", "Leadership"),
+                           ("signal", "Signal"), ("question", "Question")):
+                v = dl.get(k)
+                if v:
+                    rows.append(f"<b>{lab}</b> &middot; {html.escape(str(v))}")
+            blocks.append('<div class="plabel">I kept looking</div>'
+                          f'<p class="ptext">{"<br>".join(rows)}</p>')
+            if dl.get("verdict"):
+                blocks.append('<p class="ptext" style="color:var(--ink);font-weight:500;">'
+                              f'{html.escape(str(dl["verdict"]))}</p>')
+        url = s.get("url") or ""
+        is_new = (s.get("new_or_resurfaced") or "") == "new"
+        newtag = '<span class="new">NEW</span>' if is_new and s.get("previously_seen") is False else ""
         items.append(
-            "<li class=\"item\" data-id=\"{id}\" data-handle=\"{handle}\" "
-            "data-line=\"{line}\">"
-            "{anno}{scoreline}"
-            "<div class=\"plabel\">Why I chose it</div>"
-            "<p class=\"ptext\">{why}</p>"
-            "{pause_block}"
-            "<div class=\"plabel\">Why now</div>"
-            "<p class=\"ptext\">{why_now}</p>"
-            "{meta}"
-            "</li>".format(
-                id=html.escape(pic["id"], quote=True),
-                handle=html.escape(pic["handle"], quote=True),
-                line=html.escape(pic["line"], quote=True),
-                anno=anno,
-                scoreline=scoreline,
-                why=why,
-                pause_block=pause_block,
-                why_now=why_now,
-                meta=_meta_html(s),
-            )
+            f'<li class="item{" lead" if s.get("lead") else ""}" data-id="{esc(pic["id"])}"'
+            f' data-handle="{esc(pic["handle"])}" data-line="{esc(pic["line"])}"'
+            f' data-company="{esc(s.get("company"))}" data-title="{esc(s.get("title"))}"'
+            f' data-location="{esc(s.get("location"))}" data-url="{esc(url)}"'
+            f' data-fit="{fit if fit is not None else ""}"'
+            f' data-posted-at="{esc(iso_posted_at(s.get("posted_at")))}"'
+            f' data-why="{esc(s.get("ai_why"))}" data-pause="{esc(s.get("ai_pause"))}"'
+            f' data-why-now="{esc(s.get("why_now"))}" data-new="{"1" if is_new else "0"}">'
+            f'<button class="row" aria-expanded="false"><span class="marker"><span>{i}</span></span>'
+            f'<span class="co">{esc(s.get("company"))}</span>{anno}</button>'
+            f'<div class="panel"><div class="panel-inner">'
+            f'<div class="role">{esc(s.get("title"))}{newtag}</div>'
+            f'{scoreline}{"".join(blocks)}{_meta_html(s)}'
+            f'<div class="actions"><a class="apply" href="{esc(url or "#")}" target="_blank" rel="noopener">Apply &#8599;</a></div>'
+            f'</div></div></li>'
         )
+
     outcome = "empty" if not seats else "seats"
+    voice = ""
+    if context.get("greeting") or context.get("cascade") or context.get("statline"):
+        voice = (
+            f'<p class="brief">{html.escape(context.get("greeting") or "")}</p>'
+            f'<div class="cascade">{"<br>".join(html.escape(x) for x in (context.get("cascade") or []))}</div>'
+            f'<p class="statline">{context.get("statline") or ""}</p>'
+        )
+    if not seats:
+        items.append('<li class="item"><div class="row" style="cursor:default;">'
+                     '<span class="marker"></span>Nothing today.</div></li>')
+
+    passed = ""
+    shown = context.get("refused_shown") or []
+    if seats and shown:
+        word = "misses" if len(shown) > 1 else "miss"
+        rows = []
+        for r in shown:
+            rfit = coerce_fit(r.get("fit"))
+            pfit = f'<span class="pfit">{{fit&nbsp;{rfit}}}</span>' if rfit is not None else ""
+            reason = html.escape(r.get("ai_pause") or "")
+            if r.get("relook"):
+                reason = '<b class="relook-tag">Looked again, as you asked.</b> ' + reason
+            rows.append(
+                f'<div class="pitem{" relook" if r.get("relook") else ""}" data-id="{esc(r.get("role_key"))}"'
+                f' data-company="{esc(r.get("company"))}" data-title="{esc(r.get("title"))}"'
+                f' data-fit="{rfit if rfit is not None else ""}">'
+                f'<button class="prow" aria-expanded="false"><span class="pdot"></span>{esc(r.get("company"))}</button>'
+                f'<div class="ppanel"><div class="ppanel-inner"><div class="pline">{esc(r.get("title"))}{pfit}</div>'
+                f'<span class="preason">{reason}</span></div></div></div>'
+            )
+        total = int(context.get("refused_total") or len(shown))
+        count_word = _count_word(len(shown))
+        passed = (
+            '<div class="seclabel pass">Found, not FOOUND</div>'
+            f'<p class="passintro">{total} more read in full and declined. '
+            f'The {count_word} nearest {word}, and why they failed:</p>'
+            f'<div class="passed">{"".join(rows)}</div>'
+        )
+
+    colophon = ""
+    if context.get("colophon"):
+        c = context["colophon"]
+        colophon = (
+            '<footer><div class="colophon">'
+            f'<div>FOOUND AT WORK &middot; Edition {html.escape(str(c.get("edition") or ""))}'
+            f' &middot; {html.escape(str(c.get("datelong") or ""))}</div>'
+            f'<div>Compiled {html.escape(str(c.get("compiled") or ""))}'
+            f' &middot; {int(c.get("sources") or 0)} companies watched</div>'
+            '</div></footer>'
+        )
+
     return (
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
         "<title>FOOUND edition</title></head><body>"
         f"<script type=\"application/json\" id=\"foound-seats\">{payload}</script>"
         f"<article data-edition=\"{outcome}\" data-seat-count=\"{len(seats)}\">"
-        f"<ol>{''.join(items)}</ol>"
-        "</article></body></html>"
+        f"{voice}<ol>{''.join(items)}</ol>{passed}"
+        f"</article>{colophon}</body></html>"
     )
+
+
+_COUNT_WORDS = ("zero", "one", "two", "three", "four", "five", "six", "seven",
+                "eight", "nine", "ten", "eleven")
+
+
+def _count_word(n: int) -> str:
+    return _COUNT_WORDS[min(max(n, 0), len(_COUNT_WORDS) - 1)]
 
 
 def _seat_line(seat: dict) -> str:
@@ -1096,7 +1280,6 @@ def _seat_line(seat: dict) -> str:
 
 
 def iso_posted_at(value) -> Optional[str]:
-    """Serialize posted_at for the private edition payload. None stays None."""
     if value is None or value == "":
         return None
     if isinstance(value, datetime):
@@ -1125,24 +1308,53 @@ def seat_payload(s: dict) -> dict:
         "ai_pause": s.get("ai_pause") or "",
         "why_now": s.get("why_now") or "",
         "fit": coerce_fit(s.get("fit")),
+        "tier": _fit_tier_label(coerce_fit(s.get("fit"))) if coerce_fit(s.get("fit")) is not None else "",
         "lead": bool(s.get("lead")),
         "seclabel": s.get("seclabel") or "",
     }
 
 
-def build_payload(seats: list[dict], compiled: dict,
-                  engine_sha: str) -> dict:
-    labeled = assign_editorial_labels(seats)
+def refusal_payload(r: dict, relook: bool = False) -> dict:
     return {
+        "role_key": r.get("role_key") or "",
+        "company": r.get("company") or "",
+        "title": r.get("title") or "",
+        "location": r.get("location") or "",
+        "fit": coerce_fit(r.get("fit")),
+        "pause": r.get("ai_pause") or "",
+        "why": r.get("ai_why") or "",
+        "relook": bool(relook),
+    }
+
+
+def build_payload(seats: list[dict], compiled: dict, engine_sha: str,
+                  ledger: dict | None = None) -> dict:
+    """editions.payload. `ledger` (Move 1) carries counts, the complete
+    refusal set, the ≤5 shown, unread role_keys, engine, brief_line, deep,
+    read_budget. Lives only in the payload: owner-read, never logged."""
+    labeled = assign_editorial_labels(seats)
+    out = {
         "engine_sha": engine_sha,
         "compiled_config_hash": compiled_config_hash(compiled),
         "seats": [seat_payload(s) for s in labeled],
     }
+    if ledger:
+        out.update({
+            "counts": dict(ledger.get("counts") or {}),
+            "refused": list(ledger.get("refused") or []),
+            "refused_shown": list(ledger.get("refused_shown") or []),
+            "unread": list(ledger.get("unread") or []),
+            "engine": ledger.get("engine") or "",
+            "brief_line": ledger.get("brief_line") or "",
+            "deep": ledger.get("deep"),
+            "read_budget": ledger.get("read_budget"),
+            "candidate_context": ledger.get("candidate_context") or "",
+        })
+    return out
 
 
 # ---------------------------------------------------------------------------
-# Final-seat editorial annotation — after judgment, before persist.
-# judge_seats is unchanged. rank_with_fit is not used.
+# Utilities
 # ---------------------------------------------------------------------------
 
 @contextlib.contextmanager
@@ -1153,56 +1365,8 @@ def _silent_stdio():
             contextlib.redirect_stderr(io.StringIO()):
         yield
 
-
-def carry_posted_at(seats: list[dict], raw: list[dict] | None) -> list[dict]:
-    """Re-attach posted_at that judge_seats currently drops. Bug fix, not redesign."""
-    by_key: dict[str, object] = {}
-    for job in raw or []:
-        if not isinstance(job, dict):
-            continue
-        key = role_key(job)
-        if not key or "posted_at" not in job:
-            continue
-        if key not in by_key:
-            by_key[key] = job.get("posted_at")
-    out = []
-    for seat in seats:
-        row = dict(seat)
-        if row.get("posted_at") in (None, "") and row.get("role_key") in by_key:
-            row["posted_at"] = by_key[row["role_key"]]
-        out.append(row)
-    return out
-
-
 def _has_anthropic_key(ja) -> bool:
     return bool(os.environ.get("ANTHROPIC_API_KEY") or getattr(ja, "ANTHROPIC_KEY", ""))
-
-
-def _score_agent(ja, agent_id=None, agent_no=None):
-    """Load THIS client's AgentConfig for score_fit. Never default to 001.
-
-    №001 is the result when the commissioned/edition agent *is* №001
-    (agent_id '001' or agents.agent_no == 1). A future agent does not
-    inherit Carlos's Candidate profile.
-    """
-    loader = getattr(ja, "load_agent_config", None)
-    keys = []
-    if agent_no == 1 or str(agent_id or "") in ("001", "1"):
-        keys.append("001")
-    elif agent_id:
-        keys.append(str(agent_id))
-    if callable(loader):
-        for key in keys:
-            try:
-                return loader(key)
-            except Exception:
-                continue
-    return SimpleNamespace(
-        priority_companies=set(),
-        profile_path="",
-        agent_id=str(agent_id or ""),
-    )
-
 
 def _lookup_agent_no(db, agent_id) -> Optional[int]:
     if not agent_id or db is None:
@@ -1219,401 +1383,375 @@ def _lookup_agent_no(db, agent_id) -> Optional[int]:
     except (TypeError, ValueError):
         return None
 
+# ---------------------------------------------------------------------------
+# Brief → AgentConfig (the original vocabulary contract), verdict exclusion,
+# Candidate Context. The Brief is authority; the AgentConfig is how the
+# original judgment loop consumes it.
+# ---------------------------------------------------------------------------
 
-def annotate_final_seats(
-    seats: list[dict],
-    raw: list[dict] | None = None,
-    *,
-    fetch_jd=None,
-    score=None,
-    profile: str | None = None,
-    agent=None,
-    agent_id=None,
-    agent_no=None,
-    now: datetime | None = None,
-) -> list[dict]:
-    """Explain already-judged seats. Does not select.
+def _adapter_labels(ja) -> dict[str, str]:
+    """lowercase label → adapter label, from job_alerts.SCRAPERS."""
+    out: dict[str, str] = {}
+    for entry in getattr(ja, "SCRAPERS", []) or []:
+        try:
+            label = entry[0]
+        except (IndexError, TypeError):
+            continue
+        if isinstance(label, str) and label:
+            out[label.lower()] = label
+    return out
 
-    Writes fit, then orders those final seats by fit descending for
-    lead/seclabel. Does not re-sort the raw market. Profile is THAT
-    client's Candidate personal context for score_fit. Brief is not
-    fed in. Hunt authority stays on judge_seats.
+
+def agent_config_from_brief(ja, compiled: dict, *, agent_id: str,
+                            agent_no: int | None, name: str = "",
+                            evidence_map=None, profile_path: str = ""):
+    """Build the AgentConfig the original loop judges with.
+
+    Everything here is Brief-derived or engine-default. Nothing is copied
+    from BOOTSTRAP_001 except, for №001, the profile path and the evidence
+    map of its interim Candidate Context (Move 2 replaces both).
     """
-    seats = carry_posted_at(seats, raw)
-    if not seats:
-        return seats
-
-    ja = None
-
-    def _ja():
-        nonlocal ja
-        if ja is None:
-            ja = _import_job_alerts_adapters()
-        return ja
-
-    injected = fetch_jd is not None or score is not None
-    if not injected:
-        ja = _ja()
-        if _has_anthropic_key(ja):
-            fetch_jd = ja.fetch_jd_text
-            score = ja.score_fit
-        else:
-            fetch_jd = lambda _url: ""
-            score = lambda *_a, **_k: (None, None, None)
-
-    if fetch_jd is None:
-        fetch_jd = lambda _url: ""
-    if score is None:
-        score = lambda *_a, **_k: (None, None, None)
-
-    if profile is None:
-        if injected:
-            profile = ""
-        else:
-            ja = _ja()
-            if agent is None:
-                agent = _score_agent(ja, agent_id, agent_no)
-            load_profile = getattr(ja, "load_profile", None)
-            path = getattr(agent, "profile_path", None)
-            if callable(load_profile) and path:
-                with _silent_stdio():
-                    profile = load_profile(agent) or ""
-            else:
-                profile = ""
-    if agent is None:
-        agent = SimpleNamespace(
-            priority_companies=set(),
-            profile_path="",
-            agent_id=str(agent_id or ""),
-        )
-
-    why_now = None
-    if now is None:
-        now = datetime.now(timezone.utc)
-
-    out = []
-    scored = 0
-    for seat in seats:
-        row = dict(seat)
-        job = {
-            "title": row.get("title") or "",
-            "company": row.get("company") or "",
-            "location": row.get("location") or "",
-            "url": row.get("url") or "",
-            "posted_at": row.get("posted_at"),
-        }
-        jd = ""
-        try:
-            with _silent_stdio():
-                jd = fetch_jd(job.get("url") or "") or ""
-        except Exception:
-            jd = ""
-        _fit, why, pause = None, None, None
-        try:
-            with _silent_stdio():
-                _fit, why, pause = score(agent, profile, job, jd)
-        except Exception:
-            _fit, why, pause = None, None, None
-        if why:
-            scored += 1
-        row["fit"] = coerce_fit(_fit)
-        row["ai_why"] = why or ""
-        row["ai_pause"] = pause or ""
-        is_new = (row.get("new_or_resurfaced") or "") == "new"
-        if why_now is None:
-            why_now = getattr(_ja(), "why_now_text", None)
-        if callable(why_now):
-            row["why_now"] = why_now(row, is_new, now=now)
-        else:
-            row["why_now"] = ""
-        out.append(row)
-    log.info("annotated seats=%d scored=%d", len(out), scored)
-    return assign_editorial_labels(out)
-
-
-def edition_protected(edition_id: str) -> bool:
-    eid = (edition_id or "").strip().lower()
-    return any(eid.startswith(p) for p in PROTECTED_EDITION_PREFIXES)
-
-
-def _uuid_prefix_bounds(prefix: str) -> Optional[tuple[str, str]]:
-    p = (prefix or "").strip().lower()
-    if len(p) != 8 or any(c not in "0123456789abcdef" for c in p):
-        return None
-    nxt = format(int(p, 16) + 1, "08x")
-    if len(nxt) != 8:
-        return None
-    return (
-        f"{p}-0000-0000-0000-000000000000",
-        f"{nxt}-0000-0000-0000-000000000000",
+    cfg_cls = getattr(ja, "AgentConfig")
+    labels = _adapter_labels(ja)
+    priority = set()
+    for p in compiled.get("priority_companies") or []:
+        priority.add(labels.get(str(p).lower(), str(p)))
+    return cfg_cls(
+        agent_no=int(agent_no or 0),
+        agent_id=str(agent_id),
+        name=name or "",
+        recipient_email="",
+        profile_path=profile_path or "",
+        output_dir="editions",
+        edition_url="",
+        publish_public=False,
+        include=list(compiled.get("include") or []),
+        exclude_type=list(compiled.get("exclude_type") or []),
+        accepted_locations=list(compiled.get("accepted_locations") or []),
+        priority_companies=priority,
+        search_queries=list(compiled.get("search_queries") or ENGINE_DEFAULT_SEARCH_QUERIES),
+        market_sources=[],
+        manual_jobs=[],
+        evidence_map=list(evidence_map or []),
+        email_footer=[],
     )
 
 
-def enrich_persisted_edition(
-    db: "HuntDb",
-    edition_id: str,
-    *,
-    fetch_jd=None,
-    score=None,
-    profile: str | None = None,
-    now: datetime | None = None,
-) -> dict:
-    """One-shot: annotate an already-persisted private edition. No hunt.
+_ROLE_KEY_PREFIXES = ("id:", "url:", "tcl:")
 
-    Refuses edition 1c0a8068. Intended for 30f7ee54 after merge. Do not
-    call this against production from hunt.yml.
 
-    If every final seat already has fit, reorder by that fit and rewrite
-    payload/HTML seclabels without score_fit. Re-scoring can change 66/70.
+def is_role_key(value: str) -> bool:
+    """A key produced by role_key(). Anything else is legacy-shaped."""
+    v = str(value or "")
+    return v.startswith(_ROLE_KEY_PREFIXES)
+
+
+def split_verdict_keys(keys) -> tuple[set[str], set[str]]:
+    """(exact role_keys, legacy title|company keys)."""
+    exact, legacy = set(), set()
+    for k in keys or ():
+        s = str(k or "")
+        if not s:
+            continue
+        (exact if is_role_key(s) else legacy).add(s)
+    return exact, legacy
+
+
+def _legacy_key(ja, job: dict) -> str:
+    return ja.dedup_key(job.get("title") or "", job.get("company") or "")
+
+
+def verdict_matches(ja, job: dict, exact: set[str], legacy: set[str]) -> bool:
+    """Exact role_key wins. Legacy title|company is a read-only
+    compatibility fallback for signals that predate the identity scheme.
+    A url:/id:/tcl: key never falls back to the legacy match."""
+    rk = role_key(job)
+    if rk and rk in exact:
+        return True
+    if legacy and _legacy_key(ja, job) in legacy:
+        return True
+    return False
+
+
+def apply_verdicts(ja, jobs: list[dict], state) -> tuple[list[dict], set[str], dict]:
+    """Remove PASS / APPLIED roles; return (kept, second_look_role_keys, counts).
+
+    state: foound_state.PrivateState (or None = no verdict loop configured).
     """
-    if edition_protected(edition_id):
-        log.info("enrich refused edition=%s reason=protected",
-                 (edition_id or "")[:8])
-        raise HuntError("edition_persist_failed")
-    row = db.edition_by_id(edition_id)
-    if not row:
-        log.info("enrich missing edition=%s", (edition_id or "")[:8])
-        raise HuntError("edition_persist_failed")
-    resolved = str(row.get("id") or "")
-    if edition_protected(resolved):
-        log.info("enrich refused edition=%s reason=protected", resolved[:8])
-        raise HuntError("edition_persist_failed")
-    payload = row.get("payload") or {}
-    if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except json.JSONDecodeError:
-            payload = {}
-    seats = [dict(s) for s in (payload.get("seats") or []) if isinstance(s, dict)]
-    owner = row.get("agent_id")
-    if seats and all(coerce_fit(s.get("fit")) is not None for s in seats):
-        seats = assign_editorial_labels(seats)
-    else:
-        seats = annotate_final_seats(
-            seats, raw=None, fetch_jd=fetch_jd, score=score,
-            profile=profile, now=now,
-            agent_id=owner, agent_no=_lookup_agent_no(db, owner),
-        )
-    new_payload = {
-        "engine_sha": payload.get("engine_sha") or "",
-        "compiled_config_hash": payload.get("compiled_config_hash") or "",
-        "seats": [seat_payload(s) for s in seats],
+    if state is None:
+        return list(jobs), set(), {"excluded": 0, "second_look": 0, "legacy_hits": 0}
+    ex_exact, ex_legacy = split_verdict_keys(getattr(state, "excluded_keys", set()))
+    sl_exact, sl_legacy = split_verdict_keys(getattr(state, "second_look_keys", set()))
+    kept: list[dict] = []
+    second_look: set[str] = set()
+    excluded = 0
+    legacy_hits = 0
+    for job in jobs:
+        rk = role_key(job)
+        if verdict_matches(ja, job, ex_exact, ex_legacy):
+            excluded += 1
+            if rk not in ex_exact:
+                legacy_hits += 1
+            continue
+        if verdict_matches(ja, job, sl_exact, sl_legacy):
+            second_look.add(rk)
+            if rk not in sl_exact:
+                legacy_hits += 1
+        kept.append(job)
+    return kept, second_look, {
+        "excluded": excluded, "second_look": len(second_look),
+        "legacy_hits": legacy_hits,
     }
-    html_doc = render_edition_html(seats)
-    if "DUMMY ROLE" in html_doc:
-        raise HuntError("edition_persist_failed")
-    db.update_edition(resolved, {"payload": new_payload, "html": html_doc})
-    log.info("enriched edition=%s seats=%d", resolved[:8], len(seats))
-    return {"id": resolved, "seats": len(seats)}
 
 
-# ---------------------------------------------------------------------------
-# Judgment — compiled Brief authority, not Shortlist rank_with_fit.
-# Brand/CoS lock (same Brief, three jobs — not a fourth chapter):
-#   ROLE     = the seat. search_queries[] families. Fail ROLE = out.
-#   CONTEXT  = Craft company types from include[] that are not families.
-#              Ranks only after ROLE. Never earns the seat.
-#   MANDATE  = THE MOVE intent, derived from include[] move-concepts.
-#              Ranks only after ROLE. Never earns the seat.
-# Then location fit, exclude, rank-then-cap. No mandate[] SQL column;
-# no compiled_config.mandate key — derived at judgment from include[].
-# rank_with_fit is intentionally not reused.
-# ---------------------------------------------------------------------------
-
-Collector = Callable[[dict], list[dict]]
-
-HUNT_PUBLISH_PUBLIC = False  # this slice never publishes
-
-_JUNIOR_TOKENS = ("junior", "associate", "assistant", "coordinator")
-_SENIOR_TOKENS = ("head of", "vp ", "vp,", "vice president", "executive", "group ")
-
-# THE MOVE markers already present as include[] concepts. Not a catalog of
-# any Brief's seats — only how a leftover include phrase is classified
-# as MANDATE vs CONTEXT at judgment.
-_MANDATE_MARKERS = (
-    "building or transforming",
-    "build or transform",
-    "creatively ambitious",
-    "ambitious",
-)
+def load_verdict_state(agent_id: str, agent_no: int | None):
+    """foound_state.load_private_state for a UUID agent. Fail closed on
+    'unreachable' (raises); 'unconfigured' returns an empty state."""
+    import foound_state as _fstate  # local import: job_alerts also imports it
+    snapshot_dir = os.environ.get("FOOUND_STATE_DIR", ".foound-state")
+    # agent_id is already the database UUID here; never resolve by number.
+    return _fstate.load_private_state(agent_id, snapshot_dir=snapshot_dir,
+                                      agent_no=None, published_dir="docs")
 
 
-def context_concepts(compiled: dict) -> list[str]:
-    """Craft company-type leftovers in include[] that are not ROLE families."""
-    families = set(role_families(compiled))
-    out: list[str] = []
-    for item in compiled.get("include") or []:
-        if not item or item in families or _is_mandate_concept(item):
-            continue
-        out.append(item)
-    return out
+def candidate_context(ja, agent_id: str, agent_no: int | None) -> tuple[object, str, list]:
+    """(base AgentConfig or None, profile text, evidence_map) for scoring.
 
-
-def mandate_concepts(compiled: dict) -> list[str]:
-    """THE MOVE leftovers in include[]. Derived; not a compiled_config key."""
-    families = set(role_families(compiled))
-    out: list[str] = []
-    for item in compiled.get("include") or []:
-        if not item or item in families:
-            continue
-        if _is_mandate_concept(item):
-            out.append(item)
-    return out
-
-
-def _is_mandate_concept(phrase: str) -> bool:
-    p = _norm_phrase(phrase)
-    if not p:
-        return False
-    return any(m in p for m in _MANDATE_MARKERS)
-
-
-def _job_craft_text(job: dict) -> str:
-    """Company / body fields for CONTEXT and MANDATE. Title is not CONTEXT."""
-    parts: list[str] = []
-    for key in ("company", "description", "text", "snippet", "summary", "body"):
-        v = job.get(key)
-        if isinstance(v, str) and v.strip():
-            parts.append(v)
-    return " ".join(parts).lower()
-
-
-def title_fit(title: str, families: list[str]) -> tuple[int, list[str]]:
-    """ROLE score. families is search_queries[], never the full include[] bag."""
-    t = (title or "").lower()
-    matched = [k for k in families if _family_in_title(k, t)]
-    if not matched:
-        return 0, []
-    longest = max(len(k) for k in matched)
-    reasons = ["title_fit"]
-    score = longest + 3 * len(matched)
-    compact = _norm_phrase(t)
-    if compact in families or any(compact == k for k in families):
-        score += 12
-        reasons.append("title_exact_authority")
-    elif any(compact.startswith(k) for k in matched):
-        score += 6
-        reasons.append("title_leads_with_authority")
-    if any(tok in t for tok in _SENIOR_TOKENS):
-        score += 5
-        reasons.append("title_seniority")
-    if any(tok in t for tok in _JUNIOR_TOKENS):
-        score -= 8
-        reasons.append("title_juniority")
-    return score, reasons
-
-
-def context_fit(job: dict, concepts: list[str]) -> tuple[int, list[str]]:
-    """CONTEXT rank. Company/text only — 'platforms' in a title is not CONTEXT."""
-    hay = _job_craft_text(job)
-    matched = [k for k in concepts if k and k in hay]
-    if not matched:
-        return 0, []
-    longest = max(len(k) for k in matched)
-    return longest + 2 * len(matched), ["context_fit"]
-
-
-def mandate_fit(job: dict, concepts: list[str]) -> tuple[int, list[str]]:
-    """MANDATE rank. Does not earn the seat."""
-    hay = _job_craft_text(job)
-    matched = [k for k in concepts if k and k in hay]
-    if not matched:
-        return 0, []
-    longest = max(len(k) for k in matched)
-    return longest + 2 * len(matched), ["mandate_fit"]
-
-
-def location_fit(location: str, accepted: list[str]) -> tuple[int, list[str]]:
-    if not location:
-        return 1, ["location_unspecified"]
-    loc = location.lower()
-    if re.search(r"\d+\s+locations", loc):
-        return 2, ["location_multi"]
-    matched = [a for a in accepted if a and re.search(rf"\b{re.escape(a)}\b", loc)]
-    if not matched:
-        return 0, []
-    longest = max(len(a) for a in matched)
-    reasons = ["location_fit"]
-    if any(a != "remote" for a in matched):
-        score = 4 + longest
-        reasons.append("location_specific")
-    else:
-        score = 3
-        reasons.append("location_remote")
-    return score, reasons
-
-
-def judge_seats(raw: list[dict], compiled: dict) -> list[dict]:
-    """ROLE gate, then CONTEXT / MANDATE / location rank, then cap.
-
-    survived_because names judgment reasons (title_fit / context_fit /
-    mandate_fit / location_fit / exclude_cleared / ranked_above_peers).
-    CONTEXT and MANDATE never appear unless ROLE already passed.
+    Move 1: №001's interim Candidate Context is profile.md via BOOTSTRAP_001.
+    Everyone else has none yet → HuntError('no_candidate_context'), raised
+    by the caller before any model call. Move 2 replaces this with the
+    compiled Candidate Context from confirmed Memory.
     """
-    cap = int(compiled.get("seat_cap") or DEFAULT_SEAT_CAP)
-    cap = max(1, min(cap, MAX_SEAT_CAP))
-    families = role_families(compiled)
-    context = context_concepts(compiled)
-    mandate = mandate_concepts(compiled)
-    accepted = list(compiled.get("accepted_locations") or [])
-    eligible, seen = [], set()
-    for job in raw:
+    if agent_no == 1 or str(agent_id or "") in ("001", "1"):
+        loader = getattr(ja, "load_agent_config", None)
+        if callable(loader):
+            try:
+                base = loader("001")
+            except Exception:
+                base = None
+            if base is not None and getattr(base, "profile_path", ""):
+                with _silent_stdio():
+                    profile = ja.load_profile(base) or ""
+                if profile:
+                    return base, profile, list(getattr(base, "evidence_map", []) or [])
+    return None, "", []
+
+
+# ---------------------------------------------------------------------------
+# The hunt — one judge. Brief defines the universe; job_alerts judges it.
+# ---------------------------------------------------------------------------
+
+@contextlib.contextmanager
+def _judgment_hooks(ja, *, fetch_jd=None, score=None, profile=None,
+                    deep=None, brief=None):
+    """Test seam. Temporarily point the original loop's model calls at
+    injected callables. Live runs never enter here with hooks set."""
+    saved = {}
+
+    def _set(name, value):
+        saved[name] = getattr(ja, name)
+        setattr(ja, name, value)
+
+    try:
+        if fetch_jd is not None:
+            _set("fetch_jd_text", fetch_jd)
+        if score is not None:
+            _set("score_fit", score)
+            if not getattr(ja, "ANTHROPIC_KEY", ""):
+                _set("ANTHROPIC_KEY", "injected")
+        if profile is not None:
+            _set("load_profile", lambda _agent: profile)
+        _set("deep_look", deep if deep is not None else (getattr(ja, "deep_look") if score is None else (lambda *_a, **_k: None)))
+        _set("write_brief", brief if brief is not None else (getattr(ja, "write_brief") if score is None else (lambda *_a, **_k: None)))
+        yield
+    finally:
+        for name, value in saved.items():
+            setattr(ja, name, value)
+
+
+def _daypart(hour: int) -> str:
+    return "morning" if hour < 12 else ("afternoon" if hour < 18 else "evening")
+
+
+def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
+             compiled: dict, raw: list[dict], prior_payloads: list[dict],
+             state, today: date, now: datetime, profile: str | None = None,
+             fetch_jd=None, score=None, deep=None, brief_line_fn=None,
+             name: str = "", edition_no: int | None = None,
+             sources: int | None = None, read_budget: int = PRIVATE_READ_BUDGET) -> dict:
+    """Stages 2–11 of the Move 1 loop, pure with respect to the database.
+
+    Returns {seats, html, payload, outcome, counts, engine}. Raises
+    HuntError('no_candidate_context') before any model call when the client
+    has no Candidate Context (Move 1: only №001 has one, via profile.md).
+    """
+    # 2. authority → AgentConfig ------------------------------------------
+    base, ctx_profile, evidence_map = candidate_context(ja, agent_id, agent_no)
+    if profile is not None:               # test seam / future Candidate Context
+        ctx_profile = profile
+    if not ctx_profile:
+        raise HuntError("no_candidate_context")
+    agent = agent_config_from_brief(
+        ja, compiled, agent_id=agent_id, agent_no=agent_no,
+        name=name or (getattr(base, "name", "") if base is not None else ""),
+        evidence_map=evidence_map,
+        profile_path=getattr(base, "profile_path", "") if base is not None else "",
+    )
+    if not agent.include:
+        raise HuntError("no_role_families")
+    seat_cap = int(compiled.get("seat_cap") or DEFAULT_SEAT_CAP)
+    seat_cap = max(1, min(seat_cap, MAX_SEAT_CAP))
+
+    # 4. eligibility: ROLE + LOCATION, dedup on role_key ---------------------
+    eligible: list[dict] = []
+    seen: set[str] = set()
+    for job in raw or []:
+        if not isinstance(job, dict):
+            continue
         title = job.get("title") or ""
         loc = job.get("location") or ""
-        if not passes_title(compiled, title):
+        if not ja.passes_title(agent, title):
             continue
-        if not passes_location(compiled, loc):
+        if not ja.passes_location(agent, loc):
             continue
         key = role_key(job)
         if not key or key in seen:
             continue
         seen.add(key)
-        t_score, t_reasons = title_fit(title, families)
-        if t_score <= 0:
-            continue
-        c_score, c_reasons = context_fit(job, context)
-        m_score, m_reasons = mandate_fit(job, mandate)
-        l_score, l_reasons = location_fit(loc, accepted)
-        reasons = t_reasons + c_reasons + m_reasons + l_reasons + ["exclude_cleared"]
-        eligible.append({
-            "role_key": key,
-            "title": title,
-            "company": job.get("company") or "",
-            "location": loc,
-            "url": job.get("url") or "",
-            "handle": (job.get("company") or title),
-            "line": _seat_line({"title": title, "location": loc}),
-            "source": job.get("source") or "hunt",
-            "survived_because": reasons,
-            "_title_score": t_score,
-            "_context_score": c_score,
-            "_mandate_score": m_score,
-            "_location_score": l_score,
-        })
-    eligible.sort(
-        key=lambda s: (
-            -s["_title_score"],
-            -s["_context_score"],
-            -s["_mandate_score"],
-            -s["_location_score"],
-            s["role_key"],
-        )
+        row = dict(job)
+        row["role_key"] = key
+        row.setdefault("source", "hunt")
+        eligible.append(row)
+    n_eligible = len(eligible)
+
+    # 5. the person's verdicts leave the universe ----------------------------
+    eligible, second_look, vcounts = apply_verdicts(ja, eligible, state)
+
+    # 6. personal history ---------------------------------------------------
+    history = personal_history(prior_payloads or [])
+    eligible = attach_market_fields(eligible, history, today)
+    new_keys = {j["role_key"] for j in eligible if j.get("new_or_resurfaced") == "new"}
+    key_fn = lambda j: j.get("role_key") or role_key(j)
+
+    # 8. judgment: the original loop, private budget -------------------------
+    with _judgment_hooks(ja, fetch_jd=fetch_jd, score=score, profile=ctx_profile,
+                         deep=deep, brief=brief_line_fn):
+        with _silent_stdio():
+            ranked_all, used_ai = ja.rank_with_fit(
+                agent, eligible, new_keys, second_look,
+                read_budget=read_budget, key_fn=key_fn,
+            )
+        read_ids = {id(j) for j in ranked_all}
+        unread = [j["role_key"] for j in eligible if id(j) not in read_ids]
+
+        # 9. seating: floor · cap · priority · lead · refusals -----------------
+        seating = ja.seat_edition(agent, ranked_all, used_ai, second_look,
+                                  key_fn=key_fn, cap=seat_cap)
+        ranked = seating["ranked"]
+        rejects = seating["rejects"]
+        relook_ids = {id(j) for j in ranked_all if key_fn(j) in (second_look or set())}
+        shown = seating["shown"]
+
+        # 10. deep look on the lead; the statline observation ------------------
+        deep_out = None
+        n = len(ranked)
+        if used_ai and n > 0 and ((ranked[0].get("fit") or 0) >= 80
+                                  or ranked[0].get("company") in agent.priority_companies):
+            with _silent_stdio():
+                deep_out = ja.deep_look(ranked[0], ctx_profile)
+            if deep_out:
+                ranked[0]["deep"] = deep_out
+        brief_line = None
+        if n > 0 and used_ai:
+            # write_brief tests newness with the Shortlist's title|company key.
+            legacy_new = {ja.dedup_key(j.get("title") or "", j.get("company") or "")
+                          for j in ranked if j.get("role_key") in new_keys}
+            with _silent_stdio():
+                brief_line = ja.write_brief(n, len(raw or []), sources or 0, ranked, legacy_new)
+
+        # 11. why now, labels -------------------------------------------------
+        for j in ranked_all:
+            j["why_now"] = ja.why_now_text(j, j["role_key"] in new_keys, now=now)
+
+    seats = assign_editorial_labels(ranked)
+    n_read = sum(1 for j in ranked_all if j.get("fit") is not None) if used_ai else len(ranked_all)
+
+    # voice -------------------------------------------------------------------
+    greeting = f"Good {_daypart(now.hour)}, {name}." if name else f"Good {_daypart(now.hour)}."
+    cascade = [f"I searched {len(raw or []):,} jobs overnight."]
+    if n == 0:
+        cascade.append("Nothing cleared the bar today.")
+    else:
+        cascade.append(f"FOOUND {n} for you.")
+        if seating["n_strong"] >= 2:
+            cascade.append(f"{seating['n_strong']} are unusually strong.")
+        if seating["has_standout"]:
+            cascade.append("1 stands apart.")
+    statline = f"{n_read} read in full &middot; everything else dismissed on sight."
+    if brief_line:
+        statline += " " + html.escape(brief_line)
+
+    counts = {
+        "market_fetched": len(raw or []),
+        "eligible": n_eligible,
+        "excluded": vcounts["excluded"],
+        "second_look": vcounts["second_look"],
+        "legacy_hits": vcounts["legacy_hits"],
+        "read": n_read,
+        "unread": len(unread),
+        "seated": n,
+        "refused": len(rejects),
+    }
+    ledger = {
+        "counts": counts,
+        "refused": [refusal_payload(r, relook=id(r) in relook_ids) for r in rejects],
+        "refused_shown": [r["role_key"] for r in shown],
+        "unread": unread,
+        "engine": "ai" if used_ai else "heuristic",
+        "brief_line": brief_line or "",
+        "deep": deep_out,
+        "read_budget": read_budget,
+        "candidate_context": "profile.md" if base is not None and profile is None else "injected",
+    }
+    context = {
+        "greeting": greeting,
+        "cascade": cascade,
+        "statline": statline,
+        "refused_shown": [dict(refusal_payload(r, relook=id(r) in relook_ids),
+                               ai_pause=r.get("ai_pause") or "") for r in shown],
+        "refused_total": len(rejects),
+        "colophon": {
+            "edition": f"{edition_no:03d}" if edition_no else "",
+            "datelong": today.strftime("%A, %B %d, %Y").replace(" 0", " "),
+            "compiled": now.strftime("%-I:%M %p UTC") if agent_no != 1 else "8:00 AM ET",
+            "sources": sources or 0,
+        },
+    }
+    html_doc = render_edition_html(seats, context)
+    payload = build_payload(seats, compiled, current_engine_sha(), ledger)
+    return {
+        "seats": seats,
+        "html": html_doc,
+        "payload": payload,
+        "outcome": "empty" if not seats else "seats",
+        "counts": counts,
+        "engine": ledger["engine"],
+    }
+
+
+def operator_line(agent_no, counts: dict, engine: str, outcome: str) -> str:
+    """One public-safe line: numbers and enums only."""
+    c = counts or {}
+    return (
+        f"[operator] agent=№{int(agent_no or 0):03d} "
+        f"market={c.get('market_fetched', 0)} eligible={c.get('eligible', 0)} "
+        f"excluded={c.get('excluded', 0)} read={c.get('read', 0)} "
+        f"unread={c.get('unread', 0)} seated={c.get('seated', 0)} "
+        f"refused={c.get('refused', 0)} engine={engine} outcome={outcome}"
     )
-    ranked_out = len(eligible) > cap
-    seats = []
-    for s in eligible[:cap]:
-        reasons = list(s["survived_because"])
-        if ranked_out:
-            reasons.append("ranked_above_peers")
-        seats.append({k: v for k, v in s.items() if not k.startswith("_")} | {
-            "survived_because": reasons,
-        })
-    return seats
 
 
-def filter_and_cap(raw: list[dict], compiled: dict) -> list[dict]:
-    """Deprecated name: judgment, not first-N after a filter."""
-    return judge_seats(raw, compiled)
+HUNT_PUBLISH_PUBLIC = False  # this engine never publishes
 
 
 def _import_job_alerts_adapters():
@@ -1627,7 +1765,6 @@ def _import_job_alerts_adapters():
         os.environ.setdefault(key, "")
     import job_alerts as ja  # local import: tests never take this path
     return ja
-
 
 def live_collect(compiled: dict, scraper_entries=None) -> list[dict]:
     """Reuse job_alerts scrapers as adapters. publish_public stays false.
@@ -1647,7 +1784,8 @@ def live_collect(compiled: dict, scraper_entries=None) -> list[dict]:
         fn = entry[1]
         args = entry[2:]
         try:
-            jobs = fn(*args)
+            with _silent_stdio():
+                jobs = fn(*args)
         except Exception:
             log.info("adapter source_failed i=%d", i)
             continue
@@ -1699,8 +1837,6 @@ class HuntDb:
     def edition_by_id(self, edition_id: str) -> Optional[dict]:
         raise NotImplementedError
 
-    def update_edition(self, edition_id: str, fields: dict) -> None:
-        raise NotImplementedError
 
     def agent_no(self, agent_id: str) -> Optional[int]:
         raise NotImplementedError
@@ -1823,8 +1959,6 @@ class RestDb(HuntDb):
         )
         return rows[0] if len(rows) == 1 else None
 
-    def update_edition(self, edition_id: str, fields: dict) -> None:
-        self._patch(f"editions?id=eq.{edition_id}", fields)
 
     def agent_no(self, agent_id: str) -> Optional[int]:
         if not agent_id:
@@ -1844,6 +1978,9 @@ class RestDb(HuntDb):
 # Processor
 # ---------------------------------------------------------------------------
 
+Collector = Callable[[dict], list[dict]]
+
+
 @dataclass
 class RunReport:
     action: str = "none"          # none|compiled|refreshed|edition|noop|failed|error
@@ -1857,15 +1994,21 @@ class RunReport:
 class Runner:
     def __init__(self, db: HuntDb, collector: Collector | None = None,
                  today: date | None = None, fetch_jd=None, score=None,
-                 profile: str | None = None):
+                 profile: str | None = None, deep=None, brief_line_fn=None,
+                 state_loader=None, read_budget: int = PRIVATE_READ_BUDGET):
         self.db = db
         # Default collector is live adapters. Tests inject a local collector.
         self.collector = collector
         self.today = today or date.today()
-        # Editorial hooks (tests). Live path uses job_alerts defaults.
+        # Judgment hooks (tests only). Live path uses job_alerts itself.
         self.fetch_jd = fetch_jd
         self.score = score
         self.profile = profile
+        self.deep = deep
+        self.brief_line_fn = brief_line_fn
+        # Verdict state loader (tests inject). Live path: foound_state.
+        self.state_loader = state_loader
+        self.read_budget = read_budget
 
     def run(self, limit: int = MAX_JOBS_PER_RUN) -> list[RunReport]:
         reports = []
@@ -1895,9 +2038,8 @@ class Runner:
             report.action = "failed"
             report.detail["error"] = e.name
             return report
-        except Exception:
-            log.exception("processing error job=%s (exception class only above)",
-                          job["id"])
+        except Exception as _e:
+            log.info("processing error job=%s class=%s", job["id"], type(_e).__name__)
             try:
                 self.db.fail(job["id"], "compile_failed")
             except Exception:
@@ -1957,6 +2099,7 @@ class Runner:
         report.readiness = readiness
         return report
 
+
     def _first_edition(self, job: dict, report: RunReport) -> RunReport:
         existing = self.db.editions_for_day(job["agent_id"], self.today)
         if existing:
@@ -1975,35 +2118,7 @@ class Runner:
         if readiness != "ready":
             raise HuntError("readiness_blocked")
 
-        try:
-            collector = self.collector if self.collector is not None else live_collect
-            raw = collector(compiled)
-        except HuntError:
-            raise
-        except Exception:
-            log.exception("collector error job=%s (exception class only above)",
-                          job["id"])
-            raise HuntError("hunt_adapter_failed")
-
-        seats = judge_seats(raw or [], compiled)
-        history = personal_history(self.db.prior_edition_payloads(job["agent_id"]))
-        seats = attach_market_fields(seats, history, self.today)
-        seats = annotate_final_seats(
-            seats, raw or [],
-            fetch_jd=self.fetch_jd,
-            score=self.score,
-            profile=self.profile,
-            agent_id=job.get("agent_id"),
-            agent_no=_lookup_agent_no(self.db, job.get("agent_id")),
-            now=datetime(self.today.year, self.today.month, self.today.day,
-                         12, 0, tzinfo=timezone.utc),
-        )
-        sha = current_engine_sha()
-        payload = build_payload(seats, compiled, sha)
-        html_doc = render_edition_html(seats)
-        if "DUMMY ROLE" in html_doc:
-            raise HuntError("edition_persist_failed")
-        outcome = "empty" if not seats else "seats"
+        result = self._hunt(job["agent_id"], brief, compiled, job_id=job["id"])
         version = brief.get("version")
         job_payload = job.get("payload") or {}
         if isinstance(job_payload, str):
@@ -2019,20 +2134,111 @@ class Runner:
                 "agent_id": job["agent_id"],
                 "edition_date": self.today.isoformat(),
                 "brief_version": version,
-                "html": html_doc,
-                "payload": payload,
-                "outcome": outcome,
+                "html": result["html"],
+                "payload": result["payload"],
+                "outcome": result["outcome"],
                 "delivered_at": now,
             })
-        except Exception:
-            log.exception("edition persist error job=%s", job["id"])
+        except Exception as e:
+            log.info("edition persist error job=%s class=%s", job["id"], type(e).__name__)
             raise HuntError("edition_persist_failed")
         self.db.complete(job["id"])
-        log.info("first_edition job=%s outcome=%s seats=%d", job["id"], outcome, len(seats))
+        log.info("first_edition job=%s outcome=%s seats=%d", job["id"],
+                 result["outcome"], len(result["seats"]))
+        print(operator_line(result.get("agent_no"), result["counts"],
+                            result["engine"], result["outcome"]))
         report.action = "edition"
-        report.seats = len(seats)
-        report.detail["outcome"] = outcome
+        report.seats = len(result["seats"])
+        report.detail["outcome"] = result["outcome"]
+        report.detail["counts"] = dict(result["counts"])
         return report
+
+    def _hunt(self, agent_id: str, brief: dict, compiled: dict,
+              job_id: str = "", dry_run: bool = False) -> dict:
+        """Collect, then run the one-judge loop. No writes here."""
+        ja = _import_job_alerts_adapters()
+        agent_no = _lookup_agent_no(self.db, agent_id)
+        # Candidate Context is checked before collection so a client without
+        # one costs nothing and reaches no adapter and no model.
+        _base, ctx_profile, _ev = candidate_context(ja, agent_id, agent_no)
+        if self.profile is not None:
+            ctx_profile = self.profile
+        if not ctx_profile:
+            raise HuntError("no_candidate_context")
+        try:
+            collector = self.collector if self.collector is not None else live_collect
+            raw = collector(compiled)
+        except HuntError:
+            raise
+        except Exception as e:
+            log.info("collector error job=%s class=%s", job_id, type(e).__name__)
+            raise HuntError("hunt_adapter_failed")
+        state = None
+        if self.state_loader is not None:
+            state = self.state_loader(agent_id, agent_no)
+        elif not dry_run or os.environ.get("SUPABASE_URL"):
+            state = load_verdict_state(agent_id, agent_no)
+        prior = self.db.prior_edition_payloads(agent_id)
+        edition_no = len(prior) + 1
+        sources = len(getattr(ja, "SCRAPERS", []) or [])
+        now = datetime.now(timezone.utc)
+        result = run_hunt(
+            ja, agent_id=agent_id, agent_no=agent_no, brief=brief,
+            compiled=compiled, raw=raw or [], prior_payloads=prior,
+            state=state, today=self.today, now=now,
+            profile=self.profile, fetch_jd=self.fetch_jd, score=self.score,
+            deep=self.deep, brief_line_fn=self.brief_line_fn,
+            edition_no=edition_no, sources=sources,
+            read_budget=self.read_budget,
+        )
+        if "DUMMY ROLE" in result["html"]:
+            raise HuntError("edition_persist_failed")
+        result["agent_no"] = agent_no
+        return result
+
+    def dry_run(self, agent_id: str, fixture_path: str | None = None) -> dict:
+        """Stages 1–11 for one agent. Writes nothing to the database.
+
+        Console: counts and enums only. The private fixture table (role_key ·
+        fit · seated / refused / unread, plus the compiled authority) goes to
+        `fixture_path` — a local file outside the repo — for the operator only.
+        """
+        brief = self._load_active(agent_id)
+        compiled = brief.get("compiled_config") or compile_from_content(brief.get("content") or {})
+        if readiness_of(compiled) != "ready" and brief.get("readiness") != "ready":
+            raise HuntError("readiness_blocked")
+        result = self._hunt(agent_id, brief, compiled, job_id="dry-run", dry_run=True)
+        line = operator_line(result.get("agent_no"), result["counts"],
+                             result["engine"], result["outcome"])
+        print(line)
+        if fixture_path:
+            rows = []
+            for s in result["payload"]["seats"]:
+                rows.append({"role_key": s["role_key"], "company": s["company"],
+                             "title": s["title"], "location": s["location"],
+                             "fit": s["fit"], "status": "seated"})
+            for r in result["payload"].get("refused", []):
+                rows.append({"role_key": r["role_key"], "company": r["company"],
+                             "title": r["title"], "location": r["location"],
+                             "fit": r["fit"], "status": "refused",
+                             "shown": r["role_key"] in result["payload"].get("refused_shown", [])})
+            for k in result["payload"].get("unread", []):
+                rows.append({"role_key": k, "status": "unread"})
+            with open(fixture_path, "w", encoding="utf-8") as fh:
+                json.dump({
+                    "agent_no": result.get("agent_no"),
+                    "date": self.today.isoformat(),
+                    "counts": result["counts"],
+                    "engine": result["engine"],
+                    "compiled": {k: compiled.get(k) for k in (
+                        "families", "include", "location_phrases",
+                        "accepted_locations", "exclude_type",
+                        "priority_companies", "seat_cap", "readiness_reasons")},
+                    "rows": rows,
+                    "html": result["html"],
+                }, fh, ensure_ascii=False, indent=1)
+            print(f"[dry-run] fixture table written: {len(rows)} rows (local file, not logged)")
+        return result
 
 
 def _configure_logging() -> None:
@@ -2043,39 +2249,27 @@ def _configure_logging() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-def run_enrich(edition_id: str) -> int:
-    """One-shot enrich. No hunt. No rewrite of 1c0a8068."""
-    _configure_logging()
-    if edition_protected(edition_id):
-        log.info("enrich refused edition=%s reason=protected",
-                 (edition_id or "")[:8])
-        return 2
-    base = os.environ["SUPABASE_URL"]
-    key = os.environ["SUPABASE_SERVICE_KEY"]
-    db = RestDb(base, key)
-    try:
-        result = enrich_persisted_edition(db, edition_id)
-    except HuntError as e:
-        log.info("enrich failed error=%s", e.name)
-        return 1
-    log.info("enrich done edition=%s seats=%s",
-             str(result.get("id") or "")[:8], result.get("seats"))
-    return 0
-
-
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] == "--enrich-edition":
+    _configure_logging()
+    if argv and argv[0] == "--dry-run":
         if len(argv) < 2 or not argv[1].strip():
-            _configure_logging()
-            log.info("enrich missing edition id")
+            log.info("dry-run missing agent id")
             return 2
-        return run_enrich(argv[1].strip())
+        agent_id = argv[1].strip()
+        fixture = argv[2].strip() if len(argv) > 2 and argv[2].strip() else None
+        base = os.environ["SUPABASE_URL"]
+        key = os.environ["SUPABASE_SERVICE_KEY"]
+        runner = Runner(db=RestDb(base, key))
+        try:
+            runner.dry_run(agent_id, fixture)
+        except HuntError as e:
+            log.info("dry-run failed error=%s", e.name)
+            return 1
+        return 0
     if argv:
-        _configure_logging()
         log.info("unknown args")
         return 2
-    _configure_logging()
     base = os.environ["SUPABASE_URL"]
     key = os.environ["SUPABASE_SERVICE_KEY"]
     runner = Runner(db=RestDb(base, key))

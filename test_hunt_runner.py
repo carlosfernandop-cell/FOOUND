@@ -1,39 +1,39 @@
-"""FOOUND Hunt Runner v1 — focused tests. No network.
+"""FOOUND Hunt Runner — Move 1 (ONE JUDGE) tests. No network.
 
-H1  incomplete Brief → BLOCKED / not_ready
-H2  complete Brief → ready + compiled_config
-H3  first_edition empty → persisted empty edition, job done
-H4  same-day second first_edition → no-op, no rewrite
-H5  payload market-history fields present
-H6  subjects with other titles still compile (labels are not architecture)
-CQ  compile quality: specimen 5d260731 families; no punctuation junk;
-    deterministic; fictional Brief keeps its own titles; ready needs
-    families + locations
-H7  never writes 'limited'; never infers ready from at_work
-H8  empty html has no DUMMY ROLE and no dummy seats
-H9  compile does not read Memory; hunt does not touch market_seen / docs
-H10 commission recovery predicate: insert once, then no-op
-H11 judgment: stronger-fit beats weaker-fit; not cap-alone
-H12 role_key precedence + source-qualified id + gh_jid identity
-H13 adapter isolation smoke: SCRAPERS import without publisher
-J3 ROLE gate: search_queries families, not include[] (platforms is CONTEXT)
-H14 final-seat editorial annotation: ai_why / ai_pause / why-now / posted_at
-    / fit persisted; original three plabels + .anno / .scoreline / .meta /
-    seclabels; fit_tier reused; judge_seats unchanged; no rank_with_fit;
-    after fit, final seats sort by fit for I'd start with
-H15 one-shot enrich of edition 30f7ee54 writes fit; 1c0a8068 refused;
-    existing fit is not re-scored just to reorder
-H17 lead order is fit descending on final seats (70 then 66); judge_seats
-    is not lead; same role_keys
-H16 score_fit uses the commissioned agent's Candidate, not hardcoded 001
+Contract v1.1 (2026-09-02). Groups:
+
+C   compile: families as written; include = ROLE_SYNONYMS expansion;
+    places → LOCATION_GAZETTEER; engine-default exclusions; priority houses
+    structured only; seat_cap default 11; readiness reasons; deterministic
+G   gazetteer + synonym tables, row by row, by meaning
+E   eligibility on the AgentConfig: job_alerts.passes_title / passes_location
+    (J3 preserved: ROLE is a hard gate; CONTEXT cannot rescue a role);
+    C1 mechanical-recall fixtures (SF / Culver City / New York, NY)
+V   verdicts: exact role_key; legacy title|company compatibility only;
+    url: keys never fall back; reconsider → second look; no legacy writes
+B   read budget isolation: default 25 untouched; private 40; public main()
+    never passes read_budget
+S   seat_edition equivalence with the pre-lift build_shortlist logic
+L   ledger: complete refusal set, ≤5 shown, unread beyond budget
+F   fail closed: non-001 agent → no_candidate_context before any model
+    or adapter call; №001 resolves to profile.md
+R   runner: empty edition is success; same-day noop; history fields;
+    fail-closed brief errors; refresh; edition html contract for the At
+    Work bind + voice + refusals + colophon; operator line hygiene;
+    log/stdout hygiene
+K   role_key precedence / source-qualified id / gh_jid identity
+H9  boundaries: no market_seen, agent_config, publish, docs/, memory
+H10 commission recovery predicate (mirrors 011)
 """
 
 from __future__ import annotations
 
 import inspect
+import io
 import json
 import re
 import uuid
+import contextlib
 from datetime import date, datetime, timezone
 
 import hunt_runner as hr
@@ -121,26 +121,66 @@ class MemoryDb(hr.HuntDb):
         rec.setdefault("id", str(uuid.uuid4()))
         self.editions.append(rec)
 
-    def edition_by_id(self, edition_id: str):
-        eid = (edition_id or "").strip().lower()
-        hits = [e for e in self.editions
-                if str(e.get("id") or "").lower().startswith(eid)]
-        return hits[0] if len(hits) == 1 else None
-
-    def update_edition(self, edition_id: str, fields: dict):
-        for e in self.editions:
-            if str(e.get("id")) == edition_id:
-                e.update(fields)
-                return
-        raise KeyError(edition_id)
-
     def agent_no(self, agent_id: str):
         return self.agent_numbers.get(agent_id)
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+class FakeState:
+    """Stands in for foound_state.PrivateState."""
+
+    def __init__(self, excluded=(), second_look=()):
+        self.excluded_keys = set(excluded)
+        self.second_look_keys = set(second_look)
+
+
+FROZEN_NOW = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
+FIXTURE_PROFILE = "Fixture Candidate Context. Twenty years in brand. Bar: build the function."
+FROZEN_TODAY = date(2026, 9, 2)
+
+
+def check(name, cond, detail=""):
+    if not cond:
+        raise AssertionError(f"FAIL {name}: {detail}")
+    print(f"  ok  {name}")
+
+
+def _seats_json(html_doc: str):
+    return json.loads(html_doc.split('id="foound-seats">')[1].split("</script>")[0])
+
+
+def _score_by_title(table: dict, default=None):
+    """score hook: title → (fit, why, pause)."""
+    def score(_agent, _profile, job, _jd):
+        hit = table.get(job["title"])
+        if hit is None:
+            return default if default is not None else (None, None, None)
+        fit, why, pause = hit
+        return fit, why, pause
+    return score
+
+
+def _runner(db, raw, *, score=None, profile=FIXTURE_PROFILE, state=None,
+            today=FROZEN_TODAY, fetch_jd=None, read_budget=hr.PRIVATE_READ_BUDGET):
+    return hr.Runner(
+        db, collector=lambda _c: raw, today=today,
+        fetch_jd=fetch_jd if fetch_jd is not None else (lambda _u: ""),
+        score=score, profile=profile,
+        state_loader=(lambda _a, _n: state),
+        read_budget=read_budget,
+    )
+
+
+def _ready_agent(db, content=None, agent_no=None):
+    aid = str(uuid.uuid4())
+    compiled = hr.compile_from_content(content or COMPLETE)
+    assert hr.readiness_of(compiled) == "ready"
+    db.add_brief(aid, content or COMPLETE,
+                 compiled_config=hr.persistable_compiled(compiled),
+                 readiness="ready")
+    if agent_no is not None:
+        db.agent_numbers[aid] = agent_no
+    return aid
+
 
 INCOMPLETE = {
     "chapters": [
@@ -303,15 +343,6 @@ FICTIONAL_FAMILIES = [
 ]
 
 
-def check(name, cond, detail=""):
-    if not cond:
-        raise AssertionError(f"FAIL {name}: {detail}")
-    print(f"  ok  {name}")
-
-
-# ---------------------------------------------------------------------------
-# H1 / H2 compile + readiness
-# ---------------------------------------------------------------------------
 
 def test_h1_incomplete_brief_blocked():
     cfg = hr.compile_from_content(INCOMPLETE)
@@ -323,41 +354,11 @@ def test_h1_incomplete_brief_blocked():
     check("H1 architecture note", "temporary" in cfg["readiness_architecture"])
 
 
-def test_h2_complete_brief_ready():
-    cfg = hr.compile_from_content(COMPLETE)
-    check("H2 ready", hr.readiness_of(cfg) == "ready")
-    check("H2 include", any("creative director" in x or "head of" in x
-                            for x in cfg["include"]))
-    check("H2 locations", any("nyc" in x or "california" in x or "london" in x
-                              for x in cfg["accepted_locations"]))
-    check("H2 reasons empty when ready", cfg["readiness_reasons"] == [])
-    check("H2 seat_cap default", cfg["seat_cap"] == 5)
-    for key in ("subjects_used", "include", "exclude_type",
-                "accepted_locations", "search_queries", "seat_cap",
-                "compiled_at", "engine_sha", "readiness_reasons",
-                "readiness_architecture"):
-        check(f"H2 field {key}", key in cfg)
-    persisted = hr.persistable_compiled(cfg)
-    check("H2 persist drops internal", "_readiness" not in persisted)
-
-
-def test_h2b_structured_content():
-    cfg = hr.compile_from_content(STRUCTURED)
-    check("H2b ready", hr.readiness_of(cfg) == "ready")
-    check("H2b include", cfg["include"] == ["creative director"])
-    check("H2b locations", cfg["accepted_locations"] == ["remote"])
-    check("H2b seat_cap", cfg["seat_cap"] == 3)
-
-
 def test_h2c_empty_content():
     cfg = hr.compile_from_content({})
     check("H2c not_ready", hr.readiness_of(cfg) == "not_ready")
     check("H2c no authority", "no_usable_hunt_authority" in cfg["readiness_reasons"])
 
-
-# ---------------------------------------------------------------------------
-# H6 other titles / no hard-coded architecture
-# ---------------------------------------------------------------------------
 
 def test_h6_other_titles_compile():
     cfg = hr.compile_from_content(OTHER_TITLES)
@@ -374,45 +375,14 @@ def _without_compiled_at(cfg: dict) -> dict:
     return {k: v for k, v in cfg.items() if k != "compiled_at"}
 
 
-def test_compile_specimen_5d260731_families():
-    cfg = hr.compile_from_content(SPECIMEN_5d260731)
-    check("CQ specimen ready", hr.readiness_of(cfg) == "ready")
-    check("CQ specimen families", cfg["search_queries"] == SPECIMEN_FAMILIES)
-    check("CQ has Creative Director", "creative director" in cfg["search_queries"])
-    check("CQ no bare cd family",
-          "cd" not in cfg["search_queries"] and "cd" not in cfg["include"])
-    check("CQ families are include",
-          all(f in cfg["include"] for f in SPECIMEN_FAMILIES))
-    check("CQ no invented Global Creative Director",
-          "global creative director" not in cfg["search_queries"]
-          and "global creative director" not in cfg["include"])
-    check("CQ ECD not expanded",
-          "executive creative director" not in cfg["search_queries"])
-    check("CQ Group CD stays abbreviated", "group cd" in cfg["search_queries"])
-    check("CQ Executive CD stays abbreviated",
-          "executive cd" in cfg["search_queries"])
-    check("CQ move prose not queries",
-          not any(x in cfg["search_queries"] for x in (
-              "across markets",
-              "build or transform that function",
-              "not inherit a finished one",
-          )))
-    locs = cfg["accepted_locations"]
-    check("CQ locations intact",
-          locs == ["nyc", "california", "remote us", "london", "paris"]
-          or all(x in locs for x in ("nyc", "california", "london", "paris")))
-    check("CQ remote US kept", any("remote" in x for x in locs))
-
-
 def test_compile_specimen_5d260731_no_punctuation_junk():
     cfg = hr.compile_from_content(SPECIMEN_5d260731)
     junk = {
         "brand leadership (cd",
         "creative)",
-        "vp brand",
         "cd",
     }
-    for term in cfg["include"] + cfg["search_queries"]:
+    for term in cfg["include"] + cfg["families"]:
         check(f"CQ not junk {term!r}", term not in junk)
         check(f"CQ balanced punct {term!r}",
               term.count("(") == term.count(")"))
@@ -421,24 +391,9 @@ def test_compile_specimen_5d260731_no_punctuation_junk():
         check(f"CQ no trailing cut {term!r}",
               not (term.endswith(")") and "(" not in term))
     check("CQ compound slash kept",
-          "vp brand/creative" in cfg["search_queries"])
+          "vp brand/creative" in cfg["families"])
     check("CQ parenthetical concept intact or absent",
           all("(" not in t or ")" in t for t in cfg["include"]))
-
-
-def test_compile_specimen_5d260731_include_coherent():
-    cfg = hr.compile_from_content(SPECIMEN_5d260731)
-    check("CQ include exact", cfg["include"] == SPECIMEN_INCLUDE)
-    check("CQ include no unmistakably scrap",
-          "and unmistakably themselves" not in cfg["include"])
-    check("CQ include no conjunction scraps",
-          not any(t.startswith(("and ", "or ", "but ", "not "))
-                  for t in cfg["include"]))
-    check("CQ queries stay seven families",
-          cfg["search_queries"] == SPECIMEN_FAMILIES)
-    check("CQ queries have Creative Director",
-          "creative director" in cfg["search_queries"])
-    check("CQ queries no bare cd", "cd" not in cfg["search_queries"])
 
 
 def test_compile_specimen_5d260731_deterministic():
@@ -450,65 +405,6 @@ def test_compile_specimen_5d260731_deterministic():
     check("CQ compiled_at may differ or match",
           isinstance(a["compiled_at"], str) and isinstance(b["compiled_at"], str))
 
-
-def test_compile_fictional_brief_own_families():
-    cfg = hr.compile_from_content(FICTIONAL_OTHER_ROLES)
-    check("CQ fictional ready", hr.readiness_of(cfg) == "ready")
-    check("CQ fictional families", cfg["search_queries"] == FICTIONAL_FAMILIES)
-    check("CQ fictional not specimen seven",
-          set(cfg["search_queries"]) != set(SPECIMEN_FAMILIES))
-    for locked in SPECIMEN_FAMILIES:
-        check(f"CQ fictional lacks {locked!r}",
-              locked not in cfg["search_queries"])
-    check("CQ fictional move prose not queries",
-          not any(x in cfg["search_queries"] for x in (
-              "across markets",
-              "build or transform that function",
-              "not inherit a finished one",
-          )))
-
-
-def test_compile_ready_requires_families_and_locations():
-    only_move = hr.compile_from_content(INCOMPLETE)
-    check("CQ incomplete not_ready", hr.readiness_of(only_move) == "not_ready")
-    check("CQ incomplete has reasons", len(only_move["readiness_reasons"]) >= 1)
-    check("CQ incomplete no_accepted_locations",
-          "no_accepted_locations" in only_move["readiness_reasons"])
-    locs_only = hr.compile_from_content({
-        "subjects": [{"title": "Geography", "text": "NYC, London"}]
-    })
-    check("CQ locations-only not_ready", hr.readiness_of(locs_only) == "not_ready")
-    check("CQ locations-only needs families",
-          "no_include_terms" in locs_only["readiness_reasons"])
-    fams_only = hr.compile_from_content({
-        "subjects": [{"title": "Craft", "text": "Design Director"}]
-    })
-    check("CQ families-only not_ready", hr.readiness_of(fams_only) == "not_ready")
-    check("CQ families-only needs locations",
-          "no_accepted_locations" in fams_only["readiness_reasons"])
-    ready = hr.compile_from_content(SPECIMEN_5d260731)
-    check("CQ specimen executable",
-          bool(ready["search_queries"]) and bool(ready["accepted_locations"]))
-    check("CQ specimen ready reasons empty", ready["readiness_reasons"] == [])
-
-
-def test_h6b_skip_market_and_avoid():
-    content = {
-        "subjects": [
-            {"title": "MARKET", "text": "creative director, remote"},
-            {"title": "AVOID", "text": "intern, contractor"},
-            {"title": "READINESS", "text": "ready"},
-        ]
-    }
-    cfg = hr.compile_from_content(content)
-    check("H6b skip non-authority chapters", hr.readiness_of(cfg) == "not_ready")
-    check("H6b no include from MARKET", cfg["include"] == [])
-    check("H6b AVOID off", cfg["exclude_type"] == [])
-
-
-# ---------------------------------------------------------------------------
-# H7 never limited; at_work is not readiness
-# ---------------------------------------------------------------------------
 
 def test_h7_never_limited_or_at_work_inference():
     cfg = hr.compile_from_content(INCOMPLETE)
@@ -528,157 +424,6 @@ def test_h7_never_limited_or_at_work_inference():
     check("H7 job done", db.jobs[jid]["status"] == "done")
 
 
-# ---------------------------------------------------------------------------
-# H3 / H4 / H5 first_edition
-# ---------------------------------------------------------------------------
-
-def _ready_agent(db, content=None):
-    aid = str(uuid.uuid4())
-    compiled = hr.compile_from_content(content or COMPLETE)
-    assert hr.readiness_of(compiled) == "ready"
-    db.add_brief(aid, content or COMPLETE,
-                 compiled_config=hr.persistable_compiled(compiled),
-                 readiness="ready")
-    return aid
-
-
-def test_h3_empty_edition_is_success():
-    db = MemoryDb()
-    aid = _ready_agent(db)
-    jid = db.add_job(aid, "first_edition", payload={"brief_version": 1})
-    today = date(2026, 8, 28)
-    runner = hr.Runner(db, collector=lambda _c: [], today=today)
-    reports = runner.run()
-    check("H3 action edition", reports[0].action == "edition")
-    check("H3 seats 0", reports[0].seats == 0)
-    check("H3 job done", db.jobs[jid]["status"] == "done")
-    check("H3 no job.error", db.jobs[jid].get("error") is None)
-    check("H3 one edition", len(db.editions) == 1)
-    ed = db.editions[0]
-    check("H3 outcome empty", ed["outcome"] == "empty")
-    check("H3 payload seats empty", ed["payload"]["seats"] == [])
-    check("H3 html empty marker", 'data-edition="empty"' in ed["html"])
-    check("H3 html seat-count 0", 'data-seat-count="0"' in ed["html"])
-    check("H3 no DUMMY ROLE", "DUMMY ROLE" not in ed["html"])
-    check("H3 no dummy seats in json",
-          json.loads(ed["html"].split("id=\"foound-seats\">")[1].split("</script>")[0]) == [])
-
-
-def test_h4_same_day_second_is_noop():
-    db = MemoryDb()
-    aid = _ready_agent(db)
-    today = date(2026, 8, 28)
-    j1 = db.add_job(aid, "first_edition")
-    runner = hr.Runner(db, collector=lambda _c: [], today=today)
-    runner.run()
-    html1 = db.editions[0]["html"]
-    payload1 = json.dumps(db.editions[0]["payload"], sort_keys=True)
-    j2 = db.add_job(aid, "first_edition")
-    reports = runner.run()
-    check("H4 noop", reports[0].action == "noop")
-    check("H4 second job done", db.jobs[j2]["status"] == "done")
-    check("H4 still one edition", len(db.editions) == 1)
-    check("H4 html unchanged", db.editions[0]["html"] == html1)
-    check("H4 payload unchanged",
-          json.dumps(db.editions[0]["payload"], sort_keys=True) == payload1)
-    check("H4 first still done", db.jobs[j1]["status"] == "done")
-
-
-def test_h5_market_history_fields():
-    db = MemoryDb()
-    aid = _ready_agent(db, STRUCTURED)
-    today = date(2026, 8, 28)
-    raw = [{
-        "title": "Creative Director",
-        "company": "Acme",
-        "location": "Remote",
-        "url": "https://example.invalid/role",
-        "source": "adapter",
-    }]
-    prior_key = hr.role_key(raw[0])
-    # Prior private edition — personal history only.
-    db.editions.append({
-        "agent_id": aid,
-        "edition_date": "2026-08-01",
-        "payload": {
-            "seats": [{
-                "role_key": prior_key,
-                "first_seen": "2026-07-15",
-            }]
-        },
-        "html": "<html></html>",
-        "outcome": "seats",
-    })
-    db.add_job(aid, "first_edition")
-    runner = hr.Runner(db, collector=lambda _c: raw, today=today)
-    reports = runner.run()
-    check("H5 edition", reports[0].action == "edition")
-    check("H5 one new seat", reports[0].seats == 1)
-    # today's row is the second edition
-    today_ed = [e for e in db.editions if e["edition_date"] == "2026-08-28"][0]
-    payload = today_ed["payload"]
-    check("H5 engine_sha", "engine_sha" in payload)
-    check("H5 compiled_config_hash", len(payload.get("compiled_config_hash") or "") == 64)
-    seat = payload["seats"][0]
-    for key in ("role_key", "first_seen", "previously_seen", "source",
-                "new_or_resurfaced", "survived_because"):
-        check(f"H5 field {key}", key in seat)
-    check("H5 role_key url precedence", seat["role_key"] == prior_key)
-    check("H5 role_key is url:", seat["role_key"].startswith("url:"))
-    check("H5 previously_seen", seat["previously_seen"] is True)
-    check("H5 first_seen from prior", seat["first_seen"] == "2026-07-15")
-    check("H5 resurfaced", seat["new_or_resurfaced"] == "resurfaced")
-    check("H5 survived_because list", isinstance(seat["survived_because"], list))
-    check("H5 html has seat shape", 'data-handle=' in today_ed["html"])
-    check("H5 no DUMMY ROLE", "DUMMY ROLE" not in today_ed["html"])
-
-
-def test_h5b_new_seat_history():
-    compiled = hr.compile_from_content(STRUCTURED)
-    seats = hr.filter_and_cap([{
-        "title": "Creative Director", "company": "Nova",
-        "location": "Remote", "url": "",
-    }], compiled)
-    seats = hr.attach_market_fields(seats, {}, date(2026, 8, 28))
-    check("H5b new", seats[0]["new_or_resurfaced"] == "new")
-    check("H5b not previously", seats[0]["previously_seen"] is False)
-    check("H5b first_seen today", seats[0]["first_seen"] == "2026-08-28")
-    payload = hr.build_payload(seats, compiled, "abc")
-    check("H5b payload history keys",
-          set(payload["seats"][0]) >= {
-              "role_key", "first_seen", "previously_seen",
-              "source", "new_or_resurfaced", "survived_because",
-          })
-
-
-# ---------------------------------------------------------------------------
-# Fail-closed first_edition
-# ---------------------------------------------------------------------------
-
-def test_first_edition_fail_closed():
-    db = MemoryDb()
-    aid = str(uuid.uuid4())
-    db.add_brief(aid, COMPLETE, compiled_config=None, readiness=None)
-    jid = db.add_job(aid, "first_edition")
-    hr.Runner(db, collector=lambda _c: [], today=date(2026, 8, 28)).run()
-    check("no_compiled_config", db.jobs[jid]["error"] == "no_compiled_config")
-    check("no edition on fail", db.editions == [])
-
-    aid2 = str(uuid.uuid4())
-    compiled = hr.compile_from_content(INCOMPLETE)
-    db.add_brief(aid2, INCOMPLETE,
-                 compiled_config=hr.persistable_compiled(compiled),
-                 readiness="not_ready")
-    jid2 = db.add_job(aid2, "first_edition")
-    hr.Runner(db, collector=lambda _c: [], today=date(2026, 8, 28)).run()
-    check("readiness_blocked", db.jobs[jid2]["error"] == "readiness_blocked")
-
-    aid3 = str(uuid.uuid4())
-    jid3 = db.add_job(aid3, "first_edition")
-    hr.Runner(db, collector=lambda _c: [], today=date(2026, 8, 28)).run()
-    check("no_active_brief", db.jobs[jid3]["error"] == "no_active_brief")
-
-
 def test_refresh_compiles_if_missing():
     db = MemoryDb()
     aid = str(uuid.uuid4())
@@ -692,121 +437,6 @@ def test_refresh_compiles_if_missing():
     check("refresh wrote ready", brief["readiness"] == "ready")
     check("refresh job done", db.jobs[jid]["status"] == "done")
 
-
-def test_seat_cap():
-    compiled = hr.compile_from_content({
-        "include": ["director"],
-        "search_queries": ["director"],
-        "accepted_locations": ["remote"],
-        "seat_cap": 2,
-    })
-    raw = [
-        {"title": "Director A", "company": "A", "location": "Remote"},
-        {"title": "Director B", "company": "B", "location": "Remote"},
-        {"title": "Director C", "company": "C", "location": "Remote"},
-    ]
-    seats = hr.judge_seats(raw, compiled)
-    check("cap is ceiling after judgment", len(seats) == 2)
-
-
-# ---------------------------------------------------------------------------
-# H9 boundaries
-# ---------------------------------------------------------------------------
-
-def test_h9_boundaries():
-    src = open(hr.__file__, encoding="utf-8").read()
-    check("H9 no market_seen access",
-          not re.search(r"""['\"]market_seen['\"]|/market_seen|from market_seen""", src))
-    check("H9 no agent_config access",
-          not re.search(r"""['\"]agent_config['\"]|/agent_config|from agent_config""", src))
-    check("H9 no publish_shortlist call",
-          not re.search(r"publish_shortlist\s*\(", src))
-    check("H9 no docs/ write",
-          not re.search(r"""open\([^)]*docs/|['\"]docs/""", src))
-    check("H9 DUMMY ROLE rejected at persist",
-          "if \"DUMMY ROLE\" in html_doc" in src)
-    check("H9 no rank_with_fit call",
-          not re.search(r"rank_with_fit\s*\(", src))
-    check("H9 no deep_look call",
-          not re.search(r"deep_look\s*\(", src))
-    check("H9 no write_brief call",
-          not re.search(r"write_brief\s*\(", src))
-    check("H9 memory not imported as authority",
-          "from memory" not in src and "table memory" not in src)
-    db = MemoryDb()
-    aid = _ready_agent(db)
-    db.add_job(aid, "first_edition")
-    hr.Runner(db, collector=lambda _c: [], today=date(2026, 8, 28)).run()
-    check("H9 no memory reads", db.memory_reads == 0)
-    check("H9 no market_seen reads", db.market_seen_reads == 0)
-    check("H9 no publish", db.publish_calls == 0)
-
-
-def test_h8_html_seat_shape():
-    html_doc = hr.render_edition_html([{
-        "role_key": "cd|acme",
-        "handle": "Acme",
-        "line": "Creative Director — Remote",
-        "title": "Creative Director",
-        "company": "Acme",
-        "location": "Remote",
-    }])
-    check("H8 no dummy", "DUMMY ROLE" not in html_doc)
-    check("H8 seats json", 'id="foound-seats"' in html_doc)
-    blob = html_doc.split('id="foound-seats">')[1].split("</script>")[0]
-    seats = json.loads(blob)
-    check("H8 id/handle/line", set(seats[0]) == {"id", "handle", "line"})
-    check("H8 no empty pause plabel",
-          '<div class="plabel">What gives me pause</div>' not in html_doc)
-    empty = hr.render_edition_html([])
-    check("H8 empty no dummy", "DUMMY ROLE" not in empty)
-    check("H8 empty array",
-          json.loads(empty.split('id="foound-seats">')[1].split("</script>")[0]) == [])
-    with_arg = hr.render_edition_html([{
-        "role_key": "cd|acme",
-        "handle": "Acme",
-        "line": "Creative Director — Remote",
-        "title": "Creative Director",
-        "company": "Acme",
-        "location": "Remote",
-        "ai_why": "Because the seat matches your pattern.",
-        "ai_pause": "Scope may be narrower than it reads.",
-        "why_now": "Surfaced for the first time this morning &middot; still open as of 8:00 AM ET",
-    }])
-    blob2 = with_arg.split('id="foound-seats">')[1].split("</script>")[0]
-    pictured = json.loads(blob2)
-    check("H8 bind shape still id/handle/line",
-          set(pictured[0]) == {"id", "handle", "line"})
-    check("H8 handle at rest", pictured[0]["handle"] == "Acme")
-    check("H8 line at rest", pictured[0]["line"] == "Creative Director — Remote")
-    check("H8 why plabel",
-          '<div class="plabel">Why I chose it</div>' in with_arg)
-    check("H8 pause plabel",
-          '<div class="plabel">What gives me pause</div>' in with_arg)
-    check("H8 now plabel",
-          '<div class="plabel">Why now</div>' in with_arg)
-    check("H8 why ptext",
-          '<p class="ptext">Because the seat matches your pattern.</p>' in with_arg)
-    check("H8 pause ptext",
-          '<p class="ptext">Scope may be narrower than it reads.</p>' in with_arg)
-    no_pause = hr.render_edition_html([{
-        "role_key": "cd|acme",
-        "handle": "Acme",
-        "line": "Creative Director — Remote",
-        "ai_why": "A reason.",
-        "ai_pause": "",
-        "why_now": "Still open as of 8:00 AM ET",
-    }])
-    check("H8 omit empty pause block",
-          '<div class="plabel">What gives me pause</div>' not in no_pause)
-    check("H8 still has why and now",
-          '<div class="plabel">Why I chose it</div>' in no_pause
-          and '<div class="plabel">Why now</div>' in no_pause)
-
-
-# ---------------------------------------------------------------------------
-# H10 commission recovery predicate (mirrors 011; SQL is source of truth)
-# ---------------------------------------------------------------------------
 
 def should_insert_recovery(state, readiness, editions_count, job_statuses):
     """Same gates as sql/011_commission_recovery.sql at_work branch."""
@@ -860,203 +490,6 @@ def test_compile_job_writes_ready():
     check("compile persisted note", "temporary" in cfg["readiness_architecture"])
 
 
-def test_judgment_stronger_beats_weaker():
-    """Weaker-fit listed first; seat_cap=1. Filter/cap-alone would keep
-    the first eligible. Judgment must keep the stronger Brief fit."""
-    compiled = {
-        "include": ["creative director", "head of creative"],
-        "search_queries": ["creative director", "head of creative"],
-        "exclude_type": ["intern"],
-        "accepted_locations": ["new york", "remote"],
-        "seat_cap": 1,
-    }
-    raw = [
-        {"title": "Junior Creative Director", "company": "FirstCo",
-         "location": "Remote", "url": "https://example.invalid/weak"},
-        {"title": "Head of Creative", "company": "BestCo",
-         "location": "New York", "url": "https://example.invalid/strong"},
-        {"title": "Creative Director Intern", "company": "NoCo",
-         "location": "New York", "url": "https://example.invalid/intern"},
-    ]
-    seats = hr.judge_seats(raw, compiled)
-    check("J1 one seat", len(seats) == 1)
-    check("J1 stronger wins", seats[0]["company"] == "BestCo")
-    check("J1 not first-listed weaker", seats[0]["company"] != "FirstCo")
-    reasons = seats[0]["survived_because"]
-    check("J1 title_fit named", "title_fit" in reasons)
-    check("J1 location_fit named", "location_fit" in reasons)
-    check("J1 exclude_cleared named", "exclude_cleared" in reasons)
-    check("J1 ranked_above_peers", "ranked_above_peers" in reasons)
-    check("J1 not filter-only labels",
-          reasons != ["compiled_include", "within_seat_cap"])
-    check("J1 intern excluded",
-          all(s["company"] != "NoCo" for s in seats))
-
-
-def test_judgment_not_cap_alone():
-    compiled = {
-        "include": ["director"],
-        "search_queries": ["director"],
-        "exclude_type": [],
-        "accepted_locations": ["london", "remote"],
-        "seat_cap": 1,
-    }
-    # First row is eligible but weaker (remote + generic). Second is stronger.
-    raw = [
-        {"title": "Associate Director", "company": "Early",
-         "location": "Remote", "posting_id": "early-1"},
-        {"title": "Director", "company": "Later",
-         "location": "London", "posting_id": "later-1"},
-    ]
-    seats = hr.judge_seats(raw, compiled)
-    check("J2 judgment picks later stronger", seats[0]["company"] == "Later")
-    first_n = []
-    for job in raw:
-        if hr.passes_title(compiled, job["title"]) and hr.passes_location(
-                compiled, job["location"]):
-            first_n.append(job)
-            if len(first_n) >= 1:
-                break
-    check("J2 cap-alone would have kept Early", first_n[0]["company"] == "Early")
-    check("J2 they differ", seats[0]["company"] != first_n[0]["company"])
-
-
-# Private edition 1c0a8068 (hunt-runner #1) — five seats as written.
-# ROLE is the seat. "platforms" is CONTEXT (a market), not a job family.
-FIXTURE_1c0a8068_KEEP = [
-    {"title": "Creative Director, Marketing",
-     "company": "Duolingo", "location": "London",
-     "url": "https://example.invalid/duolingo-cd"},
-    {"title": "Creative Director, Marketing Campaigns",
-     "company": "Suno", "location": "NYC",
-     "url": "https://example.invalid/suno-cd"},
-]
-FIXTURE_1c0a8068_DROP = [
-    {"title": "Solutions Architect, Platforms (Presales)",
-     "company": "Stripe", "location": "London",
-     "url": "https://example.invalid/stripe-sa"},
-    {"title": "Senior Manager, Interactive World Model Platforms",
-     "company": "Nvidia", "location": "California",
-     "url": "https://example.invalid/nvidia-mgr"},
-    {"title": "Senior Software Engineer - GPU Local AI Platforms",
-     "company": "Nvidia", "location": "California",
-     "url": "https://example.invalid/nvidia-swe"},
-]
-
-
-def test_judgment_role_gate_fixture_1c0a8068():
-    """Replay the five written seats against №001 compiled families.
-
-    include[] still contains platforms / consumer tech / culture-shaping
-    brands. Those are CONTEXT. They must not pass ROLE.
-    """
-    compiled = hr.compile_from_content(SPECIMEN_5d260731)
-    check("J3 specimen ready", hr.readiness_of(compiled) == "ready")
-    check("J3 ROLE families are the seven",
-          compiled["search_queries"] == SPECIMEN_FAMILIES)
-    check("J3 platforms is include CONTEXT",
-          "platforms" in compiled["include"])
-    check("J3 platforms is not a ROLE family",
-          "platforms" not in compiled["search_queries"])
-    check("J3 consumer tech is CONTEXT",
-          "consumer tech" in compiled["include"]
-          and "consumer tech" not in compiled["search_queries"])
-    check("J3 culture-shaping brands is CONTEXT",
-          "culture-shaping brands" in compiled["include"]
-          and "culture-shaping brands" not in compiled["search_queries"])
-    families = hr.role_families(compiled)
-    check("J3 role_families == search_queries", families == SPECIMEN_FAMILIES)
-    ctx = hr.context_concepts(compiled)
-    check("J3 context has platforms", "platforms" in ctx)
-    check("J3 context has no families",
-          not any(f in ctx for f in SPECIMEN_FAMILIES))
-    man = hr.mandate_concepts(compiled)
-    check("J3 mandate from include move-concepts",
-          "building or transforming a creative function" in man
-          or "creatively ambitious" in man)
-    check("J3 mandate has no families",
-          not any(f in man for f in SPECIMEN_FAMILIES))
-
-    for job in FIXTURE_1c0a8068_KEEP:
-        check(f"J3 KEEP ROLE {job['company']}",
-              hr.passes_title(compiled, job["title"]))
-        score, reasons = hr.title_fit(job["title"], families)
-        check(f"J3 KEEP title_fit {job['company']}",
-              score > 0 and "title_fit" in reasons)
-
-    for job in FIXTURE_1c0a8068_DROP:
-        check(f"J3 DROP ROLE {job['company']} {job['title'][:24]}",
-              not hr.passes_title(compiled, job["title"]))
-        score, reasons = hr.title_fit(job["title"], families)
-        check(f"J3 DROP no ROLE score {job['company']}",
-              score == 0 and reasons == [])
-        # Old bug: include[] substring would have passed on "platforms".
-        old = [k for k in compiled["include"] if k and k in job["title"].lower()]
-        check(f"J3 DROP would have matched include {job['company']}",
-              "platforms" in old)
-
-    raw = FIXTURE_1c0a8068_KEEP + FIXTURE_1c0a8068_DROP
-    seats = hr.judge_seats(raw, compiled)
-    kept = {(s["company"], s["title"]) for s in seats}
-    check("J3 keep Duolingo",
-          ("Duolingo", "Creative Director, Marketing") in kept)
-    check("J3 keep Suno",
-          ("Suno", "Creative Director, Marketing Campaigns") in kept)
-    check("J3 drop Stripe",
-          all(s["company"] != "Stripe" for s in seats))
-    check("J3 drop Nvidia",
-          all(s["company"] != "Nvidia" for s in seats))
-    check("J3 only the two ROLE seats", len(seats) == 2)
-
-    # CONTEXT / MANDATE must not rescue a ROLE failure even when the
-    # company/text bag is stuffed with Craft leftovers.
-    rescued = hr.judge_seats([{
-        "title": "Solutions Architect, Platforms (Presales)",
-        "company": "consumer tech platforms culture-shaping brands",
-        "location": "London",
-        "description": "building or transforming a creative function; "
-                       "creatively ambitious",
-        "url": "https://example.invalid/rescue",
-    }], compiled)
-    check("J3 no CONTEXT/MANDATE rescue", rescued == [])
-
-
-def test_judgment_fictional_brief_uses_its_families():
-    """A Staff Product Designer brief hunts ITS families, not №001's seven."""
-    compiled = hr.compile_from_content(FICTIONAL_OTHER_ROLES)
-    check("J3f fictional families",
-          compiled["search_queries"] == FICTIONAL_FAMILIES)
-    check("J3f not the seven",
-          set(compiled["search_queries"]) != set(SPECIMEN_FAMILIES))
-    for locked in SPECIMEN_FAMILIES:
-        check(f"J3f lacks {locked!r}",
-              locked not in compiled["search_queries"])
-    check("J3f Staff PD passes ROLE",
-          hr.passes_title(compiled, "Staff Product Designer"))
-    check("J3f Design Director passes ROLE",
-          hr.passes_title(compiled, "Design Director"))
-    check("J3f specimen CD fails this Brief's ROLE",
-          not hr.passes_title(compiled, "Creative Director, Marketing"))
-    check("J3f Stripe platforms fails this Brief's ROLE",
-          not hr.passes_title(
-              compiled, "Solutions Architect, Platforms (Presales)"))
-    seats = hr.judge_seats(
-        FIXTURE_1c0a8068_KEEP
-        + FIXTURE_1c0a8068_DROP
-        + [{
-            "title": "Staff Product Designer",
-            "company": "OtherCo",
-            "location": "Berlin",
-            "url": "https://example.invalid/spd",
-        }],
-        compiled,
-    )
-    check("J3f only its family survives",
-          len(seats) == 1 and seats[0]["title"] == "Staff Product Designer")
-    check("J3f Duolingo/Suno not borrowed from №001",
-          all(s["company"] not in ("Duolingo", "Suno") for s in seats))
-
-
 def test_role_key_precedence():
     a = {"title": "CD", "company": "Acme", "location": "NYC",
          "posting_id": "gh-99", "source": "greenhouse",
@@ -1085,31 +518,6 @@ def test_role_key_precedence():
     check("RKp fallback includes location",
           hr.role_key(f1) == "tcl:cd|acme|nyc")
     check("RKp two openings no collapse", hr.role_key(f1) != hr.role_key(f2))
-
-
-def test_role_key_history_title_tweak_same_id():
-    compiled = {
-        "include": ["creative director"],
-        "search_queries": ["creative director"],
-        "accepted_locations": ["remote"],
-        "seat_cap": 5,
-        "exclude_type": [],
-    }
-    prior = [{"role_key": "id:greenhouse:board-7", "first_seen": "2026-07-01"}]
-    hist = hr.personal_history([{"seats": prior}])
-    today = [{
-        "title": "Creative Director, Brand",
-        "company": "Acme",
-        "location": "Remote",
-        "posting_id": "board-7",
-        "source": "greenhouse",
-    }]
-    seats = hr.attach_market_fields(hr.judge_seats(today, compiled), hist,
-                                    date(2026, 8, 28))
-    check("RKh same id resurfaced", seats[0]["previously_seen"] is True)
-    check("RKh not new", seats[0]["new_or_resurfaced"] == "resurfaced")
-    check("RKh first_seen kept", seats[0]["first_seen"] == "2026-07-01")
-    check("RKh source-qualified key", seats[0]["role_key"] == "id:greenhouse:board-7")
 
 
 def test_role_key_source_qualified():
@@ -1293,15 +701,6 @@ def test_logs_have_no_brief_copy(caplog=None):
     check("log no brief copy", "culture-shaping" not in blob)
 
 
-# ---------------------------------------------------------------------------
-# H14 final-seat editorial PORT — edition 30f7ee54 proof seats
-# ---------------------------------------------------------------------------
-
-FROZEN_NOW = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
-EDITION_30f7ee54 = "30f7ee54-0000-4000-8000-000000000001"
-EDITION_1c0a8068 = "1c0a8068-0000-4000-8000-000000000001"
-
-
 def _fake_score(_agent, profile, job, _jd):
     # Profile is personal context. Brief must not be the ranker.
     if profile and ("THE MOVE" in profile or "search_queries" in profile):
@@ -1315,16 +714,6 @@ def _fake_score(_agent, profile, job, _jd):
 
 def _fake_jd(url):
     return "JD TEXT" if url else ""
-
-
-def test_judge_seats_unchanged_by_editorial():
-    src = inspect.getsource(hr.judge_seats)
-    check("H14 judge_seats no score_fit", "score_fit" not in src)
-    check("H14 judge_seats no rank_with_fit", "rank_with_fit" not in src)
-    check("H14 judge_seats no fetch_jd", "fetch_jd" not in src)
-    check("H14 judge_seats no ai_why", "ai_why" not in src)
-    check("H14 judge_seats no why_now", "why_now" not in src)
-    check("H14 judge_seats no posted_at write", "posted_at" not in src)
 
 
 def test_why_now_reuses_shortlist_logic():
@@ -1354,424 +743,6 @@ def test_why_now_reuses_shortlist_logic():
     }
     from_iso = ja.why_now_text(iso_job, False, now=FROZEN_NOW)
     check("H14 iso posted_at", from_iso == resurfaced)
-
-
-def test_final_seat_editorial_annotation():
-    compiled = hr.compile_from_content(SPECIMEN_5d260731)
-    posted_duo = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
-    posted_suno = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
-    raw = [
-        {**FIXTURE_1c0a8068_KEEP[0], "posted_at": posted_duo},
-        {**FIXTURE_1c0a8068_KEEP[1], "posted_at": posted_suno},
-    ]
-    judged = hr.judge_seats(raw, compiled)
-    check("H14 two ROLE seats", len(judged) == 2)
-    check("H14 judge drops posted_at",
-          all("posted_at" not in s for s in judged))
-    seats = hr.attach_market_fields(judged, {}, date(2026, 8, 28))
-    urls = []
-
-    def fetch(url):
-        urls.append(url)
-        return _fake_jd(url)
-
-    seats = hr.annotate_final_seats(
-        seats, raw, fetch_jd=fetch, score=_fake_score,
-        profile="# Candidate Profile\nAirbnb and Apple.",
-        now=FROZEN_NOW,
-    )
-    check("H14 fetched both JDs", len(urls) == 2)
-    by_co = {s["company"]: s for s in seats}
-    duo, suno = by_co["Duolingo"], by_co["Suno"]
-    check("H14 duo why", duo["ai_why"].startswith("Duolingo is building"))
-    check("H14 duo pause", "seniority" in duo["ai_pause"])
-    check("H14 duo posted_at restored", duo["posted_at"] == posted_duo)
-    check("H14 duo new", duo["new_or_resurfaced"] == "new")
-    check("H14 duo why-now new",
-          duo["why_now"].startswith("Surfaced for the first time this morning"))
-    check("H14 duo why-now age", "posted 8 days ago" in duo["why_now"])
-    check("H14 suno why", suno["ai_why"].startswith("Suno is building"))
-    check("H14 suno posted_at restored", suno["posted_at"] == posted_suno)
-    check("H14 suno why-now age", "posted 27 days ago" in suno["why_now"])
-
-    payload = hr.build_payload(seats, compiled, "sha")
-    by_payload = {row["company"]: row for row in payload["seats"]}
-    check("H14 payload duo fit", by_payload["Duolingo"]["fit"] == 68)
-    check("H14 payload suno fit", by_payload["Suno"]["fit"] == 78)
-    check("H14 payload lead is highest fit",
-          payload["seats"][0]["lead"] is True
-          and payload["seats"][0]["company"] == "Suno")
-    check("H14 payload ordered by fit",
-          [row["company"] for row in payload["seats"]] == ["Suno", "Duolingo"]
-          and [row["company"] for row in payload["seats"]]
-          == [s["company"] for s in seats])
-    check("H14 same role_keys",
-          {row["role_key"] for row in payload["seats"]}
-          == {s["role_key"] for s in seats}
-          == {s["role_key"] for s in judged})
-    for row in payload["seats"]:
-        for key in ("ai_why", "ai_pause", "why_now", "posted_at",
-                    "new_or_resurfaced", "fit", "lead", "seclabel"):
-            check(f"H14 payload {row['company']} {key}", key in row)
-        check(f"H14 payload {row['company']} posted iso",
-              isinstance(row["posted_at"], str) and "T" in row["posted_at"])
-        check(f"H14 payload {row['company']} why nonempty", bool(row["ai_why"]))
-        check(f"H14 payload {row['company']} pause nonempty",
-              bool(row["ai_pause"]))
-        check(f"H14 payload {row['company']} why_now nonempty",
-              bool(row["why_now"]))
-        check(f"H14 payload {row['company']} fit int",
-              isinstance(row["fit"], int) and 0 <= row["fit"] <= 100)
-
-    html_doc = hr.render_edition_html(seats)
-    blob = html_doc.split('id="foound-seats">')[1].split("</script>")[0]
-    pictured = json.loads(blob)
-    check("H14 html bind locked",
-          all(set(p) == {"id", "handle", "line"} for p in pictured))
-    check("H14 html three plabels",
-          html_doc.count('<div class="plabel">Why I chose it</div>') == 2)
-    check("H14 html pause plabels",
-          html_doc.count('<div class="plabel">What gives me pause</div>') == 2)
-    check("H14 html now plabels",
-          html_doc.count('<div class="plabel">Why now</div>') == 2)
-    check("H14 html ptext", html_doc.count('<p class="ptext">') == 6)
-    check("H14 html has duo why",
-          "Duolingo is building a culturally fluent brand voice." in html_doc)
-    check("H14 html has suno why",
-          "Suno is building brand identity in real time." in html_doc)
-    check("H14 html anno duo", "{fit&nbsp;68}" in html_doc)
-    check("H14 html anno suno", "{fit&nbsp;78}" in html_doc)
-    check("H14 html scoreline duo",
-          '<div class="scoreline">68 &middot; Worth considering</div>' in html_doc)
-    check("H14 html scoreline suno",
-          '<div class="scoreline">78 &middot; Strong fit</div>' in html_doc)
-    check("H14 html lead seclabel",
-          "I&rsquo;d start with" in html_doc
-          and seats[0]["company"] in html_doc)
-    check("H14 html rest seclabel",
-          '<div class="seclabel">Worth your attention</div>' in html_doc)
-    check("H14 html meta salary", "Salary not posted" in html_doc)
-    check("H14 html meta posted duo",
-          '<span class="dim">posted Aug 20</span>' in html_doc)
-    check("H14 html meta posted suno",
-          '<span class="dim">posted Aug 1</span>' in html_doc)
-    check("H14 html meta loc duo", "<b>London</b>" in html_doc)
-
-
-def test_first_edition_persists_editorial_fields():
-    db = MemoryDb()
-    aid = _ready_agent(db, SPECIMEN_5d260731)
-    posted = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
-    raw = [{**FIXTURE_1c0a8068_KEEP[0], "posted_at": posted},
-           {**FIXTURE_1c0a8068_KEEP[1], "posted_at": posted}]
-    db.add_job(aid, "first_edition")
-    runner = hr.Runner(
-        db, collector=lambda _c: raw, today=date(2026, 8, 28),
-        fetch_jd=_fake_jd, score=_fake_score,
-        profile="# Candidate Profile\nAirbnb.",
-    )
-    reports = runner.run()
-    check("H14 edition action", reports[0].action == "edition")
-    check("H14 two seats", reports[0].seats == 2)
-    ed = db.editions[-1]
-    seats = ed["payload"]["seats"]
-    check("H14 persisted count", len(seats) == 2)
-    for s in seats:
-        check("H14 persisted ai_why", bool(s.get("ai_why")))
-        check("H14 persisted ai_pause", bool(s.get("ai_pause")))
-        check("H14 persisted why_now", bool(s.get("why_now")))
-        check("H14 persisted posted_at", bool(s.get("posted_at")))
-        check("H14 persisted fit", isinstance(s.get("fit"), int))
-        check("H14 persisted new_or_resurfaced", s.get("new_or_resurfaced") in
-              ("new", "resurfaced"))
-    check("H14 persisted duo fit",
-          next(s["fit"] for s in seats if s["company"] == "Duolingo") == 68)
-    check("H14 persisted suno fit",
-          next(s["fit"] for s in seats if s["company"] == "Suno") == 78)
-    check("H14 persisted html plabels",
-          '<div class="plabel">Why I chose it</div>' in ed["html"])
-    check("H14 persisted bind", 'id="foound-seats"' in ed["html"])
-    check("H14 persisted html anno", "{fit&nbsp;68}" in ed["html"])
-    check("H14 persisted html scoreline",
-          '<div class="scoreline">78 &middot; Strong fit</div>' in ed["html"])
-
-
-def test_enrich_edition_30f7ee54_no_hunt():
-    db = MemoryDb()
-    keep_html = "<html>keep-1c0a8068</html>"
-    keep_payload = {"seats": [{"role_key": "old", "title": "Keep"}]}
-    db.editions.append({
-        "id": EDITION_1c0a8068,
-        "agent_id": "a-keep",
-        "edition_date": "2026-08-01",
-        "payload": keep_payload,
-        "html": keep_html,
-        "outcome": "seats",
-    })
-    seats_payload = [
-        {
-            "role_key": "url:https://example.invalid/duolingo-cd",
-            "title": "Creative Director, Marketing",
-            "company": "Duolingo",
-            "location": "London",
-            "url": "https://example.invalid/duolingo-cd",
-            "first_seen": "2026-08-28",
-            "previously_seen": False,
-            "source": "hunt",
-            "new_or_resurfaced": "new",
-            "survived_because": ["title_fit"],
-            "posted_at": "2026-08-20T12:00:00Z",
-        },
-        {
-            "role_key": "url:https://example.invalid/suno-cd",
-            "title": "Creative Director, Marketing Campaigns",
-            "company": "Suno",
-            "location": "NYC",
-            "url": "https://example.invalid/suno-cd",
-            "first_seen": "2026-08-01",
-            "previously_seen": True,
-            "source": "hunt",
-            "new_or_resurfaced": "resurfaced",
-            "survived_because": ["title_fit"],
-            "posted_at": "2026-08-01T12:00:00Z",
-        },
-    ]
-    db.editions.append({
-        "id": EDITION_30f7ee54,
-        "agent_id": "a-proof",
-        "edition_date": "2026-08-28",
-        "payload": {
-            "engine_sha": "abc",
-            "compiled_config_hash": "d" * 64,
-            "seats": seats_payload,
-        },
-        "html": "<html>old-30f7ee54</html>",
-        "outcome": "seats",
-    })
-    hunted = {"n": 0}
-
-    def boom_collect(_c):
-        hunted["n"] += 1
-        raise AssertionError("enrich must not hunt")
-
-    result = hr.enrich_persisted_edition(
-        db, "30f7ee54",
-        fetch_jd=_fake_jd, score=_fake_score,
-        profile="# Candidate Profile\nAirbnb.",
-        now=FROZEN_NOW,
-    )
-    check("H15 enrich id", result["id"] == EDITION_30f7ee54)
-    check("H15 enrich seats", result["seats"] == 2)
-    check("H15 no hunt", hunted["n"] == 0)
-    ed = db.edition_by_id("30f7ee54")
-    seats = ed["payload"]["seats"]
-    check("H15 suno why", "Suno" in seats[0]["ai_why"])
-    check("H15 duo why", "Duolingo" in seats[1]["ai_why"])
-    check("H15 suno fit", seats[0]["fit"] == 78)
-    check("H15 duo fit", seats[1]["fit"] == 68)
-    check("H15 lead highest fit", seats[0]["lead"] is True and seats[0]["company"] == "Suno")
-    check("H15 ordered by fit", [s["company"] for s in seats] == ["Suno", "Duolingo"])
-    check("H15 why_now resurfaced",
-          seats[0]["why_now"].startswith("Posted"))
-    check("H15 why_now new",
-          seats[1]["why_now"].startswith("Surfaced for the first time this morning"))
-    check("H15 posted_at kept", bool(seats[0]["posted_at"]))
-    check("H15 html plabels",
-          '<div class="plabel">Why I chose it</div>' in ed["html"])
-    check("H15 html bind", 'id="foound-seats"' in ed["html"])
-    check("H15 html writes fit", "{fit&nbsp;68}" in ed["html"] and "{fit&nbsp;78}" in ed["html"])
-    check("H15 html scoreline",
-          '<div class="scoreline">68 &middot; Worth considering</div>' in ed["html"])
-    check("H15 html lead seclabel",
-          'I&rsquo;d start with Suno' in ed["html"])
-    check("H15 html rest seclabel",
-          '<div class="seclabel">Worth your attention</div>' in ed["html"])
-    check("H15 html meta posted",
-          '<span class="dim">posted Aug 20</span>' in ed["html"])
-    keep = db.edition_by_id("1c0a8068")
-    check("H15 1c0a8068 html untouched", keep["html"] == keep_html)
-    check("H15 1c0a8068 payload untouched",
-          keep["payload"] == keep_payload)
-
-
-def test_enrich_refuses_1c0a8068():
-    db = MemoryDb()
-    db.editions.append({
-        "id": EDITION_1c0a8068,
-        "agent_id": "a-keep",
-        "edition_date": "2026-08-01",
-        "payload": {"seats": []},
-        "html": "<html>keep</html>",
-        "outcome": "empty",
-    })
-    try:
-        hr.enrich_persisted_edition(db, "1c0a8068",
-                                    fetch_jd=_fake_jd, score=_fake_score)
-        check("H15 refuse 1c0a8068", False)
-    except hr.HuntError as e:
-        check("H15 refuse named", e.name == "edition_persist_failed")
-    keep = db.edition_by_id("1c0a8068")
-    check("H15 refused leaves html", keep["html"] == "<html>keep</html>")
-
-
-def test_non_001_agent_does_not_load_001_profile():
-    """A commissioned non-001 agent must not be argued as Carlos."""
-    import builtins
-    db = MemoryDb()
-    aid = _ready_agent(db, SPECIMEN_5d260731)
-    check("H16 fixture is not 001", aid != "001")
-    db.agent_numbers[aid] = 2
-    raw = [{**FIXTURE_1c0a8068_KEEP[0],
-            "posted_at": datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)}]
-    db.add_job(aid, "first_edition")
-    ja = hr._import_job_alerts_adapters()
-    seen = []
-    orig = ja.load_agent_config
-
-    def watch(key, *a, **k):
-        seen.append(str(key))
-        return orig(key, *a, **k)
-
-    ja.load_agent_config = watch
-    opened = []
-    real_open = builtins.open
-
-    def guard(path, *a, **k):
-        opened.append(str(path))
-        return real_open(path, *a, **k)
-
-    builtins.open = guard
-    try:
-        reports = hr.Runner(
-            db, collector=lambda _c: raw, today=date(2026, 8, 28),
-        ).run()
-    finally:
-        builtins.open = real_open
-        ja.load_agent_config = orig
-    check("H16 edition ran", reports[0].action == "edition")
-    check("H16 did not request 001 config", "001" not in seen)
-    check("H16 did not open profile.md",
-          not any(str(p).replace("\\", "/").endswith("profile.md")
-                  for p in opened))
-    agent = hr._score_agent(ja, aid, 2)
-    check("H16 stub is not 001", getattr(agent, "agent_id", None) != "001")
-    check("H16 stub has no 001 profile_path",
-          getattr(agent, "profile_path", None) != "profile.md")
-
-
-def test_enrich_30f7ee54_resolves_to_001():
-    """Edition 30f7ee54 belongs to №001 — enrich must load that profile."""
-    db = MemoryDb()
-    owner = "aaaaaaaa-0000-4000-8000-000000000001"
-    db.agent_numbers[owner] = 1
-    db.editions.append({
-        "id": EDITION_30f7ee54,
-        "agent_id": owner,
-        "edition_date": "2026-08-28",
-        "payload": {
-            "engine_sha": "abc",
-            "compiled_config_hash": "d" * 64,
-            "seats": [{
-                "role_key": "url:https://example.invalid/duolingo-cd",
-                "title": "Creative Director, Marketing",
-                "company": "Duolingo",
-                "location": "London",
-                "url": "https://example.invalid/duolingo-cd",
-                "new_or_resurfaced": "new",
-            }],
-        },
-        "html": "<html>old</html>",
-        "outcome": "seats",
-    })
-    ja = hr._import_job_alerts_adapters()
-    seen = []
-    orig = ja.load_agent_config
-
-    def watch(key, *a, **k):
-        seen.append(str(key))
-        return orig(key, *a, **k)
-
-    ja.load_agent_config = watch
-    try:
-        hr.enrich_persisted_edition(db, "30f7ee54")
-    finally:
-        ja.load_agent_config = orig
-    check("H16 enrich asked for 001", "001" in seen)
-
-
-def test_hunt_path_never_calls_rank_with_fit():
-    src = open(hr.__file__, encoding="utf-8").read()
-    check("H14 source no rank_with_fit(",
-          not re.search(r"rank_with_fit\s*\(", src))
-    compiled = hr.compile_from_content(SPECIMEN_5d260731)
-    raw = list(FIXTURE_1c0a8068_KEEP)
-    hits = {"rank": 0}
-
-    def boom(*_a, **_k):
-        hits["rank"] += 1
-        raise AssertionError("rank_with_fit called")
-
-    ja = hr._import_job_alerts_adapters()
-    orig = ja.rank_with_fit
-    ja.rank_with_fit = boom
-    try:
-        seats = hr.annotate_final_seats(
-            hr.attach_market_fields(hr.judge_seats(raw, compiled), {},
-                                    date(2026, 8, 28)),
-            raw, fetch_jd=_fake_jd, score=_fake_score,
-            profile="# Candidate Profile\nAirbnb.",
-            now=FROZEN_NOW,
-        )
-    finally:
-        ja.rank_with_fit = orig
-    check("H14 annotate no rank", hits["rank"] == 0)
-    check("H14 annotate kept two", len(seats) == 2)
-    check("H14 annotate persisted fit",
-          {s["company"]: s["fit"] for s in seats}
-          == {"Duolingo": 68, "Suno": 78})
-
-
-def test_fit_tier_reused_not_rewritten():
-    src = open(hr.__file__, encoding="utf-8").read()
-    check("H14 no local fit_tier def", "def fit_tier" not in src)
-    for phrase in ("Exceptional fit", "Strong fit", "Worth considering",
-                   "Wildcard"):
-        check(f"H14 no rewritten {phrase}", phrase not in src)
-    ja = hr._import_job_alerts_adapters()
-    check("H14 fit_tier is job_alerts", hr._fit_tier_label is not ja.fit_tier)
-    seen = []
-    orig = ja.fit_tier
-
-    def watch(score):
-        seen.append(score)
-        return orig(score)
-
-    ja.fit_tier = watch
-    try:
-        html_doc = hr.render_edition_html([{
-            "role_key": "cd|acme",
-            "company": "Acme",
-            "title": "Creative Director",
-            "location": "Remote",
-            "fit": 85,
-            "ai_why": "A reason.",
-            "ai_pause": "",
-            "why_now": "Still open.",
-        }])
-    finally:
-        ja.fit_tier = orig
-    check("H14 fit_tier called with 85", seen == [85])
-    check("H14 scoreline uses existing tier",
-          '<div class="scoreline">85 &middot; Exceptional fit</div>' in html_doc)
-    check("H14 existing thresholds",
-          ja.fit_tier(85) == "Exceptional fit"
-          and ja.fit_tier(75) == "Strong fit"
-          and ja.fit_tier(60) == "Worth considering"
-          and ja.fit_tier(59) == "Wildcard")
-    judge_src = inspect.getsource(hr.judge_seats)
-    check("H14 judge_seats still no score_fit", "score_fit" not in judge_src)
-    check("H14 judge_seats still no rank_with_fit",
-          "rank_with_fit" not in judge_src)
 
 
 def test_seclabels_follow_fit_order():
@@ -1825,211 +796,889 @@ def test_seclabels_follow_fit_order():
           and tied_labeled[0]["seclabel"] == "I'd start with First")
 
 
-def test_meta_omits_posted_when_null():
-    html_doc = hr.render_edition_html([{
-        "role_key": "cd|acme",
-        "company": "Acme",
-        "title": "Creative Director",
-        "location": "Paris",
-        "fit": 60,
-        "posted_at": None,
-        "ai_why": "A reason.",
-        "ai_pause": "",
-        "why_now": "Still open.",
-    }])
-    check("H14 meta loc", "<b>Paris</b>" in html_doc)
-    check("H14 meta salary hardcoded", "Salary not posted" in html_doc)
-    check("H14 meta no posted span",
-          "posted " not in html_doc.split('<div class="meta">')[1].split("</div>")[0])
-    check("H14 anno at 60", "{fit&nbsp;60}" in html_doc)
-    check("H14 scoreline at 60",
-          '<div class="scoreline">60 &middot; Worth considering</div>' in html_doc)
+# ---------------------------------------------------------------------------
+# C · compile
+# ---------------------------------------------------------------------------
+
+SPECIMEN_INCLUDE_EXPANDED = [
+    "executive creative",
+    "creative director", "director of creative", "director, creative",
+    "group creative",
+    "head of creative", "creative lead",
+    "head of brand", "brand director", "director of brand", "director, brand", "brand lead",
+    "vp of creative", "vp, creative", "vp creative", "vp of brand", "vp, brand", "vp brand",
+]
 
 
-def test_lead_follows_existing_fit_70_66():
-    """Production 30f7ee54 shape: Suno 70, Duolingo 66 already present.
+def test_c_h2_complete_brief_ready():
+    cfg = hr.compile_from_content(COMPLETE)
+    check("C ready", hr.readiness_of(cfg) == "ready")
+    check("C families as written",
+          cfg["families"] == ["creative director", "head of creative", "head of brand"], cfg["families"])
+    check("C include expanded", "director of creative" in cfg["include"]
+          and "creative lead" in cfg["include"] and "brand director" in cfg["include"])
+    check("C location phrases kept",
+          cfg["location_phrases"] == ["nyc", "california", "remote us", "london", "paris"],
+          cfg["location_phrases"])
+    check("C gazetteer expanded", "culver city" in cfg["accepted_locations"]
+          and "san francisco" in cfg["accepted_locations"]
+          and "new york" in cfg["accepted_locations"])
+    check("C engine default excludes", cfg["exclude_type"] == list(hr.ENGINE_DEFAULT_EXCLUDES))
+    check("C seat_cap default 11", cfg["seat_cap"] == 11)
+    check("C priority empty unless structured", cfg["priority_companies"] == [])
+    check("C search queries engine default",
+          cfg["search_queries"] == list(hr.ENGINE_DEFAULT_SEARCH_QUERIES))
+    check("C reasons empty when ready", cfg["readiness_reasons"] == [])
+    check("C _readiness stripped on persist",
+          "_readiness" not in hr.persistable_compiled(cfg))
+    for key in ("subjects_used", "families", "include", "exclude_type", "location_phrases",
+                "accepted_locations", "search_queries", "priority_companies", "seat_cap",
+                "compiled_at", "engine_sha", "readiness_reasons", "readiness_architecture"):
+        check(f"C key {key}", key in cfg)
 
-    Reorder from those numbers. Do not call score_fit. Same role_keys.
-    judge_seats order is not lead. Enrich still refuses 1c0a8068.
-    """
-    duo_key = "url:https://example.invalid/duolingo-cd"
-    suno_key = "url:https://example.invalid/suno-cd"
-    seats = [
-        {
-            "role_key": duo_key,
-            "title": "Creative Director, Marketing",
-            "company": "Duolingo",
-            "location": "London",
-            "url": "https://example.invalid/duolingo-cd",
-            "fit": 66,
-            "ai_why": "Duolingo why",
-            "ai_pause": "p",
-            "why_now": "n",
-            "new_or_resurfaced": "new",
-        },
-        {
-            "role_key": suno_key,
-            "title": "Creative Director, Marketing Campaigns",
-            "company": "Suno",
-            "location": "NYC",
-            "url": "https://example.invalid/suno-cd",
-            "fit": 70,
-            "ai_why": "Suno why",
-            "ai_pause": "p",
-            "why_now": "n",
-            "new_or_resurfaced": "resurfaced",
-        },
+
+def test_c_structured_content():
+    cfg = hr.compile_from_content({
+        "include": ["creative director"], "accepted_locations": ["remote"],
+        "search_queries": ["creative director"], "seat_cap": 3,
+        "priority_companies": ["apple"], "exclude_type": ["freelance"],
+    })
+    check("C2b ready", hr.readiness_of(cfg) == "ready")
+    check("C2b include", cfg["include"] == ["creative director", "director of creative", "director, creative"])
+    check("C2b remote", "remote" in cfg["accepted_locations"])
+    check("C2b seat_cap", cfg["seat_cap"] == 3)
+    check("C2b priority kept as written", cfg["priority_companies"] == ["apple"])
+    check("C2b brief exclusions ∪ defaults",
+          cfg["exclude_type"][0] == "freelance" and "intern" in cfg["exclude_type"])
+
+
+def test_c_specimen_5d260731():
+    cfg = hr.compile_from_content(SPECIMEN_5d260731)
+    check("CQ specimen ready", hr.readiness_of(cfg) == "ready")
+    check("CQ families are the seven", cfg["families"] == SPECIMEN_FAMILIES, cfg["families"])
+    check("CQ include is the expansion", cfg["include"] == SPECIMEN_INCLUDE_EXPANDED, cfg["include"])
+    check("CQ no bare cd", "cd" not in cfg["include"])
+    check("CQ no concept mining",
+          not any(x in cfg["include"] for x in ("platforms", "consumer tech", "creatively ambitious",
+                                                "global / multi-market", "culture-shaping brands")))
+    check("CQ locations intact", cfg["location_phrases"] == ["nyc", "california", "remote us", "london", "paris"])
+    check("CQ Apple not a priority house unless the Brief says so", cfg["priority_companies"] == [])
+
+
+def test_c_fictional_brief_own_families():
+    cfg = hr.compile_from_content(FICTIONAL_OTHER_ROLES)
+    check("CQ fictional ready", hr.readiness_of(cfg) == "ready")
+    check("CQ fictional families", cfg["families"] == FICTIONAL_FAMILIES, cfg["families"])
+    check("CQ none of №001's", not any(f in cfg["include"] for f in ("executive creative", "head of brand")))
+    check("CQ berlin + remote", "berlin" in cfg["accepted_locations"] and "remote" in cfg["accepted_locations"])
+
+
+def test_c_ready_requires_families_and_locations():
+    locs_only = hr.compile_from_content({"accepted_locations": ["remote"]})
+    check("CQ locations-only not_ready", hr.readiness_of(locs_only) == "not_ready")
+    check("CQ locations-only needs families", "no_role_families" in locs_only["readiness_reasons"])
+    fams_only = hr.compile_from_content({"search_queries": ["creative director"]})
+    check("CQ families-only not_ready", hr.readiness_of(fams_only) == "not_ready")
+    check("CQ families-only needs locations", "no_accepted_locations" in fams_only["readiness_reasons"])
+    empty = hr.compile_from_content({})
+    check("CQ empty no authority", "no_usable_hunt_authority" in empty["readiness_reasons"])
+
+
+def test_c_unmapped_location_is_informational():
+    cfg = hr.compile_from_content({"search_queries": ["creative director"],
+                                   "accepted_locations": ["london", "bogotá"]})
+    check("C unmapped still ready", hr.readiness_of(cfg) == "ready")
+    check("C unmapped reason present",
+          "unmapped_location_phrase:bogotá" in cfg["readiness_reasons"], cfg["readiness_reasons"])
+    check("C unmapped phrase kept literally", "bogotá" in cfg["accepted_locations"])
+
+
+def test_c_skip_market_and_avoid():
+    cfg = hr.compile_from_content({
+        "subjects": [
+            {"title": "ROLE SPACE", "text": "Creative Director"},
+            {"title": "WHERE", "text": "Remote"},
+            {"title": "MARKET", "text": "Anthropic, OpenAI"},
+            {"title": "AVOID", "text": "Events, content ops"},
+        ]
+    })
+    check("C6b no include from MARKET", "anthropic, openai" not in cfg["include"])
+    check("C6b AVOID prose is off (engine defaults only)",
+          cfg["exclude_type"] == list(hr.ENGINE_DEFAULT_EXCLUDES))
+
+
+# ---------------------------------------------------------------------------
+# G · gazetteer and synonym tables — by meaning
+# ---------------------------------------------------------------------------
+
+def test_g_gazetteer_rows():
+    rows = [
+        ("major us hubs", {"new york", "los angeles", "san francisco", "chicago", "austin", "seattle"}),
+        ("california", {"culver city", "san francisco", "san jose", "los angeles", "san diego"}),
+        ("nyc", {"new york", "nyc", "brooklyn"}),
+        ("new york, ny", {"new york"}),
+        ("remote us", {"remote", "united states"}),
+        ("remote", {"remote"}),
+        ("london", {"london"}),
+        ("uk", {"london", "united kingdom", "manchester"}),
+        ("paris", {"paris"}),
+        ("major european capitals", {"london", "paris", "berlin", "madrid", "rome", "europe"}),
+        ("and the major european capitals", {"london", "paris", "berlin"}),
+        ("toronto", {"toronto"}),
+        ("canada", {"toronto", "montreal", "vancouver"}),
+        ("united states", {"united states", "us", "new york", "san francisco"}),
     ]
-    keys_before = [s["role_key"] for s in seats]
-    labeled = hr.assign_editorial_labels(seats)
-    check("H17 order is 70 first",
-          [s["company"] for s in labeled] == ["Suno", "Duolingo"])
-    check("H17 I'd start with 70",
-          labeled[0]["lead"] is True
-          and labeled[0]["seclabel"] == "I'd start with Suno"
-          and labeled[0]["fit"] == 70)
-    check("H17 66 Worth your attention",
-          labeled[1]["lead"] is False
-          and labeled[1]["seclabel"] == "Worth your attention"
-          and labeled[1]["fit"] == 66)
-    check("H17 same role_keys",
-          [s["role_key"] for s in labeled] == [suno_key, duo_key]
-          and set(s["role_key"] for s in labeled) == set(keys_before))
-    check("H17 judge order not lead", labeled[0]["company"] != "Duolingo")
-    html_doc = hr.render_edition_html(seats)
-    check("H17 html I'd start with Suno",
-          "I&rsquo;d start with Suno" in html_doc)
-    check("H17 html 66 worth attention",
-          '<div class="seclabel">Worth your attention</div>' in html_doc)
-    check("H17 html Suno before Duolingo",
-          html_doc.index("Suno") < html_doc.index("Duolingo"))
+    for phrase, expect in rows:
+        tokens, mapped = hr.expand_location_phrase(phrase)
+        check(f"G mapped '{phrase}'", mapped)
+        check(f"G meaning '{phrase}'", expect <= set(tokens), set(tokens) - expect)
+    for phrase in ("bogotá", "singapore", "tokyo"):
+        tokens, mapped = hr.expand_location_phrase(phrase)
+        check(f"G unmapped '{phrase}' → itself", tokens == [phrase] and not mapped)
+    check("G every row has a meaning", all(m for m, _ in hr.LOCATION_GAZETTEER.values()))
+
+
+def test_g_role_synonyms():
+    rows = [
+        ("cd", {"creative director"}),
+        ("creative director", {"creative director", "director of creative", "director, creative"}),
+        ("ecd", {"executive creative"}),
+        ("executive cd", {"executive creative"}),
+        ("gcd", {"group creative"}),
+        ("group cd", {"group creative"}),
+        ("head of creative", {"head of creative", "creative lead"}),
+        ("head of brand", {"head of brand", "brand director", "director of brand", "brand lead"}),
+        ("vp brand/creative", {"vp of creative", "vp, creative", "vp of brand", "vp, brand"}),
+        ("design director", {"design director"}),
+        ("chief creative officer", {"chief creative"}),
+        ("staff product designer", {"staff product designer"}),
+    ]
+    for fam, expect in rows:
+        got = set(hr.expand_role_family(fam))
+        check(f"G synonym '{fam}'", expect <= got, got)
+
+
+# ---------------------------------------------------------------------------
+# E · eligibility on the AgentConfig (job_alerts gates)
+# ---------------------------------------------------------------------------
+
+def _specimen_agent():
+    ja = hr._import_job_alerts_adapters()
+    cfg = hr.compile_from_content(SPECIMEN_5d260731)
+    return ja, hr.agent_config_from_brief(ja, cfg, agent_id="a", agent_no=7)
+
+
+def test_e_c1_location_recall_fixtures():
+    ja, agent = _specimen_agent()
+    for loc in ("San Francisco", "Culver City", "New York, NY", "London, England",
+                "Remote - US", "3 Locations", "", "Paris, France", "Remote"):
+        check(f"E location passes '{loc}'", ja.passes_location(agent, loc))
+    for loc in ("Jakarta", "Singapore", "Tokyo, Japan"):
+        check(f"E location fails '{loc}'", not ja.passes_location(agent, loc))
+
+
+def test_e_role_gate_j3_preserved():
+    ja, agent = _specimen_agent()
+    for title in ("Creative Director, Marketing", "Senior Creative Director",
+                  "Executive Creative Director", "Head of Brand, Creative Studio",
+                  "VP, Brand Creative", "Group Creative Director, Apple Music",
+                  "Head of Brand, Adobe Creative", "Creative Director, Design - Apple TV Sports Marketing"):
+        check(f"E role passes '{title}'", ja.passes_title(agent, title))
+    for title in ("Solutions Architect, Platforms",
+                  "Senior Manager, Interactive World Model Platforms",
+                  "Senior Software Engineer - GPU Local AI Platforms",
+                  "Creative Director Intern", "Brand Designer", "Head of Creative Operations Contractor"):
+        check(f"E role fails '{title}'", not ja.passes_title(agent, title))
+
+
+def test_e_context_cannot_rescue_role():
+    """J3: a role that fails ROLE is out, however the company or a description reads."""
+    ja, agent = _specimen_agent()
+    raw = [
+        {"title": "Solutions Architect, Platforms", "company": "Stripe brand creative director",
+         "location": "San Francisco", "url": "https://stripe.com/jobs/1",
+         "description": "creative director head of brand executive creative"},
+        {"title": "Creative Director, Marketing", "company": "Suno",
+         "location": "NYC", "url": "https://jobs.ashbyhq.com/suno/1"},
+    ]
+    db = MemoryDb()
+    aid = _ready_agent(db, SPECIMEN_5d260731)
+    db.add_job(aid, "first_edition")
+    r = _runner(db, raw, score=_score_by_title({"Creative Director, Marketing": (70, "why", "pause")}))
+    r.run()
+    ed = db.editions[0]
+    keys = [s["role_key"] for s in ed["payload"]["seats"]]
+    check("E platforms role never eligible", not any("stripe" in k for k in keys))
+    check("E suno seated", any("suno" in k for k in keys))
+    check("E eligible count 1", ed["payload"]["counts"]["eligible"] == 1)
+
+
+# ---------------------------------------------------------------------------
+# V · verdicts
+# ---------------------------------------------------------------------------
+
+def _raw_two():
+    return [
+        {"title": "Creative Director, Marketing", "company": "Duolingo",
+         "location": "London, England", "url": "https://careers.duolingo.com/jobs/1"},
+        {"title": "Creative Director, Marketing", "company": "Duolingo",
+         "location": "New York, NY", "url": "https://careers.duolingo.com/jobs/2"},
+        {"title": "Creative Director, Marketing Campaigns", "company": "Suno",
+         "location": "NYC", "url": "https://jobs.ashbyhq.com/suno/1"},
+    ]
+
+
+def test_v_exact_role_key_excludes_one_posting():
+    raw = _raw_two()
+    k_london = hr.role_key(raw[0])
+    db = MemoryDb()
+    aid = _ready_agent(db, SPECIMEN_5d260731)
+    db.add_job(aid, "first_edition")
+    score = _score_by_title({}, default=(70, "why", "pause"))
+    _runner(db, raw, score=score, state=FakeState(excluded={k_london})).run()
+    ed = db.editions[0]
+    keys = [s["role_key"] for s in ed["payload"]["seats"]]
+    check("V london excluded", k_london not in keys)
+    check("V new york twin kept", hr.role_key(raw[1]) in keys)
+    check("V excluded count 1", ed["payload"]["counts"]["excluded"] == 1)
+    check("V legacy hits 0", ed["payload"]["counts"]["legacy_hits"] == 0)
+
+
+def test_v_legacy_key_compatibility_only():
+    ja = hr._import_job_alerts_adapters()
+    raw = _raw_two()
+    legacy = ja.dedup_key("Creative Director, Marketing", "Duolingo")
+    check("V legacy key shape recognised", not hr.is_role_key(legacy))
+    check("V role key shape recognised", hr.is_role_key(hr.role_key(raw[0])))
+    db = MemoryDb()
+    aid = _ready_agent(db, SPECIMEN_5d260731)
+    db.add_job(aid, "first_edition")
+    score = _score_by_title({}, default=(70, "why", "pause"))
+    _runner(db, raw, score=score, state=FakeState(excluded={legacy})).run()
+    ed = db.editions[0]
+    keys = [s["role_key"] for s in ed["payload"]["seats"]]
+    check("V legacy removes both twins (known legacy weakness, compatibility only)",
+          not any("duolingo" in k for k in keys))
+    check("V suno kept", any("suno" in k for k in keys))
+    check("V legacy hits counted", ed["payload"]["counts"]["legacy_hits"] == 2)
+
+
+def test_v_url_key_never_falls_back_to_legacy():
+    ja = hr._import_job_alerts_adapters()
+    raw = _raw_two()
+    # A url: key for a DIFFERENT posting must not match this one via title|company.
+    other = "url:https://careers.duolingo.com/jobs/999"
+    exact, legacy = hr.split_verdict_keys({other})
+    check("V url key is exact-only", exact == {other} and legacy == set())
+    check("V no match by legacy path",
+          not hr.verdict_matches(ja, raw[0], exact, legacy))
+
+
+def test_v_reconsider_forces_full_read():
+    raw = _raw_two()
+    k_suno = hr.role_key(raw[2])
+    db = MemoryDb()
+    aid = _ready_agent(db, SPECIMEN_5d260731)
+    db.add_job(aid, "first_edition")
+    read = []
+
+    def score(_a, _p, job, _jd):
+        read.append(job["title"])
+        return (40, "why", "pause")   # below floor: refused
+
+    _runner(db, raw, score=score, state=FakeState(second_look={k_suno}), read_budget=1).run()
+    ed = db.editions[0]
+    check("V second look read despite budget 1", "Creative Director, Marketing Campaigns" in read)
+    check("V second_look counted", ed["payload"]["counts"]["second_look"] == 1)
+    refused = [r for r in ed["payload"]["refused"] if r["role_key"] == k_suno]
+    check("V second look refused with reason and relook flag",
+          refused and refused[0]["relook"] is True and refused[0]["pause"] == "pause")
+
+
+def test_v_engine_writes_no_legacy_keys():
+    raw = _raw_two()
+    db = MemoryDb()
+    aid = _ready_agent(db, SPECIMEN_5d260731)
+    db.add_job(aid, "first_edition")
+    _runner(db, raw, score=_score_by_title({}, default=(70, "w", "p")), read_budget=2).run()
+    ed = db.editions[0]
+    p = ed["payload"]
+    all_keys = ([s["role_key"] for s in p["seats"]] + [r["role_key"] for r in p["refused"]]
+                + list(p["refused_shown"]) + list(p["unread"]))
+    check("V every persisted key is role_key-shaped", all(hr.is_role_key(k) for k in all_keys), all_keys)
+    html_ids = re.findall(r'data-id="([^"]+)"', ed["html"])
+    check("V html data-id keys role_key-shaped", all(hr.is_role_key(k) for k in html_ids), html_ids)
+
+
+# ---------------------------------------------------------------------------
+# B · read budget isolation
+# ---------------------------------------------------------------------------
+
+def _budget_probe(read_budget=None):
+    ja = hr._import_job_alerts_adapters()
+    matches = [{"title": f"Creative Director {i}", "company": f"C{i}", "location": "Remote",
+                "url": f"https://x.invalid/{i}", "posted_at": None} for i in range(60)]
+    reads = []
+
+    def score(_a, _p, job, _jd):
+        reads.append(job["title"])
+        return (70, "w", "p")
+
+    agent = ja.load_agent_config("001")
+    with hr._judgment_hooks(ja, fetch_jd=lambda _u: "", score=score, profile="p"):
+        kwargs = {} if read_budget is None else {"read_budget": read_budget}
+        ranked, used = ja.rank_with_fit(agent, matches, set(), set(), **kwargs)
+    return len(reads), used
+
+
+def test_b_read_budget_isolation():
+    ja = hr._import_job_alerts_adapters()
+    check("B public constant is 25", ja.MAX_CANDIDATES_TO_SCORE == 25)
+    n_default, used = _budget_probe()
+    check("B default reads exactly the public constant", n_default == 25 and used, n_default)
+    n_private, _ = _budget_probe(hr.PRIVATE_READ_BUDGET)
+    check("B private budget reads 40", n_private == 40, n_private)
+    check("B PRIVATE_READ_BUDGET fixed at 40 for stage 1", hr.PRIVATE_READ_BUDGET == 40)
+    src = open(ja.__file__, encoding="utf-8").read()
+    body_calls = re.findall(r"(?<!def )rank_with_fit\([^)]*\)", src)
+    check("B exactly one public call site", len(body_calls) == 1, body_calls)
+    check("B public path never passes read_budget", not any("read_budget" in c for c in body_calls), body_calls)
+    check("B public path never passes key_fn", not any("key_fn" in c for c in body_calls), body_calls)
+
+
+# ---------------------------------------------------------------------------
+# S · seat_edition equivalence with the pre-lift logic
+# ---------------------------------------------------------------------------
+
+def _reference_seating(agent, ranked_all, used_ai, second_look, dedup_key):
+    """The build_shortlist seating block as it stood at main@1180b02."""
+    FOOUND_FLOOR = 60
+    if used_ai:
+        cleared = [j for j in ranked_all if (j.get("fit") or 0) >= FOOUND_FLOOR]
+    else:
+        cleared = list(ranked_all)
+    ranked = cleared[:11]
+    for j in cleared[11:]:
+        if j["company"] in agent.priority_companies and j not in ranked:
+            for k in range(len(ranked) - 1, -1, -1):
+                if ranked[k]["company"] not in agent.priority_companies:
+                    ranked[k] = j
+                    break
+    ranked.sort(key=lambda j: (j.get("fit") or -1), reverse=True)
+    n = len(ranked)
+    seen_pass = set()
+    shown_ids = {id(j) for j in ranked}
+    rejects = []
+    for j in ranked_all:
+        if id(j) in shown_ids:
+            continue
+        k = (j["company"], j["title"])
+        if k in seen_pass:
+            continue
+        seen_pass.add(k)
+        rejects.append(j)
+    shown = []
+    if n > 0 and rejects:
+        with_reason = [j for j in rejects if j.get("ai_pause")]
+        relooked = [j for j in with_reason if dedup_key(j["title"], j["company"]) in second_look]
+        others = [j for j in with_reason if j not in relooked]
+        shown = (relooked + others)[:max(5, len(relooked))]
+    return ranked, rejects, shown
+
+
+def test_s_seat_edition_equivalence():
+    ja = hr._import_job_alerts_adapters()
+    import random
+    rng = random.Random(7)
+    agent = ja.load_agent_config("001")   # priority_companies = {"Apple"}
+    for trial in range(40):
+        n = rng.randint(0, 30)
+        ranked_all = []
+        for i in range(n):
+            co = rng.choice(["Apple", "Suno", "Adobe", "Duolingo", "Harvey", "Stripe"])
+            ranked_all.append({"title": f"T{rng.randint(0, 6)}", "company": co,
+                               "fit": rng.choice([None, 42, 55, 60, 64, 70, 78, 82, 90]),
+                               "ai_pause": rng.choice(["", "p"])})
+        ranked_all.sort(key=lambda j: (j.get("fit") or -1), reverse=True)
+        used_ai = rng.random() < 0.8
+        second_look = set()
+        if ranked_all and rng.random() < 0.5:
+            j = rng.choice(ranked_all)
+            second_look.add(ja.dedup_key(j["title"], j["company"]))
+        ref = _reference_seating(agent, ranked_all, used_ai, second_look, ja.dedup_key)
+        got = ja.seat_edition(agent, ranked_all, used_ai, second_look)
+        same = ([id(x) for x in ref[0]] == [id(x) for x in got["ranked"]]
+                and [id(x) for x in ref[1]] == [id(x) for x in got["rejects"]]
+                and [id(x) for x in ref[2]] == [id(x) for x in got["shown"]])
+        if not same:
+            raise AssertionError(f"FAIL S trial {trial}: seating differs")
+    check("S seat_edition ≡ pre-lift logic over 40 random boards", True)
+
+
+# ---------------------------------------------------------------------------
+# L · ledger
+# ---------------------------------------------------------------------------
+
+def test_l_ledger_complete_refusals_five_shown_unread():
+    raw = [{"title": f"Creative Director {i:02d}", "company": f"Co{i:02d}", "location": "Remote",
+            "url": f"https://x.invalid/{i}"} for i in range(20)]
+    fits = {f"Creative Director {i:02d}": (90 - i * 3, "w", "p") for i in range(20)}   # 90..33
+    db = MemoryDb()
+    content = dict(STRUCTURED); content["seat_cap"] = 6
+    aid = _ready_agent(db, content)
+    db.add_job(aid, "first_edition")
+    _runner(db, raw, score=_score_by_title(fits), read_budget=14).run()
+    p = db.editions[0]["payload"]
+    c = p["counts"]
+    check("L eligible 20", c["eligible"] == 20, c)
+    check("L read 14", c["read"] == 14, c)
+    check("L unread 6", c["unread"] == 6 and len(p["unread"]) == 6, c)
+    check("L seated 6 (cap)", c["seated"] == 6 and len(p["seats"]) == 6, c)
+    check("L refused = judged − seated = 8", c["refused"] == 8 and len(p["refused"]) == 8, c)
+    check("L shown ≤ 5", len(p["refused_shown"]) == 5, p["refused_shown"])
+    check("L shown ⊆ refused", set(p["refused_shown"]) <= {r["role_key"] for r in p["refused"]})
+    check("L every refusal has a reason", all(r["pause"] for r in p["refused"]))
+    check("L unread ∩ refused = ∅", not (set(p["unread"]) & {r["role_key"] for r in p["refused"]}))
+    check("L below-floor refusals in ledger",
+          any((r["fit"] or 0) < 60 for r in p["refused"]))
+    check("L above-floor-beyond-cap refusals in ledger",
+          any((r["fit"] or 0) >= 60 for r in p["refused"]))
+    check("L read_budget recorded", p["read_budget"] == 14)
+    check("L engine ai", p["engine"] == "ai")
+    html_doc = db.editions[0]["html"]
+    check("L html shows exactly five refusals", html_doc.count('class="pitem') == 5)
+    check("L html passintro total = 8", "8 more read in full and declined" in html_doc)
+
+
+# ---------------------------------------------------------------------------
+# F · fail closed
+# ---------------------------------------------------------------------------
+
+def test_f_non_001_refused_before_any_call():
+    db = MemoryDb()
+    aid = _ready_agent(db, FICTIONAL_OTHER_ROLES, agent_no=2)
+    jid = db.add_job(aid, "first_edition")
+    calls = {"collect": 0, "score": 0, "jd": 0}
+
+    def collect(_c):
+        calls["collect"] += 1
+        return [{"title": "Design Director", "company": "X", "location": "Berlin", "url": "https://x/1"}]
+
+    def score(*_a, **_k):
+        calls["score"] += 1
+        return (70, "w", "p")
+
+    def jd(_u):
+        calls["jd"] += 1
+        return ""
+
+    r = hr.Runner(db, collector=collect, today=FROZEN_TODAY, fetch_jd=jd, score=score,
+                  profile=None, state_loader=lambda _a, _n: None)
+    reports = r.run()
+    check("F job failed", db.jobs[jid]["status"] == "failed")
+    check("F error no_candidate_context", db.jobs[jid]["error"] == "no_candidate_context")
+    check("F no edition row", db.editions == [])
+    check("F zero adapter calls", calls["collect"] == 0)
+    check("F zero score calls", calls["score"] == 0)
+    check("F zero jd fetches", calls["jd"] == 0)
+    check("F report action failed", reports[0].action == "failed")
+
+
+def test_f_001_resolves_to_profile_md():
+    ja = hr._import_job_alerts_adapters()
+    asked = []
+    real = ja.load_agent_config
+
+    def watch(key, *a, **k):
+        asked.append(key)
+        return real(key, *a, **k)
+
+    ja.load_agent_config = watch
+    try:
+        base, profile, ev = hr.candidate_context(ja, "some-uuid", 1)
+    finally:
+        ja.load_agent_config = real
+    check("F №001 asked for 001", asked == ["001"], asked)
+    check("F №001 has a profile", bool(profile) and "Candidate Profile" in profile)
+    check("F №001 evidence map carried", len(ev) >= 1)
+    base2, profile2, _ = hr.candidate_context(ja, "other-uuid", 2)
+    check("F №002 has no context", base2 is None and profile2 == "")
+
+
+def test_f_non_001_never_touches_profile_md():
+    """Even an authority compile for a non-001 agent must not open profile.md."""
+    import builtins
+    opened = []
+    real_open = open
+
+    def guard(path, *a, **k):
+        if "profile.md" in str(path):
+            opened.append(str(path))
+        return real_open(path, *a, **k)
 
     db = MemoryDb()
-    keep_html = "<html>keep-1c0a8068-70-66</html>"
-    keep_payload = {"seats": [{"role_key": "old", "fit": 1}]}
-    db.editions.append({
-        "id": EDITION_1c0a8068,
-        "agent_id": "a-keep",
-        "edition_date": "2026-08-01",
-        "payload": keep_payload,
-        "html": keep_html,
-        "outcome": "seats",
-    })
-    db.editions.append({
-        "id": EDITION_30f7ee54,
-        "agent_id": "a-proof",
-        "edition_date": "2026-08-28",
-        "payload": {
-            "engine_sha": "abc",
-            "compiled_config_hash": "d" * 64,
-            "seats": seats,
-        },
-        "html": "<html>old-judge-order</html>",
-        "outcome": "seats",
-    })
-
-    def boom_score(*_a, **_k):
-        raise AssertionError("must not re-score existing fit")
-
-    def boom_jd(_url):
-        raise AssertionError("must not fetch JD to reorder")
-
-    result = hr.enrich_persisted_edition(
-        db, "30f7ee54", fetch_jd=boom_jd, score=boom_score,
-    )
-    check("H17 enrich id", result["id"] == EDITION_30f7ee54)
-    ed = db.edition_by_id("30f7ee54")
-    out = ed["payload"]["seats"]
-    check("H17 enrich 70 first",
-          [s["company"] for s in out] == ["Suno", "Duolingo"])
-    check("H17 enrich fits unchanged",
-          [s["fit"] for s in out] == [70, 66])
-    check("H17 enrich I'd start with Suno",
-          out[0]["lead"] is True and out[0]["seclabel"] == "I'd start with Suno")
-    check("H17 enrich 66 Worth your attention",
-          out[1]["seclabel"] == "Worth your attention")
-    check("H17 enrich same role_keys",
-          [s["role_key"] for s in out] == [suno_key, duo_key])
-    check("H17 enrich html Suno lead",
-          "I&rsquo;d start with Suno" in ed["html"])
-    check("H17 enrich html worth",
-          '<div class="seclabel">Worth your attention</div>' in ed["html"])
-
+    aid = _ready_agent(db, FICTIONAL_OTHER_ROLES, agent_no=2)
+    db.add_job(aid, "first_edition")
+    builtins.open = guard
     try:
-        hr.enrich_persisted_edition(db, "1c0a8068",
-                                    fetch_jd=boom_jd, score=boom_score)
-        check("H17 refuse 1c0a8068", False)
-    except hr.HuntError as e:
-        check("H17 refuse named", e.name == "edition_persist_failed")
-    keep = db.edition_by_id("1c0a8068")
-    check("H17 1c0a8068 html untouched", keep["html"] == keep_html)
-    check("H17 1c0a8068 payload untouched", keep["payload"] == keep_payload)
-
-    compiled = hr.compile_from_content(SPECIMEN_5d260731)
-    judged = hr.judge_seats(list(FIXTURE_1c0a8068_KEEP), compiled)
-    check("H17 judge_seats still two", len(judged) == 2)
-    check("H17 judge_seats sets no lead",
-          all("lead" not in s for s in judged))
-    scored = []
-    for seat, fit in zip(judged, (66, 70)):
-        row = dict(seat)
-        row["fit"] = fit
-        scored.append(row)
-    after = hr.assign_editorial_labels(scored)
-    check("H17 judge first is not lead",
-          after[0]["role_key"] == judged[1]["role_key"]
-          and after[0]["lead"] is True
-          and after[0]["fit"] == 70)
-    check("H17 judge first is remainder",
-          after[1]["role_key"] == judged[0]["role_key"]
-          and after[1]["seclabel"] == "Worth your attention")
-    src = inspect.getsource(hr.judge_seats)
-    check("H17 judge_seats source unchanged vs score", "score_fit" not in src)
-    check("H17 no rank_with_fit in hunt",
-          not re.search(r"rank_with_fit\s*\(", open(hr.__file__, encoding="utf-8").read()))
+        hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY,
+                  state_loader=lambda _a, _n: None).run()
+    finally:
+        builtins.open = real_open
+    check("F profile.md never opened for №002", opened == [], opened)
 
 
-def test_enrich_refuses_1c0a8068_still():
-    """Refuse must stay in this PR. Edition 1c0a8068 is not rewritten."""
+# ---------------------------------------------------------------------------
+# R · runner
+# ---------------------------------------------------------------------------
+
+def test_r_h3_empty_edition_is_success():
     db = MemoryDb()
-    db.editions.append({
-        "id": EDITION_1c0a8068,
-        "agent_id": "a-keep",
-        "edition_date": "2026-08-01",
-        "payload": {"seats": [{"role_key": "old", "fit": 1}]},
-        "html": "<html>keep-1c0a8068-fit</html>",
-        "outcome": "seats",
-    })
+    aid = _ready_agent(db)
+    jid = db.add_job(aid, "first_edition", payload={"brief_version": 1})
+    reports = _runner(db, []).run()
+    check("R3 action edition", reports[0].action == "edition")
+    check("R3 seats 0", reports[0].seats == 0)
+    check("R3 job done", db.jobs[jid]["status"] == "done")
+    check("R3 no job.error", db.jobs[jid].get("error") is None)
+    ed = db.editions[0]
+    check("R3 outcome empty", ed["outcome"] == "empty")
+    check("R3 payload seats empty", ed["payload"]["seats"] == [])
+    check("R3 html empty marker", 'data-edition="empty"' in ed["html"])
+    check("R3 html seat-count 0", 'data-seat-count="0"' in ed["html"])
+    check("R3 no DUMMY ROLE", "DUMMY ROLE" not in ed["html"])
+    check("R3 no dummy seats in json", _seats_json(ed["html"]) == [])
+    check("R3 honest cascade", "Nothing cleared the bar today." in ed["html"])
+    check("R3 counts present", ed["payload"]["counts"]["eligible"] == 0)
+
+
+def test_r_h4_same_day_second_is_noop():
+    db = MemoryDb()
+    aid = _ready_agent(db)
+    j1 = db.add_job(aid, "first_edition")
+    r = _runner(db, [])
+    r.run()
+    html1 = db.editions[0]["html"]
+    payload1 = json.dumps(db.editions[0]["payload"], sort_keys=True)
+    j2 = db.add_job(aid, "first_edition")
+    reports = r.run()
+    check("R4 noop", reports[0].action == "noop")
+    check("R4 second job done", db.jobs[j2]["status"] == "done")
+    check("R4 still one edition", len(db.editions) == 1)
+    check("R4 html unchanged", db.editions[0]["html"] == html1)
+    check("R4 payload unchanged", json.dumps(db.editions[0]["payload"], sort_keys=True) == payload1)
+    check("R4 first still done", db.jobs[j1]["status"] == "done")
+
+
+def test_r_h5_market_history_fields():
+    db = MemoryDb()
+    aid = _ready_agent(db, STRUCTURED)
+    raw = [{"title": "Creative Director", "company": "Acme", "location": "Remote",
+            "url": "https://example.invalid/role", "source": "adapter"}]
+    prior_key = hr.role_key(raw[0])
+    db.editions.append({"agent_id": aid, "edition_date": "2026-08-01",
+                        "payload": {"seats": [{"role_key": prior_key, "first_seen": "2026-07-15"}]},
+                        "html": "<html></html>", "outcome": "seats"})
+    db.add_job(aid, "first_edition")
+    reports = _runner(db, raw, score=_score_by_title({"Creative Director": (72, "w", "p")})).run()
+    check("R5 edition", reports[0].action == "edition")
+    check("R5 one seat", reports[0].seats == 1)
+    today_ed = [e for e in db.editions if e["edition_date"] == FROZEN_TODAY.isoformat()][0]
+    payload = today_ed["payload"]
+    check("R5 engine_sha", "engine_sha" in payload)
+    check("R5 compiled_config_hash", len(payload.get("compiled_config_hash") or "") == 64)
+    seat = payload["seats"][0]
+    for key in ("role_key", "first_seen", "previously_seen", "source", "new_or_resurfaced",
+                "survived_because", "fit", "tier", "ai_why", "ai_pause", "why_now", "lead", "seclabel"):
+        check(f"R5 field {key}", key in seat)
+    check("R5 role_key url precedence", seat["role_key"] == prior_key and seat["role_key"].startswith("url:"))
+    check("R5 previously_seen", seat["previously_seen"] is True)
+    check("R5 first_seen from prior", seat["first_seen"] == "2026-07-15")
+    check("R5 resurfaced", seat["new_or_resurfaced"] == "resurfaced")
+    check("R5 why_now for resurfaced has no 'first time'",
+          "Surfaced for the first time" not in seat["why_now"] and "still open" in seat["why_now"].lower())
+    check("R5 tier from job_alerts", seat["tier"] == "Worth considering")
+    check("R5 lead label", seat["lead"] is True and seat["seclabel"] == "I'd start with Acme")
+    check("R5 edition number 2", "Edition 002" in today_ed["html"])
+
+
+def test_r_new_seat_history():
+    db = MemoryDb()
+    aid = _ready_agent(db, STRUCTURED)
+    raw = [{"title": "Creative Director", "company": "Nova", "location": "Remote", "url": ""}]
+    db.add_job(aid, "first_edition")
+    _runner(db, raw, score=_score_by_title({"Creative Director": (66, "w", "p")})).run()
+    seat = db.editions[0]["payload"]["seats"][0]
+    check("R5b new", seat["new_or_resurfaced"] == "new")
+    check("R5b not previously", seat["previously_seen"] is False)
+    check("R5b first_seen today", seat["first_seen"] == FROZEN_TODAY.isoformat())
+    check("R5b tcl key when no url", seat["role_key"].startswith("tcl:"))
+    check("R5b why_now first time", "Surfaced for the first time this morning" in seat["why_now"])
+    check("R5b NEW tag in html", '<span class="new">NEW</span>' in db.editions[0]["html"])
+
+
+def test_r_first_edition_fail_closed():
+    db = MemoryDb()
+    aid = str(uuid.uuid4())
+    db.add_brief(aid, COMPLETE, compiled_config=None, readiness=None)
+    jid = db.add_job(aid, "first_edition")
+    _runner(db, []).run()
+    check("R no_compiled_config", db.jobs[jid]["error"] == "no_compiled_config")
+    check("R no edition on fail", db.editions == [])
+    aid2 = str(uuid.uuid4())
+    compiled = hr.compile_from_content(INCOMPLETE)
+    db.add_brief(aid2, INCOMPLETE, compiled_config=hr.persistable_compiled(compiled), readiness="not_ready")
+    jid2 = db.add_job(aid2, "first_edition")
+    _runner(db, []).run()
+    check("R readiness_blocked", db.jobs[jid2]["error"] == "readiness_blocked")
+    aid3 = str(uuid.uuid4())
+    jid3 = db.add_job(aid3, "first_edition")
+    _runner(db, []).run()
+    check("R no_active_brief", db.jobs[jid3]["error"] == "no_active_brief")
+    aid4 = _ready_agent(db)
+    jid4 = db.add_job(aid4, "first_edition")
+
+    def boom(_c):
+        raise RuntimeError("adapter down")
+
+    hr.Runner(db, collector=boom, today=FROZEN_TODAY, profile=FIXTURE_PROFILE,
+              state_loader=lambda _a, _n: None).run()
+    check("R hunt_adapter_failed", db.jobs[jid4]["error"] == "hunt_adapter_failed")
+
+
+def test_r_seat_cap_from_brief():
+    content = dict(STRUCTURED); content["seat_cap"] = 2
+    raw = [{"title": f"Creative Director {c}", "company": c, "location": "Remote", "url": f"https://x/{c}"}
+           for c in ("A", "B", "C")]
+    db = MemoryDb()
+    aid = _ready_agent(db, content)
+    db.add_job(aid, "first_edition")
+    _runner(db, raw, score=_score_by_title({}, default=(70, "w", "p"))).run()
+    p = db.editions[0]["payload"]
+    check("R cap 2 seats", len(p["seats"]) == 2)
+    check("R third in refusal ledger", len(p["refused"]) == 1)
+
+
+def test_r_edition_html_contract():
+    """What the At Work bind parses today, plus what Move 3 renders."""
+    raw = [
+        {"title": "Head of Brand, Adobe Creative", "company": "Adobe", "location": "San Francisco",
+         "url": "https://adobe.wd5.myworkdayjobs.com/x/1", "posted_at": datetime(2026, 8, 20, tzinfo=timezone.utc)},
+        {"title": "Creative Director, Marketing Campaigns", "company": "Suno", "location": "NYC",
+         "url": "https://jobs.ashbyhq.com/suno/1"},
+        {"title": "Creative Director, Copy", "company": "Stripe", "location": "US",
+         "url": "https://stripe.com/jobs/1"},
+    ]
+    fits = {"Head of Brand, Adobe Creative": (82, "Adobe is rebuilding its brand.", "Scope reads narrower."),
+            "Creative Director, Marketing Campaigns": (70, "Suno from zero.", "Posting is thin."),
+            "Creative Director, Copy": (48, "Copy-led.", "Writer-led remit.")}
+    db = MemoryDb()
+    aid = _ready_agent(db, SPECIMEN_5d260731, agent_no=1)
+    db.add_job(aid, "first_edition")
+    deep = lambda job, _p: {"role": "New seat", "moment": "Rebrand", "leadership": "CMO",
+                            "signal": "Hiring", "question": "Scope", "verdict": "Still 82.", "fit_after": 80}
+    brief_args = []
+
+    def brief_fn(n, total_fetched, n_companies, ranked, new_keys):
+        brief_args.append((n, total_fetched, n_companies, [j["company"] for j in ranked], set(new_keys)))
+        return "Adobe leads clear of the field."
+
+    r = hr.Runner(db, collector=lambda _c: raw, today=FROZEN_TODAY, fetch_jd=lambda _u: "",
+                  score=_score_by_title(fits), profile=FIXTURE_PROFILE, deep=deep,
+                  brief_line_fn=brief_fn, state_loader=lambda _a, _n: None)
+    r.run()
+    ed = db.editions[0]
+    ja = hr._import_job_alerts_adapters()
+    check("R write_brief gets Shortlist-shaped new keys",
+          brief_args and brief_args[0][4] == {ja.dedup_key(j["title"], j["company"]) for j in raw[:2]},
+          brief_args)
+    check("R write_brief facts n=2 fetched=3", brief_args[0][0] == 2 and brief_args[0][1] == 3)
+    h = ed["html"]
+    pic = _seats_json(h)
+    check("R html seats json shape", [set(s) for s in pic] == [{"id", "handle", "line"}] * 2)
+    check("R html fit order Adobe then Suno", [s["handle"] for s in pic] == ["Adobe", "Suno"])
+    k_adobe = hr.role_key(raw[0])
+    check("R html data-id = role_key", f'data-id="{k_adobe}"' in h)
+    for attr in ("data-company", "data-title", "data-location", "data-url", "data-fit=\"82\"",
+                 "data-posted-at", "data-why", "data-pause", "data-why-now"):
+        check(f"R html {attr}", attr in h)
+    check("R html anno", "{fit&nbsp;82}" in h)
+    check("R html scoreline number · tier", '<div class="scoreline">82 &middot; Strong fit</div>' in h)
+    check("R html role", '<div class="role">Head of Brand, Adobe Creative' in h)
+    for lab in ("Why I chose it", "What gives me pause", "Why now", "I kept looking"):
+        check(f"R html plabel {lab}", f'<div class="plabel">{lab}</div>' in h)
+    check("R html meta", '<div class="meta"><b>San Francisco</b>' in h and "posted Aug 20" in h)
+    check("R html apply", 'class="apply" href="https://adobe.wd5.myworkdayjobs.com/x/1"' in h)
+    check("R html greeting", '<p class="brief">Good ' in h)
+    check("R html cascade", "I searched 3 jobs overnight." in h and "FOOUND 2 for you." in h)
+    check("R html statline", "3 read in full &middot; everything else dismissed on sight. Adobe leads clear of the field." in h)
+    check("R html lead seclabel", "I&rsquo;d start with Adobe" in h)
+    check("R html refusals", 'Found, not FOOUND' in h and "1 more read in full and declined" in h
+          and 'class="pitem' in h and "Writer-led remit." in h)
+    check("R html colophon", "FOOUND AT WORK &middot; Edition 001" in h and "companies watched" in h)
+    check("R html no DUMMY ROLE", "DUMMY ROLE" not in h)
+    p = ed["payload"]
+    check("R payload deep kept", p["deep"]["verdict"] == "Still 82.")
+    check("R payload brief_line", p["brief_line"] == "Adobe leads clear of the field.")
+    check("R payload counts", p["counts"] == {"market_fetched": 3, "eligible": 3, "excluded": 0,
+                                               "second_look": 0, "legacy_hits": 0, "read": 3,
+                                               "unread": 0, "seated": 2, "refused": 1}, p["counts"])
+    check("R fit_after not applied (deferred)", p["seats"][0]["fit"] == 82)
+
+
+def test_r_heuristic_day_is_degraded_not_broken():
+    raw = [{"title": "Creative Director A", "company": "A", "location": "Remote", "url": "https://x/a"},
+           {"title": "Creative Director B", "company": "B", "location": "Remote", "url": "https://x/b"}]
+    db = MemoryDb()
+    aid = _ready_agent(db, STRUCTURED)
+    db.add_job(aid, "first_edition")
+    ja = hr._import_job_alerts_adapters()
+    saved = ja.ANTHROPIC_KEY
+    ja.ANTHROPIC_KEY = ""
     try:
-        hr.enrich_persisted_edition(db, "1c0a8068",
-                                    fetch_jd=_fake_jd, score=_fake_score)
-        check("H15 refuse 1c0a8068 still", False)
-    except hr.HuntError as e:
-        check("H15 refuse named still", e.name == "edition_persist_failed")
-    keep = db.edition_by_id("1c0a8068")
-    check("H15 1c0a8068 html still untouched",
-          keep["html"] == "<html>keep-1c0a8068-fit</html>")
-    check("H15 1c0a8068 payload still untouched",
-          keep["payload"] == {"seats": [{"role_key": "old", "fit": 1}]})
+        hr.Runner(db, collector=lambda _c: raw, today=FROZEN_TODAY, fetch_jd=lambda _u: "",
+                  profile=FIXTURE_PROFILE, state_loader=lambda _a, _n: None).run()
+    finally:
+        ja.ANTHROPIC_KEY = saved
+    p = db.editions[0]["payload"]
+    check("R heuristic engine recorded", p["engine"] == "heuristic")
+    check("R heuristic seats present, no fit", len(p["seats"]) == 2 and all(s["fit"] is None for s in p["seats"]))
+    check("R heuristic no refusals", p["refused"] == [])
+    check("R heuristic no scoreline", "scoreline" not in db.editions[0]["html"])
+
+
+def test_r_operator_line_and_stdout_hygiene():
+    raw = [{"title": "Creative Director SECRET", "company": "HiddenCo", "location": "Remote",
+            "url": "https://secret.example/job"}]
+    db = MemoryDb()
+    aid = _ready_agent(db, STRUCTURED, agent_no=9)
+    db.add_job(aid, "first_edition")
+    import logging
+    buf = []
+
+    class H(logging.Handler):
+        def emit(self, record):
+            buf.append(self.format(record))
+
+    h = H(); h.setFormatter(logging.Formatter("%(message)s"))
+    hr.log.addHandler(h); hr.log.setLevel(logging.INFO)
+    out = io.StringIO()
+
+    def score(_a, _p, job, _jd):
+        print("MODEL SAYS " + job["title"])      # must never reach stdout
+        return (70, "why SECRET", "pause")
+
+    try:
+        with contextlib.redirect_stdout(out):
+            _runner(db, raw, score=score).run()
+    finally:
+        hr.log.removeHandler(h)
+    blob = "\n".join(buf) + "\n" + out.getvalue()
+    check("hygiene operator line printed", "[operator] agent=№009" in out.getvalue())
+    check("hygiene no seat title", "SECRET" not in blob)
+    check("hygiene no company", "HiddenCo" not in blob)
+    check("hygiene no url", "secret.example" not in blob)
+    check("hygiene no model stdout", "MODEL SAYS" not in blob)
+    check("hygiene no brief copy", "culture-shaping" not in blob)
+    check("hygiene source has no log.exception", "log.exception" not in open(hr.__file__, encoding="utf-8").read())
+
+
+def test_r_adapter_stdout_silenced():
+    def noisy(*_a, **_k):
+        print("ADAPTER PRINTS Secret Title at HiddenCo")
+        return [{"title": "Creative Director", "company": "HiddenCo", "location": "Remote", "url": "https://h/1"}]
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        raw = hr.live_collect({"search_queries": ["creative director"]}, scraper_entries=[("Stub", noisy)])
+    check("adapter row collected", len(raw) == 1)
+    check("adapter stdout swallowed", "ADAPTER PRINTS" not in out.getvalue())
+
+
+def test_r_dry_run_writes_nothing():
+    raw = [{"title": "Creative Director", "company": "Acme", "location": "Remote", "url": "https://x/1"}]
+    db = MemoryDb()
+    aid = _ready_agent(db, STRUCTURED, agent_no=1)
+    r = hr.Runner(db, collector=lambda _c: raw, today=FROZEN_TODAY, fetch_jd=lambda _u: "",
+                  score=_score_by_title({"Creative Director": (75, "w", "p")}), profile=FIXTURE_PROFILE,
+                  state_loader=lambda _a, _n: None)
+    import tempfile, os
+    fd, path = tempfile.mkstemp(suffix=".json"); os.close(fd)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        result = r.dry_run(aid, path)
+    check("dry-run no edition row", db.editions == [])
+    check("dry-run no jobs", db.jobs == {})
+    check("dry-run result seats", len(result["seats"]) == 1)
+    fx = json.load(open(path, encoding="utf-8"))
+    check("dry-run fixture rows", fx["rows"][0]["status"] == "seated" and fx["rows"][0]["fit"] == 75)
+    check("dry-run fixture compiled authority", "include" in fx["compiled"] and "accepted_locations" in fx["compiled"])
+    check("dry-run console counts only", "Acme" not in out.getvalue() and "[operator]" in out.getvalue())
+    os.unlink(path)
+
+
+def test_r_h8_html_seat_shape_minimal():
+    html_doc = hr.render_edition_html([{
+        "role_key": "url:https://a/1", "handle": "Acme", "line": "Creative Director — Remote",
+        "title": "Creative Director", "company": "Acme", "location": "Remote",
+        "ai_why": "A reason.", "ai_pause": "", "why_now": "Still open as of 8:00 AM ET",
+    }])
+    check("H8 no dummy", "DUMMY ROLE" not in html_doc)
+    pic = _seats_json(html_doc)
+    check("H8 id/handle/line", set(pic[0]) == {"id", "handle", "line"})
+    check("H8 omit empty pause block", '<div class="plabel">What gives me pause</div>' not in html_doc)
+    check("H8 why + now present", '<div class="plabel">Why I chose it</div>' in html_doc
+          and '<div class="plabel">Why now</div>' in html_doc)
+    check("H8 no scoreline without fit", "scoreline" not in html_doc)
+    empty = hr.render_edition_html([])
+    check("H8 empty array", _seats_json(empty) == [] and "Nothing today." in empty)
+
+
+# ---------------------------------------------------------------------------
+# H9 · boundaries
+# ---------------------------------------------------------------------------
+
+def test_h9_boundaries():
+    src = open(hr.__file__, encoding="utf-8").read()
+    check("H9 no market_seen access",
+          not re.search(r"""['\"]market_seen['\"]|/market_seen|from market_seen""", src))
+    check("H9 no agent_config access",
+          not re.search(r"""['\"]agent_config['\"]|/agent_config|from agent_config""", src))
+    check("H9 no publish_shortlist call", not re.search(r"publish_shortlist\s*\(", src))
+    check("H9 no docs/ write", not re.search(r"""open\([^)]*docs/|['\"]docs/""", src))
+    check("H9 DUMMY ROLE rejected at persist", 'if "DUMMY ROLE" in result["html"]' in src)
+    check("H9 memory not imported as authority", "from memory" not in src and "table memory" not in src)
+    check("H9 judge_seats gone", "def judge_seats" not in src and "def title_fit" not in src
+          and "def context_fit" not in src and "def mandate_fit" not in src)
+    check("H9 enrich gone", "enrich_persisted_edition" not in src and "PROTECTED_EDITION_PREFIXES" not in src)
+    check("H9 no update_edition write path", "def update_edition" not in src)
+    check("H9 original loop reused", "rank_with_fit(" in src and "seat_edition(" in src
+          and "deep_look(" in src and "write_brief(" in src)
+    db = MemoryDb()
+    aid = _ready_agent(db)
+    db.add_job(aid, "first_edition")
+    _runner(db, []).run()
+    check("H9 no memory reads", db.memory_reads == 0)
+    check("H9 no market_seen reads", db.market_seen_reads == 0)
+    check("H9 no publish", db.publish_calls == 0)
 
 
 def main():
-    tests = [v for k, v in globals().items()
-             if k.startswith("test_") and callable(v)]
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
-    for fn in tests:
-        print(fn.__name__)
+    for t in tests:
+        print(t.__name__)
         try:
-            fn()
-        except Exception as e:
+            t()
+        except Exception as e:  # noqa: BLE001
             failed += 1
-            print(f"  FAIL {fn.__name__}: {e}")
+            print(f"  FAIL {t.__name__}: {e}")
     print()
     if failed:
         print(f"GATE: FAIL — {failed}/{len(tests)} hunt tests failed.")
-        raise SystemExit(1)
+        return 1
     print(f"GATE: PASS — {len(tests)} hunt tests.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

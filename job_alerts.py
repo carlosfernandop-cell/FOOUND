@@ -1073,28 +1073,40 @@ def score_fit(agent, profile: str, job: dict, jd_text: str):
         print(f"  [Fit error] {job['title']}: {e}")
         return None, None, None
 
-def rank_with_fit(agent, matches: list, new_keys: set, second_look: set | None = None):
+def rank_with_fit(agent, matches: list, new_keys: set, second_look: set | None = None,
+                  read_budget: int | None = None, key_fn=None):
     """Return (ranked_matches, used_ai). Each match may gain 'fit' and 'ai_line'.
 
     second_look: role_keys the person explicitly asked FOOUND to re-judge
     (the RECONSIDER verb). These are always read in full, exactly like
-    priority companies — the person's push-back outranks the heuristic cut."""
+    priority companies — the person's push-back outranks the heuristic cut.
+
+    read_budget: how many heuristic-ranked matches get a full read. Defaults
+    to MAX_CANDIDATES_TO_SCORE — the public Shortlist never passes it, so its
+    behaviour is unchanged. The private hunt passes its own budget.
+    key_fn: identity used to test membership in new_keys / second_look.
+    Defaults to the Shortlist's title|company dedup_key. The private hunt
+    passes role_key. Both keywords are Move 1 additions (contract §2 stage 8)."""
+    if read_budget is None:
+        read_budget = MAX_CANDIDATES_TO_SCORE
+    if key_fn is None:
+        key_fn = lambda j: dedup_key(j["title"], j["company"])
     heuristic = lambda j: (
         _seniority_score(j["title"]) + _recency_score(j.get("posted_at"))
-        + (2 if dedup_key(j["title"], j["company"]) in new_keys else 0)
+        + (2 if key_fn(j) in new_keys else 0)
     )
     profile = load_profile(agent)
     if not ANTHROPIC_KEY or not profile:
         print("Fit engine: no API key or profile — using heuristic ranking.")
         return sorted(matches, key=heuristic, reverse=True), False
 
-    candidates = sorted(matches, key=heuristic, reverse=True)[:MAX_CANDIDATES_TO_SCORE]
+    candidates = sorted(matches, key=heuristic, reverse=True)[:read_budget]
     for j in matches:
         if j["company"] in agent.priority_companies and j not in candidates:
             candidates.append(j)   # priority watch: always read in full
     for j in matches:
         if (second_look
-                and dedup_key(j["title"], j["company"]) in second_look
+                and key_fn(j) in second_look
                 and j not in candidates):
             candidates.append(j)   # the person asked: always read in full
             print(f"  [second look] forced full read: {j['company']} — {j['title']}")
@@ -1898,6 +1910,75 @@ def why_now_text(job: dict, is_new: bool, now=None) -> str:
     return whynow[0].upper() + whynow[1:]
 
 
+def seat_edition(agent, ranked_all: list, used_ai: bool,
+                 second_look: set | None = None, key_fn=None, cap: int = 11) -> dict:
+    """The seating rules, lifted verbatim out of build_shortlist (Move 1).
+
+    floor 60 on AI days · cap 11 (the Brief may set 1..20) · a priority-house role that cleared the
+    floor displaces the lowest non-priority seat · seats re-sorted by fit ·
+    rejects = judged-and-unseated, deduped on (company, title), in ranked
+    order · shown = the near misses the edition renders: second looks
+    first, never trimmed, then up to five.
+
+    Returns {"ranked", "rejects", "shown", "relooked", "n_strong",
+    "has_standout"}. Pure: no I/O, no rendering, no state writes. Both the
+    public Shortlist and the private hunt call this, so the seating law
+    exists once.
+    """
+    second_look = second_look or set()
+    if key_fn is None:
+        key_fn = lambda j: dedup_key(j["title"], j["company"])
+    FOOUND_FLOOR = 60
+    if used_ai:
+        cleared = [j for j in ranked_all if (j.get("fit") or 0) >= FOOUND_FLOOR]
+    else:
+        cleared = list(ranked_all)   # heuristic day: no scores, no floor
+    ranked = cleared[:cap]
+    for j in cleared[cap:]:
+        if j["company"] in agent.priority_companies and j not in ranked:
+            for k in range(len(ranked) - 1, -1, -1):
+                if ranked[k]["company"] not in agent.priority_companies:
+                    ranked[k] = j
+                    break
+    ranked.sort(key=lambda j: (j.get("fit") or -1), reverse=True)
+
+    n = len(ranked)
+    top = ranked[0].get("fit") if n else None
+    second = ranked[1].get("fit") if n > 1 else None
+    n_strong = sum(1 for j in ranked if (j.get("fit") or 0) >= 80)
+    has_standout = (top is not None and top >= 88
+                    and (second is None or top - second >= 5))
+
+    seen_pass = set()
+    shown_ids = {id(j) for j in ranked}
+    rejects = []
+    for j in ranked_all:
+        if id(j) in shown_ids:
+            continue
+        k = (j["company"], j["title"])
+        if k in seen_pass:
+            continue
+        seen_pass.add(k)
+        rejects.append(j)
+
+    shown: list = []
+    relooked: list = []
+    if n > 0 and rejects:
+        with_reason = [j for j in rejects if j.get("ai_pause")]
+        relooked = [j for j in with_reason if key_fn(j) in second_look]
+        others = [j for j in with_reason if j not in relooked]
+        shown = (relooked + others)[:max(5, len(relooked))]
+
+    return {
+        "ranked": ranked,
+        "rejects": rejects,
+        "shown": shown,
+        "relooked": relooked,
+        "n_strong": n_strong,
+        "has_standout": has_standout,
+    }
+
+
 def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
                     state=None, report=None):
     """Render THE SHORTLIST from today's matches into the agent's output dir."""
@@ -1917,19 +1998,11 @@ def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
         _fstate.record_engine_run(STATE_DIR, agent.agent_id, engine)
     except Exception as _e:
         print(f"[health] engine health not recorded (non-fatal): {_e}")
-    FOOUND_FLOOR = 60
-    if used_ai:
-        cleared = [j for j in ranked_all if (j.get("fit") or 0) >= FOOUND_FLOOR]
-    else:
-        cleared = list(ranked_all)   # heuristic day: no scores, no floor
-    ranked = cleared[:11]
-    for j in cleared[11:]:
-        if j["company"] in agent.priority_companies and j not in ranked:
-            for k in range(len(ranked) - 1, -1, -1):
-                if ranked[k]["company"] not in agent.priority_companies:
-                    ranked[k] = j
-                    break
-    ranked.sort(key=lambda j: (j.get("fit") or -1), reverse=True)
+    seating = seat_edition(agent, ranked_all, used_ai, second_look)
+    ranked = seating["ranked"]
+    rejects = seating["rejects"]
+    n_strong = seating["n_strong"]
+    has_standout = seating["has_standout"]
 
     n = len(ranked)
 
@@ -1937,12 +2010,6 @@ def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
     hour = now.hour
     daypart = "morning" if hour < 12 else ("afternoon" if hour < 18 else "evening")
     greeting = f"Good {daypart}, {agent.name}."
-
-    top = ranked[0].get("fit") if n else None
-    second = ranked[1].get("fit") if n > 1 else None
-    n_strong = sum(1 for j in ranked if (j.get("fit") or 0) >= 80)
-    has_standout = (top is not None and top >= 88
-                    and (second is None or top - second >= 5))
 
     cascade_lines = []
     if n == 0:
@@ -2089,20 +2156,11 @@ def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
                 entries.append(_entry(idx, j)); idx += 1
 
     # ---- what I passed on: the judged-and-declined, at footnote scale ----
-    seen_pass = set()
-    shown_ids = {id(j) for j in ranked}
-    rejects = []
-    for j in ranked_all:
-        if id(j) in shown_ids:
-            continue
-        k = (j["company"], j["title"])
-        if k in seen_pass:
-            continue
-        seen_pass.add(k)
-        rejects.append(j)
+    # rejects / shown / relooked come from seat_edition (the seating law,
+    # lifted once). Belt and braces: exclusions were applied before ranking;
+    # this refuses to render if any user-excluded role reached the PUBLIC
+    # near-miss set anyway.
     passed_html = ""
-    # Belt and braces. Exclusions were applied before ranking; this refuses to
-    # render if any user-excluded role reached the PUBLIC near-miss set anyway.
     if state is not None:
         _fstate.assert_no_private_leak(
             rejects, state, key_fn=lambda j: dedup_key(j["title"], j["company"]))
@@ -2110,11 +2168,8 @@ def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
     if n > 0 and rejects:
         # The person's second-look requests are answered FIRST, and are never
         # trimmed by the five-row cap: a question asked must be answered.
-        with_reason = [j for j in rejects if j.get("ai_pause")]
-        relooked = [j for j in with_reason
-                    if dedup_key(j["title"], j["company"]) in second_look]
-        others = [j for j in with_reason if j not in relooked]
-        shown = (relooked + others)[:max(5, len(relooked))]
+        relooked = seating["relooked"]
+        shown = seating["shown"]
         if shown:
             word = "misses" if len(shown) > 1 else "miss"
             items = []
