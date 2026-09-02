@@ -29,7 +29,8 @@ titles, URLs, prompts, or model output.
 Editorial PORT (final seats only): after judge_seats + attach_market_fields,
 restore posted_at, call existing job_alerts.fetch_jd_text / score_fit with
 Candidate profile.md as personal context (not hunt authority), and assemble
-why-now via job_alerts.why_now_text (Shortlist _argument). Do not call
+why-now via job_alerts.why_now_text (Shortlist _argument). Persist the
+score_fit integer as seat `fit` (do not discard it). Do not call
 rank_with_fit, do not change judge_seats, do not rewrite the editorial prompt.
 """
 
@@ -928,12 +929,87 @@ def attach_market_fields(seats: list[dict], history: dict[str, str],
 # Original editorial slots (.plabel / .ptext) sit on the visible list item.
 # ---------------------------------------------------------------------------
 
+def coerce_fit(value) -> Optional[int]:
+    """score_fit returns int 0–100 or None. Never treat bool as a score."""
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return max(0, min(100, value))
+    return None
+
+
+def assign_editorial_labels(seats: list[dict]) -> list[dict]:
+    """Shortlist seclabels. Lead = first judged seat. Do not re-sort."""
+    out = []
+    for i, seat in enumerate(seats):
+        row = dict(seat)
+        if i == 0:
+            row["lead"] = True
+            company = row.get("company") or row.get("handle") or ""
+            row["seclabel"] = f"I'd start with {company}"
+        else:
+            row["lead"] = False
+            fit = coerce_fit(row.get("fit"))
+            row["seclabel"] = (
+                "Unusually strong" if (fit or 0) >= 80
+                else "Worth your attention"
+            )
+        out.append(row)
+    return out
+
+
+def _fit_tier_label(score) -> str:
+    """Reuse job_alerts.fit_tier. Do not rewrite the tiers."""
+    return _import_job_alerts_adapters().fit_tier(score)
+
+
+def _posted_mon_d(posted_at) -> str:
+    """Original _entry posted span: `posted {Mon D}` via job_alerts._fmt_posted."""
+    if posted_at in (None, ""):
+        return ""
+    ja = _import_job_alerts_adapters()
+    pa = posted_at
+    if isinstance(pa, str):
+        pa = ja.parse_iso(pa)
+        if pa is None:
+            return ""
+    return ja._fmt_posted(pa) or ""
+
+
+def _seclabel_html(seat: dict) -> str:
+    if seat.get("lead"):
+        company = html.escape(seat.get("company") or seat.get("handle") or "")
+        return (
+            '<div class="seclabel" style="margin-top:5vh;">'
+            f"I&rsquo;d start with {company}</div>"
+        )
+    label = html.escape(seat.get("seclabel") or "Worth your attention")
+    return f'<div class="seclabel">{label}</div>'
+
+
+def _meta_html(seat: dict) -> str:
+    loc = html.escape((seat.get("location") or "").strip() or "Location not listed")
+    posted = _posted_mon_d(seat.get("posted_at"))
+    posted_html = (
+        f'<span class="sep">/</span><span class="dim">posted {html.escape(posted)}</span>'
+        if posted else ""
+    )
+    return (
+        f'<div class="meta"><b>{loc}</b>'
+        f'<span class="sep">/</span><span>Salary not posted</span>'
+        f"{posted_html}</div>"
+    )
+
+
 def render_edition_html(seats: list[dict]) -> str:
     """Machine artifact. No dummy seats. No 'DUMMY ROLE' string.
 
     #foound-seats stays {id, handle, line} so At Work bind does not break.
-    Visible items carry the original three plabel/ptext slots.
+    Visible items carry the original three plabel/ptext slots plus the
+    original Shortlist fit slots: closed-row .anno, open .scoreline, .meta,
+    and edition seclabels. Lead is the first judged seat.
     """
+    seats = assign_editorial_labels(seats)
     picture = [
         {
             "id": s["role_key"],
@@ -944,7 +1020,12 @@ def render_edition_html(seats: list[dict]) -> str:
     ]
     payload = json.dumps(picture, ensure_ascii=False, separators=(",", ":"))
     items = []
+    prev_label = None
     for s, pic in zip(seats, picture):
+        label = s.get("seclabel") or ""
+        if label and label != prev_label:
+            items.append(_seclabel_html(s))
+            prev_label = label
         why = html.escape(s.get("ai_why") or "")
         pause = (s.get("ai_pause") or "").strip()
         why_now = s.get("why_now") or ""
@@ -954,20 +1035,32 @@ def render_edition_html(seats: list[dict]) -> str:
                 "<div class=\"plabel\">What gives me pause</div>"
                 f"<p class=\"ptext\">{html.escape(pause)}</p>"
             )
+        fit = coerce_fit(s.get("fit"))
+        anno = f'<span class="anno">{{fit&nbsp;{fit}}}</span>' if fit is not None else ""
+        scoreline = ""
+        if fit is not None:
+            tier = html.escape(_fit_tier_label(fit))
+            scoreline = f'<div class="scoreline">{fit} &middot; {tier}</div>'
         items.append(
-            "<li data-id=\"{id}\" data-handle=\"{handle}\" data-line=\"{line}\">"
+            "<li class=\"item\" data-id=\"{id}\" data-handle=\"{handle}\" "
+            "data-line=\"{line}\">"
+            "{anno}{scoreline}"
             "<div class=\"plabel\">Why I chose it</div>"
             "<p class=\"ptext\">{why}</p>"
             "{pause_block}"
             "<div class=\"plabel\">Why now</div>"
             "<p class=\"ptext\">{why_now}</p>"
+            "{meta}"
             "</li>".format(
                 id=html.escape(pic["id"], quote=True),
                 handle=html.escape(pic["handle"], quote=True),
                 line=html.escape(pic["line"], quote=True),
+                anno=anno,
+                scoreline=scoreline,
                 why=why,
                 pause_block=pause_block,
                 why_now=why_now,
+                meta=_meta_html(s),
             )
         )
     outcome = "empty" if not seats else "seats"
@@ -1018,15 +1111,19 @@ def seat_payload(s: dict) -> dict:
         "ai_why": s.get("ai_why") or "",
         "ai_pause": s.get("ai_pause") or "",
         "why_now": s.get("why_now") or "",
+        "fit": coerce_fit(s.get("fit")),
+        "lead": bool(s.get("lead")),
+        "seclabel": s.get("seclabel") or "",
     }
 
 
 def build_payload(seats: list[dict], compiled: dict,
                   engine_sha: str) -> dict:
+    labeled = assign_editorial_labels(seats)
     return {
         "engine_sha": engine_sha,
         "compiled_config_hash": compiled_config_hash(compiled),
-        "seats": [seat_payload(s) for s in seats],
+        "seats": [seat_payload(s) for s in labeled],
     }
 
 
@@ -1196,13 +1293,15 @@ def annotate_final_seats(
                 jd = fetch_jd(job.get("url") or "") or ""
         except Exception:
             jd = ""
+        _fit, why, pause = None, None, None
         try:
             with _silent_stdio():
                 _fit, why, pause = score(agent, profile, job, jd)
         except Exception:
-            why, pause = None, None
+            _fit, why, pause = None, None, None
         if why:
             scored += 1
+        row["fit"] = coerce_fit(_fit)
         row["ai_why"] = why or ""
         row["ai_pause"] = pause or ""
         is_new = (row.get("new_or_resurfaced") or "") == "new"
@@ -1214,7 +1313,7 @@ def annotate_final_seats(
             row["why_now"] = ""
         out.append(row)
     log.info("annotated seats=%d scored=%d", len(out), scored)
-    return out
+    return assign_editorial_labels(out)
 
 
 def edition_protected(edition_id: str) -> bool:
