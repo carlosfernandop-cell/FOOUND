@@ -1897,6 +1897,202 @@ def test_a_fingerprints_are_deterministic():
     check("A compiled hash deterministic", k1 == k2)
 
 
+# ---------------------------------------------------------------------------
+# I — v1.3: the original intelligence survives the live path, and is observable
+# ---------------------------------------------------------------------------
+
+DEEP_STUB = {"role": "New seat, not a succession.", "moment": "Brand under construction.",
+             "leadership": "Reports to the CMO.", "signal": "Two senior hires this quarter.",
+             "question": "Scope of the team is unstated.", "fit_after": 86,
+             "verdict": "My view changed: 85 to 86."}
+
+
+def _live_run(raw, *, score_fit, deep_look, write_brief, key="k", agent_no=1, out=None):
+    """Run first_edition on the LIVE path (Runner.score=None) with the original
+    loop's module-level functions replaced by recording stubs. This is the
+    only way to prove that deep_look / write_brief are reached for real:
+    Runner(score=...) is the test seam, and the seam stubs them by design."""
+    ja = hr._import_job_alerts_adapters()
+    saved = {k: getattr(ja, k) for k in ("score_fit", "deep_look", "write_brief", "ANTHROPIC_KEY")}
+    ja.score_fit, ja.deep_look, ja.write_brief, ja.ANTHROPIC_KEY = score_fit, deep_look, write_brief, key
+    db = MemoryDb()
+    aid = _ready_agent(db, STRUCTURED, agent_no=agent_no)
+    db.add_job(aid, "first_edition")
+    buf = out if out is not None else io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            hr.Runner(db, collector=lambda _c: raw, today=FROZEN_TODAY, fetch_jd=lambda _u: "",
+                      score=None, profile=FIXTURE_PROFILE, state_loader=lambda _a, _n: None).run()
+    finally:
+        for k, v in saved.items():
+            setattr(ja, k, v)
+    return db, buf.getvalue()
+
+
+def test_i_live_path_runs_deep_look_and_statline():
+    """Regression for 8afd4fb: live path, lead >= 80 → deep_look and
+    write_brief execute and both reach the rendered edition."""
+    raw = [{"title": "Creative Director", "company": "Acme", "location": "Remote", "url": "https://x/1"},
+           {"title": "Creative Director, Brand", "company": "Beta", "location": "Remote", "url": "https://x/2"}]
+    calls = {"score": 0, "deep": 0, "brief": 0}
+
+    def score_fit(_a, _p, job, _jd):
+        calls["score"] += 1
+        return (85 if job["company"] == "Acme" else 66, "why " + job["company"], "pause " + job["company"])
+
+    def deep_look(job, profile):
+        calls["deep"] += 1
+        check("I deep_look sees the lead", job["company"] == "Acme" and job.get("fit") == 85)
+        check("I deep_look sees the candidate context", "Carlos" in (profile or "") or len(profile or "") > 50)
+        return dict(DEEP_STUB)
+
+    def write_brief(n, total, n_companies, ranked, new_keys):
+        calls["brief"] += 1
+        check("I write_brief gets the seated list", n == 2 and len(ranked) == 2 and total == 2)
+        check("I write_brief gets Shortlist-shaped new keys", all("|" in k for k in new_keys) and len(new_keys) == 2)
+        return "Acme leads clear of the field."
+
+    db, out = _live_run(raw, score_fit=score_fit, deep_look=deep_look, write_brief=write_brief)
+    check("I live path: scorer, deep look and statline all executed", calls == {"score": 2, "deep": 1, "brief": 1}, calls)
+    ed = db.editions[0]
+    h, p = ed["html"], ed["payload"]
+    check("I deep look rendered", "I kept looking" in h and "My view changed: 85 to 86." in h
+          and "Reports to the CMO." in h)
+    check("I statline rendered", "Acme leads clear of the field." in h and "2 read in full" in h)
+    check("I payload deep + brief_line", p["deep"]["verdict"] == "My view changed: 85 to 86."
+          and p["brief_line"] == "Acme leads clear of the field.")
+    check("I fit_after still not applied", p["seats"][0]["fit"] == 85)
+    check("I intelligence enums ok", p["intelligence"] == {"deep": "ok", "statline": "ok"}, p.get("intelligence"))
+    check("I operator line carries both", "deep=ok statline=ok" in out and "reason=ai" in out, out)
+    check("I counters still count on the live path", p["counts"]["model_reads_attempted"] == 2
+          and p["counts"]["model_reads_failed"] == 0 and p["engine"] == "ai")
+
+
+def test_i_deep_look_not_triggered_below_threshold():
+    raw = [{"title": "Creative Director", "company": "Acme", "location": "Remote", "url": "https://x/1"}]
+    calls = {"deep": 0, "brief": 0}
+
+    def deep_look(*_a):
+        calls["deep"] += 1
+        return dict(DEEP_STUB)
+
+    def write_brief(*_a):
+        calls["brief"] += 1
+        return ""       # the model may decide nothing is notable
+
+    db, out = _live_run(raw, score_fit=lambda *_a: (72, "w", "p"), deep_look=deep_look, write_brief=write_brief)
+    p = db.editions[0]["payload"]
+    check("I threshold is the original 80", hr.DEEP_LOOK_THRESHOLD == 80)
+    check("I below 80: deep not called, statline asked", calls == {"deep": 0, "brief": 1})
+    check("I enums: not_triggered / empty", p["intelligence"] == {"deep": "not_triggered", "statline": "empty"}, p["intelligence"])
+    check("I no deep panel", "I kept looking" not in db.editions[0]["html"])
+    check("I operator line", "deep=not_triggered statline=empty" in out)
+
+
+def test_i_heuristic_day_marks_both_not_run():
+    raw = [{"title": "Creative Director", "company": "Acme", "location": "Remote", "url": "https://x/1"}]
+    calls = {"deep": 0, "brief": 0}
+    db, out = _live_run(raw, score_fit=lambda *_a: (None, None, None), key="",
+                        deep_look=lambda *_a: calls.__setitem__("deep", 1) or DEEP_STUB,
+                        write_brief=lambda *_a: calls.__setitem__("brief", 1) or "x")
+    p = db.editions[0]["payload"]
+    check("I heuristic: neither called", calls == {"deep": 0, "brief": 0})
+    check("I heuristic: not_run / not_run", p["intelligence"] == {"deep": "not_run", "statline": "not_run"}
+          and p["engine_reason"] == "no_key", p["intelligence"])
+
+
+def test_i_silent_failures_are_named_and_never_leak():
+    """The original functions print their failure to stdout and return None.
+    The private path classifies that text and drops it."""
+    raw = [{"title": "Creative Director SECRETCO", "company": "SecretCo", "location": "Remote", "url": "https://secret.example/1"}]
+    import logging
+    logs = []
+
+    class H(logging.Handler):
+        def emit(self, record):
+            logs.append(self.format(record))
+
+    h = H(); h.setFormatter(logging.Formatter("%(message)s")); hr.log.addHandler(h); hr.log.setLevel(logging.INFO)
+
+    def deep_look(*_a):
+        print("[deep look skipped: HTTP 400 {\"error\": \"workspace header required RAWBODY\"}]")
+        return None
+
+    def write_brief(*_a):
+        print("  [Brief API 529] overloaded RAWBODY")
+        return None
+
+    try:
+        db, out = _live_run(raw, score_fit=lambda *_a: (90, "why RAWWHY", "p"), deep_look=deep_look, write_brief=write_brief)
+    finally:
+        hr.log.removeHandler(h)
+    p = db.editions[0]["payload"]
+    check("I named: http_4xx / http_5xx", p["intelligence"] == {"deep": "http_4xx", "statline": "http_5xx"}, p["intelligence"])
+    check("I operator line names them", "deep=http_4xx statline=http_5xx" in out)
+    blob = out + "\n" + "\n".join(logs) + "\n" + json.dumps(p["intelligence"]) + json.dumps(p["counts"])
+    check("I captured text never reaches stdout, logs or ledger enums", "RAWBODY" not in blob and "SecretCo" not in blob
+          and "secret.example" not in blob and "workspace" not in blob)
+    check("I edition still built, seat kept, no deep panel", len(p["seats"]) == 1 and p["deep"] is None
+          and p["brief_line"] == "" and "I kept looking" not in db.editions[0]["html"])
+
+
+def test_i_classifiers():
+    c = hr.classify_deep_look
+    check("I deep ok", c(DEEP_STUB, "") == "ok")
+    check("I deep 4xx", c(None, "[deep look skipped: HTTP 403 forbidden]") == "http_4xx")
+    check("I deep 5xx", c(None, "[deep look skipped: HTTP 529 overloaded]") == "http_5xx")
+    check("I deep no_json", c(None, "[deep look skipped: no JSON in reply]") == "no_json")
+    check("I deep error", c(None, "[deep look skipped: ReadTimeout]") == "error")
+    check("I deep thin", c(None, "") == "thin_reply")
+    b = hr.classify_brief_line
+    check("I brief ok", b("Line.", "Observation: Line.") == "ok")
+    check("I brief empty", b(None, "") == "empty")
+    check("I brief 4xx", b(None, "  [Brief API 401] {}") == "http_4xx")
+    check("I brief 5xx", b(None, "  [Brief API 500] {}") == "http_5xx")
+    check("I brief unusable", b(None, "  [Brief attempt 2] unusable reply: '...'") == "unusable_reply")
+    check("I brief error", b(None, "  [Brief error] boom") == "error")
+    check("I enums closed", all(x in hr.DEEP_REASONS for x in ("ok", "not_run", "not_triggered", "http_4xx", "http_5xx", "no_json", "thin_reply", "error"))
+          and all(x in hr.STATLINE_REASONS for x in ("ok", "not_run", "empty", "http_4xx", "http_5xx", "unusable_reply", "error")))
+
+
+def test_i_injected_scorer_still_stubs_deep_and_brief():
+    """The test seam must keep isolating tests from the network: an injected
+    scorer with no deep/brief hook means no deep_look / write_brief call."""
+    raw = [{"title": "Creative Director", "company": "Acme", "location": "Remote", "url": "https://x/1"}]
+    ja = hr._import_job_alerts_adapters()
+    saved = (ja.deep_look, ja.write_brief)
+    hit = {"deep": 0, "brief": 0}
+    ja.deep_look = lambda *_a: hit.__setitem__("deep", 1) or DEEP_STUB
+    ja.write_brief = lambda *_a: hit.__setitem__("brief", 1) or "x"
+    try:
+        db = MemoryDb(); aid = _ready_agent(db, STRUCTURED); db.add_job(aid, "first_edition")
+        _runner(db, raw, score=_score_by_title({}, default=(90, "w", "p"))).run()
+    finally:
+        ja.deep_look, ja.write_brief = saved
+    p = db.editions[0]["payload"]
+    check("I seam isolates the network", hit == {"deep": 0, "brief": 0} and p["deep"] is None)
+    check("I seam marks them thin/empty, not ok", p["intelligence"] == {"deep": "thin_reply", "statline": "empty"}, p["intelligence"])
+
+
+def test_i_why_now_uses_the_real_clock():
+    import re
+    raw = [{"title": "Creative Director", "company": "Acme", "location": "Remote", "url": "https://x/1",
+            "posted_at": datetime(2026, 8, 20, tzinfo=timezone.utc)}]
+    db = MemoryDb(); aid = _ready_agent(db, STRUCTURED, agent_no=1); db.add_job(aid, "first_edition")
+    _runner(db, raw, score=_score_by_title({}, default=(70, "w", "p"))).run()
+    wn = db.editions[0]["payload"]["seats"][0]["why_now"]
+    m = re.search(r"still open as of (\d{1,2}:\d{2} [AP]M E[DS]T)$", wn)
+    check("I why_now names the real Eastern clock", m is not None, wn)
+    h = db.editions[0]["html"]
+    colophon = re.search(r"Compiled (\d{1,2}:\d{2} [AP]M E[DS]T)", h)
+    check("I why_now and colophon agree", colophon is not None and m is not None and colophon.group(1) == m.group(1))
+    ja = hr._import_job_alerts_adapters()
+    check("I public default unchanged", ja.why_now_text({"title": "x", "company": "y"}, False) == "Still open as of 8:00 AM ET")
+    db2 = MemoryDb(); aid2 = _ready_agent(db2, STRUCTURED, agent_no=9); db2.add_job(aid2, "first_edition")
+    _runner(db2, raw, score=_score_by_title({}, default=(70, "w", "p"))).run()
+    check("I non-001 why_now is UTC", re.search(r"still open as of \d{1,2}:\d{2} [AP]M UTC$", db2.editions[0]["payload"]["seats"][0]["why_now"]) is not None)
+
+
 def test_h9_boundaries():
     src = open(hr.__file__, encoding="utf-8").read()
     check("H9 no market_seen access",

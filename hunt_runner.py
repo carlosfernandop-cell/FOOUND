@@ -1348,6 +1348,7 @@ def build_payload(seats: list[dict], compiled: dict, engine_sha: str,
             "authority": dict(ledger.get("authority") or {}),
             "brief_line": ledger.get("brief_line") or "",
             "deep": ledger.get("deep"),
+            "intelligence": dict(ledger.get("intelligence") or {}),
             "read_budget": ledger.get("read_budget"),
             "candidate_context": ledger.get("candidate_context") or "",
         })
@@ -1365,6 +1366,59 @@ def _silent_stdio():
     with contextlib.redirect_stdout(io.StringIO()), \
             contextlib.redirect_stderr(io.StringIO()):
         yield
+
+@contextlib.contextmanager
+def _captured_stdio():
+    """Like _silent_stdio, but yields the buffer so the caller can classify
+    the original loop's own failure report. The text may contain model
+    output: classify it, then drop it. Never log or persist it."""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+        yield buf
+
+
+DEEP_LOOK_THRESHOLD = 80   # the original loop's trigger; unchanged
+
+DEEP_REASONS = ("ok", "not_run", "not_triggered", "http_4xx", "http_5xx",
+                "no_json", "thin_reply", "error")
+STATLINE_REASONS = ("ok", "not_run", "empty", "http_4xx", "http_5xx",
+                    "unusable_reply", "error")
+
+
+def _http_class(text: str, marker: str) -> str:
+    m = re.search(marker + r"\s*(\d{3})", text)
+    if not m:
+        return ""
+    return "http_4xx" if m.group(1).startswith("4") else "http_5xx"
+
+
+def classify_deep_look(out, captured: str) -> str:
+    """deep_look → enum. `out` is its return value; `captured` its stdout."""
+    if out:
+        return "ok"
+    t = captured or ""
+    if "[deep look skipped: HTTP" in t:
+        return _http_class(t, r"\[deep look skipped: HTTP") or "error"
+    if "no JSON in reply" in t:
+        return "no_json"
+    if "[deep look skipped:" in t:
+        return "error"
+    return "thin_reply"          # returned None without a report: reply too thin
+
+
+def classify_brief_line(line, captured: str) -> str:
+    """write_brief → enum. Empty is a legitimate answer (nothing notable)."""
+    if line:
+        return "ok"
+    t = captured or ""
+    if "[Brief API" in t:
+        return _http_class(t, r"\[Brief API") or "error"
+    if "unusable reply" in t:
+        return "unusable_reply"
+    if "[Brief error]" in t:
+        return "error"
+    return "empty"
+
 
 def _has_anthropic_key(ja) -> bool:
     return bool(os.environ.get("ANTHROPIC_API_KEY") or getattr(ja, "ANTHROPIC_KEY", ""))
@@ -1544,9 +1598,14 @@ def candidate_context(ja, agent_id: str, agent_no: int | None) -> tuple[object, 
 
 @contextlib.contextmanager
 def _judgment_hooks(ja, *, fetch_jd=None, score=None, profile=None,
-                    deep=None, brief=None):
+                    deep=None, brief=None, wrap_score=None):
     """Test seam. Temporarily point the original loop's model calls at
-    injected callables. Live runs never enter here with hooks set."""
+    injected callables. `score` is the CALLER's scorer: None means the live
+    path, and on the live path deep_look / write_brief stay the originals.
+    `wrap_score` decorates whichever scorer is active (live or injected) —
+    the read counters use it — without changing that live/test decision.
+    (v1.2 passed the counting wrapper as `score`, which made every live run
+    look injected and silently disabled the deep look and the statline.)"""
     saved = {}
 
     def _set(name, value):
@@ -1560,6 +1619,8 @@ def _judgment_hooks(ja, *, fetch_jd=None, score=None, profile=None,
             _set("score_fit", score)
             if not getattr(ja, "ANTHROPIC_KEY", ""):
                 _set("ANTHROPIC_KEY", "injected")
+        if wrap_score is not None:
+            _set("score_fit", wrap_score(getattr(ja, "score_fit")))
         if profile is not None:
             _set("load_profile", lambda _agent: profile)
         _set("deep_look", deep if deep is not None else (getattr(ja, "deep_look") if score is None else (lambda *_a, **_k: None)))
@@ -1704,18 +1765,19 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
 
     # 8. judgment: the original loop, private budget -------------------------
     model_reads = {"attempted": 0, "failed": 0}
-    real_score = score if score is not None else getattr(ja, "score_fit")
 
-    def counted_score(a, p, job, jd):
-        model_reads["attempted"] += 1
-        out = real_score(a, p, job, jd)
-        if not out or out[0] is None:
-            model_reads["failed"] += 1
-        return out
+    def counted(real_score):
+        def counted_score(a, p, job, jd):
+            model_reads["attempted"] += 1
+            out = real_score(a, p, job, jd)
+            if not out or out[0] is None:
+                model_reads["failed"] += 1
+            return out
+        return counted_score
 
     had_key = bool(getattr(ja, "ANTHROPIC_KEY", ""))
-    with _judgment_hooks(ja, fetch_jd=fetch_jd, score=counted_score, profile=ctx_profile,
-                         deep=deep, brief=brief_line_fn):
+    with _judgment_hooks(ja, fetch_jd=fetch_jd, score=score, profile=ctx_profile,
+                         deep=deep, brief=brief_line_fn, wrap_score=counted):
         if score is None and not had_key:
             ja.ANTHROPIC_KEY = ""   # keep the live no-key path honest under the hook
         with _silent_stdio():
@@ -1735,25 +1797,35 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
         shown = seating["shown"]
 
         # 10. deep look on the lead; the statline observation ------------------
+        # Both are the original loop's calls. Each reports its failure class
+        # to stdout, which the private path swallows; the captured text is
+        # classified into an enum and discarded — never logged, never stored.
         deep_out = None
         n = len(ranked)
-        if used_ai and n > 0 and ((ranked[0].get("fit") or 0) >= 80
-                                  or ranked[0].get("company") in agent.priority_companies):
-            with _silent_stdio():
-                deep_out = ja.deep_look(ranked[0], ctx_profile)
-            if deep_out:
-                ranked[0]["deep"] = deep_out
+        deep_reason = "not_run"
+        if used_ai and n > 0:
+            deep_reason = "not_triggered"
+            if ((ranked[0].get("fit") or 0) >= DEEP_LOOK_THRESHOLD
+                    or ranked[0].get("company") in agent.priority_companies):
+                with _captured_stdio() as buf:
+                    deep_out = ja.deep_look(ranked[0], ctx_profile)
+                deep_reason = classify_deep_look(deep_out, buf.getvalue())
+                if deep_out:
+                    ranked[0]["deep"] = deep_out
         brief_line = None
+        brief_reason = "not_run"
         if n > 0 and used_ai:
             # write_brief tests newness with the Shortlist's title|company key.
             legacy_new = {ja.dedup_key(j.get("title") or "", j.get("company") or "")
                           for j in ranked if j.get("role_key") in new_keys}
-            with _silent_stdio():
+            with _captured_stdio() as buf:
                 brief_line = ja.write_brief(n, len(raw or []), sources or 0, ranked, legacy_new)
+            brief_reason = classify_brief_line(brief_line, buf.getvalue())
 
         # 11. why now, labels -------------------------------------------------
+        as_of = compiled_clock(now, agent_no)
         for j in ranked_all:
-            j["why_now"] = ja.why_now_text(j, j["role_key"] in new_keys, now=now)
+            j["why_now"] = ja.why_now_text(j, j["role_key"] in new_keys, now=now, as_of=as_of)
 
     seats = assign_editorial_labels(ranked)
     n_read = sum(1 for j in ranked_all if j.get("fit") is not None) if used_ai else len(ranked_all)
@@ -1820,6 +1892,7 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
         },
         "brief_line": brief_line or "",
         "deep": deep_out,
+        "intelligence": {"deep": deep_reason, "statline": brief_reason},
         "read_budget": read_budget,
         "candidate_context": "profile.md" if base is not None and profile is None else "injected",
     }
@@ -1847,18 +1920,23 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
         "counts": counts,
         "engine": ledger["engine"],
         "engine_reason": engine_reason,
+        "intelligence": ledger["intelligence"],
         "authority": ledger["authority"],
     }
 
 
 def operator_line(agent_no, counts: dict, engine: str, outcome: str,
-                  engine_reason: str = "", authority: dict | None = None) -> str:
+                  engine_reason: str = "", authority: dict | None = None,
+                  intelligence: dict | None = None) -> str:
     """One public-safe line: numbers, enums and hashes only."""
     c = counts or {}
     a = authority or {}
     tail = ""
     if engine_reason:
         tail += f" reason={engine_reason}"
+    if intelligence:
+        tail += (f" deep={intelligence.get('deep', '')}"
+                 f" statline={intelligence.get('statline', '')}")
     if a:
         tail += (f" brief={str(a.get('brief_content_hash') or '')[:8]}"
                  f" compile={str(a.get('compiled_config_hash') or '')[:8]}"
@@ -2278,7 +2356,8 @@ class Runner:
         print(operator_line(result.get("agent_no"), result["counts"],
                             result["engine"], result["outcome"],
                             engine_reason=result.get("engine_reason", ""),
-                            authority=result.get("authority")))
+                            authority=result.get("authority"),
+                            intelligence=result.get("intelligence")))
         report.action = "edition"
         report.seats = len(result["seats"])
         report.detail["outcome"] = result["outcome"]
@@ -2341,7 +2420,8 @@ class Runner:
         line = operator_line(result.get("agent_no"), result["counts"],
                              result["engine"], result["outcome"],
                              engine_reason=result.get("engine_reason", ""),
-                             authority=result.get("authority"))
+                             authority=result.get("authority"),
+                             intelligence=result.get("intelligence"))
         print(line)
         if fixture_path:
             rows = []
@@ -2363,6 +2443,7 @@ class Runner:
                     "counts": result["counts"],
                     "engine": result["engine"],
                     "engine_reason": result.get("engine_reason"),
+                    "intelligence": result.get("intelligence"),
                     "authority": result.get("authority"),
                     "compiled": {k: compiled.get(k) for k in (
                         "families", "include", "location_phrases",

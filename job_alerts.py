@@ -1880,12 +1880,14 @@ requestAnimationFrame(function(){ requestAnimationFrame(function(){
 </html>
 """
 
-def why_now_text(job: dict, is_new: bool, now=None) -> str:
+def why_now_text(job: dict, is_new: bool, now=None, as_of: str | None = None) -> str:
     """Existing Shortlist why-now: new vs posted_at vs still-open.
 
     Extracted from build_shortlist._argument so hunt seats reuse this
     argument. Not a new model. `is_new` is Shortlist new_keys membership,
-    or hunt new_or_resurfaced == "new".
+    or hunt new_or_resurfaced == "new". `as_of` is the clock named in
+    "still open as of …"; the Shortlist passes nothing and keeps its
+    8:00 AM ET, the private hunt passes its real compile clock (Move 1 v1.3).
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -1905,7 +1907,7 @@ def why_now_text(job: dict, is_new: bool, now=None) -> str:
             parts.append("posted yesterday")
         else:
             parts.append(f"posted {days} days ago")
-    parts.append("still open as of 8:00 AM ET")
+    parts.append(f"still open as of {as_of or '8:00 AM ET'}")
     whynow = " &middot; ".join(parts)
     return whynow[0].upper() + whynow[1:]
 
