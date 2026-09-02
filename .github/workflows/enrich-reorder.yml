@@ -1,0 +1,25 @@
+name: enrich-30f7ee54-reorder
+# Throwaway. Do not merge. Not hunt.yml. Reorder 30f7ee54 from existing fits.
+on:
+  workflow_dispatch:
+  push:
+    branches: [enrich-30f7ee54-reorder]
+jobs:
+  enrich:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dc3cd2be61ee5688619f77ecec9f06ee87360d5c
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install requests==2.33.1
+      - name: Reorder edition 30f7ee54 from existing fits
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python hunt_runner.py --enrich-edition 30f7ee54
