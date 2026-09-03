@@ -57,7 +57,7 @@ log = logging.getLogger("hunt_runner")
 # Seat cap: the original Shortlist's eleven, unless the Brief says otherwise.
 DEFAULT_SEAT_CAP = 11
 MAX_SEAT_CAP = 20
-HUNT_JOB_TYPES = ("compile_brief", "refresh_readiness", "first_edition")
+HUNT_JOB_TYPES = ("compile_brief", "refresh_readiness", "first_edition", "propose_brief")
 MAX_JOBS_PER_RUN = 10
 
 # Move 1 read budget for the private hunt. Fixed for Stage 1 by contract:
@@ -96,6 +96,7 @@ NAMED_ERRORS = {
     "edition_persist_failed",
     "no_candidate_context",
     "no_role_families",
+    "proposal_failed",
 }
 
 
@@ -2069,6 +2070,30 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
     }
 
 
+def draft_with_model(ja, prompt: str) -> str:
+    """One Messages call for the Brief draft. Returns the reply text ('' on
+    any failure). Nothing about the reply is logged here."""
+    key = getattr(ja, "ANTHROPIC_KEY", "") or ""
+    if not key:
+        return ""
+    try:
+        import requests
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": getattr(ja, "CLAUDE_MODEL", "claude-sonnet-5"),
+                  "max_tokens": 2500, "messages": [{"role": "user", "content": prompt}]},
+            timeout=180,
+        )
+        if not r.ok:
+            return ""
+        blocks = (r.json() or {}).get("content", []) or []
+        return "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+    except Exception:
+        return ""
+
+
 def operator_line(agent_no, counts: dict, engine: str, outcome: str,
                   engine_reason: str = "", authority: dict | None = None,
                   intelligence: dict | None = None) -> str:
@@ -2191,6 +2216,25 @@ class HuntDb:
     def confirmed_memory(self, agent_id: str) -> list[dict]:
         """Read-only: this agent's active, client-confirmed memory rows
         (id, layer, statement, source, provenance, status, created_at)."""
+        raise NotImplementedError
+
+    def at_work_agents(self) -> list[dict]:
+        """Read-only: agents in state at_work (id, agent_no)."""
+        raise NotImplementedError
+
+    def enqueue_job(self, agent_id: str, job_type: str, payload: dict) -> bool:
+        """Insert a queued job; False when one is already queued for
+        (agent, type) — the partial unique index makes this idempotent."""
+        raise NotImplementedError
+
+    def next_brief_version(self, agent_id: str) -> int:
+        raise NotImplementedError
+
+    def abandon_proposed_briefs(self, agent_id: str) -> int:
+        """Engine-written proposals that were never confirmed: proposed → abandoned."""
+        raise NotImplementedError
+
+    def insert_brief(self, row: dict) -> None:
         raise NotImplementedError
 
 
@@ -2339,6 +2383,34 @@ class RestDb(HuntDb):
         )
         return list(rows or [])
 
+    def at_work_agents(self) -> list[dict]:
+        return list(self._get("agents?state=eq.at_work&select=id,agent_no&order=agent_no.asc&limit=500") or [])
+
+    def enqueue_job(self, agent_id: str, job_type: str, payload: dict) -> bool:
+        try:
+            self._post("jobs", {"agent_id": agent_id, "type": job_type, "payload": payload})
+            return True
+        except Exception as e:
+            # 409 from the partial unique index = already queued; anything else surfaces
+            resp = getattr(e, "response", None)
+            if resp is not None and getattr(resp, "status_code", None) == 409:
+                return False
+            raise
+
+    def next_brief_version(self, agent_id: str) -> int:
+        rows = self._get(f"briefs?agent_id=eq.{agent_id}&select=version&order=version.desc&limit=1")
+        try:
+            return int(rows[0]["version"]) + 1 if rows else 1
+        except (KeyError, TypeError, ValueError):
+            return 1
+
+    def abandon_proposed_briefs(self, agent_id: str) -> int:
+        rows = self._patch(f"briefs?agent_id=eq.{agent_id}&state=eq.proposed", {"state": "abandoned"})
+        return len(rows or [])
+
+    def insert_brief(self, row: dict) -> None:
+        self._post("briefs", row)
+
 
 # ---------------------------------------------------------------------------
 # Processor
@@ -2362,7 +2434,7 @@ class Runner:
                  today: date | None = None, fetch_jd=None, score=None,
                  profile: str | None = None, deep=None, brief_line_fn=None,
                  state_loader=None, read_budget: int = PRIVATE_READ_BUDGET,
-                 model_probe=None):
+                 model_probe=None, drafter=None):
         self.db = db
         # Default collector is live adapters. Tests inject a local collector.
         self.collector = collector
@@ -2378,6 +2450,8 @@ class Runner:
         self.read_budget = read_budget
         # Model-failure classifier (tests inject). Live path: one probe call.
         self.model_probe = model_probe
+        # Brief drafter (tests inject). Live path: draft_with_model.
+        self.drafter = drafter
 
     def run(self, limit: int = MAX_JOBS_PER_RUN) -> list[RunReport]:
         reports = []
@@ -2424,6 +2498,8 @@ class Runner:
             return self._refresh(job, report)
         if kind == "first_edition":
             return self._first_edition(job, report)
+        if kind == "propose_brief":
+            return self._propose_brief(job, report)
         raise HuntError("compile_failed")
 
     def _load_active(self, agent_id: str) -> dict:
@@ -2490,6 +2566,91 @@ class Runner:
         report.readiness = readiness
         return report
 
+
+    def enqueue_daily(self) -> dict:
+        """The heartbeat's other half (Move 2): every at_work agent with an
+        active, ready Brief and no edition today gets one queued edition job
+        (type first_edition — the daily edition; the handler is a no-op
+        when today's edition already exists). Idempotent: the jobs table
+        allows one queued job per (agent, type). Counts only."""
+        out = {"at_work": 0, "queued": 0, "already_queued": 0, "has_edition": 0,
+               "no_brief": 0, "not_ready": 0}
+        for a in self.db.at_work_agents():
+            out["at_work"] += 1
+            aid = a.get("id")
+            brief = self.db.active_brief(aid)
+            if not brief:
+                out["no_brief"] += 1
+                continue
+            if brief.get("readiness") != "ready":
+                out["not_ready"] += 1
+                continue
+            if self.db.editions_for_day(aid, self.today):
+                out["has_edition"] += 1
+                continue
+            if self.db.enqueue_job(aid, "first_edition", {"brief_version": brief.get("version"), "daily": True}):
+                out["queued"] += 1
+            else:
+                out["already_queued"] += 1
+        log.info("enqueue_daily " + " ".join(f"{k}={v}" for k, v in out.items()))
+        return out
+
+    def _propose_brief(self, job: dict, report: RunReport) -> RunReport:
+        """Move 2: FOOUND drafts a PROPOSED Working Brief from confirmed
+        Memory for the client to confirm (activate_brief). Inert until then.
+        Console and logs carry counts and enums only."""
+        import brief_proposal as bp
+        agent_id = job["agent_id"]
+        ja = _import_job_alerts_adapters()
+        agent_no = _lookup_agent_no(self.db, agent_id)
+        rows = self.db.confirmed_memory(agent_id)
+        ctx = candidate_context(ja, agent_id, agent_no, memory_rows=rows, brief_content=None)
+        if ctx.kind != "memory" or not rows:
+            raise HuntError("no_candidate_context")   # profile.md is not a source of intent
+        drafter = self.drafter if self.drafter is not None else (lambda prompt: draft_with_model(ja, prompt))
+        valid_ids = [str(r.get("id")) for r in rows]
+        content, feedback, reason, attempts = None, "", "", 0
+        # The client marked subjects of the previous proposal wrong (app payload
+        # {"wrong": [{"chapter": ..., "handle": ...}, ...]}): the redraft is told.
+        payload = job.get("payload") or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = {}
+        wrong = payload.get("wrong") if isinstance(payload, dict) else None
+        if isinstance(wrong, list) and wrong:
+            named = "; ".join(f"{str(w.get('chapter') or '').strip()} / {str(w.get('handle') or '').strip()}"
+                              for w in wrong if isinstance(w, dict))[:400]
+            feedback = f"The client marked these subjects of the previous draft as wrong: {named}. Do not repeat them; write from the confirmed statements only."
+        for attempt in (1, 2):
+            attempts = attempt
+            with _silent_stdio():
+                text = drafter(bp.draft_brief_prompt(ctx.text, rows, feedback=feedback))
+            content, reason = bp.parse_brief_draft(text or "", valid_ids)
+            if content is None:
+                continue
+            ok, feedback = bp.check_proposal(content, compile_from_content, readiness_of)
+            if ok:
+                break
+        if content is None:
+            log.info("propose_brief job=%s outcome=failed reason=%s attempts=%d", job["id"], reason or "no_json", attempts)
+            raise HuntError("proposal_failed")
+        executable, reasons = bp.check_proposal(content, compile_from_content, readiness_of)
+        content = dict(content, provenance=dict(
+            bp.provenance(current_engine_sha(), ctx.hash, getattr(ja, "CLAUDE_MODEL", ""), attempts),
+            executable=executable, compiler_reasons=[] if executable else [reasons]))
+        abandoned = self.db.abandon_proposed_briefs(agent_id)
+        version = self.db.next_brief_version(agent_id)
+        self.db.insert_brief({"agent_id": agent_id, "version": version, "state": "proposed", "content": content})
+        self.db.complete(job["id"])
+        n_subjects = sum(len(c["subjects"]) for c in content["chapters"])
+        log.info("propose_brief job=%s version=%d chapters=%d subjects=%d executable=%s attempts=%d abandoned=%d",
+                 job["id"], version, len(content["chapters"]), n_subjects, executable, attempts, abandoned)
+        report.action = "proposed"
+        report.detail.update({"version": version, "chapters": len(content["chapters"]),
+                              "subjects": n_subjects, "executable": executable, "attempts": attempts})
+        return report
 
     @staticmethod
     def _compile_for_hunt(brief: dict) -> dict:
@@ -2679,6 +2840,11 @@ def main(argv: list[str] | None = None) -> int:
         except HuntError as e:
             log.info("dry-run failed error=%s", e.name)
             return 1
+        return 0
+    if argv and argv[0] == "--enqueue-daily":
+        base = os.environ["SUPABASE_URL"]
+        key = os.environ["SUPABASE_SERVICE_KEY"]
+        Runner(db=RestDb(base, key)).enqueue_daily()
         return 0
     if argv:
         log.info("unknown args")
