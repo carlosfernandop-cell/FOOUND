@@ -56,11 +56,11 @@ class MemoryDb(hr.HuntDb):
         self.agent_state: dict[str, str] = {}
 
     def add_memory(self, agent_id, statements, *, layer="record", provenance="confirmed",
-                   status="active", source="profile.md"):
+                   status="active", source="profile.md", handle="Subject"):
         rows = self.memory.setdefault(agent_id, [])
         for i, st in enumerate(statements):
             rows.append({"id": str(uuid.uuid4()), "agent_id": agent_id, "layer": layer,
-                         "statement": st, "provenance": provenance, "status": status,
+                         "statement": st, "provenance": provenance, "status": status, "handle": handle,
                          "source": source, "created_at": f"2026-08-{10 + len(rows):02d}T00:00:00Z"})
         return rows
 
@@ -182,7 +182,8 @@ class MemoryDb(hr.HuntDb):
 
     def open_mirror_count(self, agent_id):
         return len([r for r in self.memory.get(agent_id, [])
-                    if r.get("status") == "active" and r.get("provenance") in ("stated", "extracted", "inferred")])
+                    if r.get("status") == "active" and r.get("provenance") in ("stated", "extracted", "inferred")
+                    and r.get("handle") and r.get("layer") in ("record", "self", "model")])
 
     def last_job(self, agent_id, job_type):
         rows = [j for j in self.jobs.values() if j["agent_id"] == agent_id and j["type"] == job_type]
@@ -2769,6 +2770,13 @@ def test_q_sweep_proposes_without_being_asked():
           j["payload"].get("auto") is True and len(j["payload"].get("context_hash", "")) == 64)
     out2 = r.sweep_proposals(now=now)
     check("Q second beat proposes nothing new", out2["queued"] == 0 and out2["in_flight"] == 4, out2)
+    # a row the person cannot see (no handle, or the behavior layer) never holds the Brief hostage
+    ghost, _ = person(12)
+    db.add_memory(ghost, ["Reads design Twitter."], layer="model", source="synthesis", provenance="inferred", handle=None)
+    db.add_memory(ghost, ["Opened three editions."], layer="behavior", source="app", provenance="extracted", handle="Habit")
+    out_g = r.sweep_proposals(now=now)
+    check("Q invisible rows do not keep the Mirror open", out_g["queued"] == 1 and out_g["mirror_open"] == 1
+          and any(j["agent_id"] == ghost and j["type"] == "propose_brief" for j in db.jobs.values()), out_g)
     # the failed one is retried once the client confirms something new
     db.add_memory(failed, ["Open to Copenhagen."], layer="self", source="conversation")
     db.memory[failed][-1]["created_at"] = "2026-09-03T11:59:00Z"

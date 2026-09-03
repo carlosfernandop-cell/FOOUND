@@ -2284,8 +2284,10 @@ class HuntDb:
         raise NotImplementedError
 
     def open_mirror_count(self, agent_id: str) -> int:
-        """Read-only: how many active memory rows still await the client's
-        verdict (provenance stated/extracted/inferred). 0 = Mirror settled."""
+        """Read-only: how many active memory rows the client can still see
+        awaiting their verdict (provenance stated/extracted/inferred, with a
+        handle, in layers record/self/model — exactly what the Mirror
+        renders). 0 = Mirror settled."""
         raise NotImplementedError
 
     def last_job(self, agent_id: str, job_type: str) -> Optional[dict]:
@@ -2484,9 +2486,14 @@ class RestDb(HuntDb):
             "&select=id,version,state,content,readiness&order=version.desc&limit=10") or [])
 
     def open_mirror_count(self, agent_id: str) -> int:
+        # "Open" means the person can still see something awaiting a verdict.
+        # The Mirror shows only rows that carry a handle, in the three hunt
+        # layers; a row without a handle is invisible to them and must not
+        # hold the Brief hostage. Same criterion as the app (mirror.ts).
         rows = self._get(
             f"memory?agent_id=eq.{agent_id}&status=eq.active"
-            "&provenance=in.(stated,extracted,inferred)&select=id&limit=50")
+            "&provenance=in.(stated,extracted,inferred)"
+            "&handle=not.is.null&layer=in.(record,self,model)&select=id&limit=50")
         return len(rows or [])
 
     def last_job(self, agent_id: str, job_type: str) -> Optional[dict]:

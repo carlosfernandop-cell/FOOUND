@@ -22,8 +22,13 @@ name: heartbeat
 
 on:
   schedule:
-    - cron: "*/15 * * * *"     # every quarter hour (UTC); GitHub may delay a few minutes
+    - cron: "*/15 * * * *"     # GitHub's clock: best-effort (observed: once in 7 h). Migration 014 is the real one.
   workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why the engine is being woken (job:<type> | memory:confirmed | clock | manual)"
+        required: false
+        default: "manual"
 
 concurrency:
   group: hunt-runner            # never alongside hunt-runner / dry-run
