@@ -46,6 +46,8 @@ import logging
 import os
 import re
 import sys
+
+import market_sources
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -69,9 +71,10 @@ PRIVATE_READ_BUDGET = 40
 # exclude_type, applied to every agent on top of the Brief's own.
 ENGINE_DEFAULT_EXCLUDES = ("intern", "internship", "part-time", "part time", "contractor")
 
-# Engine-default market queries for the two query-driven adapters
-# (Workday, Netflix). Broad on purpose; the include list does the precise
-# filtering afterwards — exactly the original's arrangement.
+# Fallback market queries for the query-driven adapters (Workday, Netflix),
+# used only for a Brief that names no seat family at all. Since Move 3 the
+# queries are the Brief's own words (search_queries_for); these never ride
+# along on someone else's hunt.
 ENGINE_DEFAULT_SEARCH_QUERIES = ("creative director", "brand", "creative lead")
 
 # Temporary v1 kind hints — NOT permanent subject architecture.
@@ -175,17 +178,37 @@ def _generic_variants(f: str) -> list[str]:
 MAX_SEARCH_QUERIES = 8
 
 
-def search_queries_for(families) -> list[str]:
-    """What the search-based adapters should ask for, for THIS Brief (Move 2).
+_QUERY_STOPWORDS = frozenset({
+    "of", "and", "or", "the", "a", "an", "in", "for", "to", "at", "with",
+    "head", "director", "vp", "svp", "evp", "chief", "lead", "leader", "officer",
+    "manager", "senior", "sr", "principal", "staff", "group", "executive",
+    "global", "associate", "assistant", "junior", "jr",
+})
 
-    The engine defaults stay (recall for every client); the Brief's own
-    families are added as quoted titles so a client outside №001's seats
-    is actually fetched, not only filtered. Capped, order-stable."""
-    out = list(ENGINE_DEFAULT_SEARCH_QUERIES)
-    seen = {q.strip('"').lower() for q in out}
-    for f in families or []:
-        f = _norm_phrase(f)
-        if not f or f in seen or len(out) >= MAX_SEARCH_QUERIES:
+
+def search_queries_for(families) -> list[str]:
+    """What the search-based adapters should ask for, for THIS Brief (Move 3).
+
+    The Brief's own words, nothing else: each family as a quoted title
+    (precise), and each family's craft noun unquoted (recall — "design",
+    "brand", "creative"), rank words stripped. The engine defaults are a
+    fallback for a Brief with no families at all, never an addition to
+    someone else's. Capped, order-stable, first-seen first."""
+    fams = [_norm_phrase(f) for f in (families or []) if _norm_phrase(f)]
+    if not fams:
+        return list(ENGINE_DEFAULT_SEARCH_QUERIES)
+    out: list[str] = []
+    seen: set[str] = set()
+    # recall first: the craft nouns, bare ("creative", "brand", "design")
+    for f in fams:
+        for w in re.split(r"[^a-z0-9]+", f):
+            if (len(w) >= 3 and w not in _QUERY_STOPWORDS and w not in seen
+                    and w not in fams and len(out) < MAX_SEARCH_QUERIES):
+                seen.add(w)
+                out.append(w)
+    # then precision: each family as a quoted title
+    for f in fams:
+        if f in seen or len(out) >= MAX_SEARCH_QUERIES:
             continue
         seen.add(f)
         out.append(f'"{f}"')
@@ -276,6 +299,10 @@ _gaz("remote work in the United States (a posting located simply 'US' is this)",
      _GAZ_REMOTE + ("united states", "usa", "us"),
      "remote us", "remote (us)", "us remote", "remote-us", "remote, us",
      "remote usa", "remote in the us")
+_gaz("remote work in Europe", _GAZ_REMOTE + _GAZ_EUROPE,
+     "remote europe", "remote (europe)", "remote in europe", "europe remote",
+     "remote eu", "remote (eu)", "eu remote", "remote-europe", "remote, europe",
+     "remote emea", "emea remote")
 _gaz("Toronto", ("toronto",), "toronto")
 _gaz("Montreal", ("montreal",), "montreal")
 _gaz("Vancouver", ("vancouver",), "vancouver")
@@ -2525,10 +2552,14 @@ class Runner:
                  today: date | None = None, fetch_jd=None, score=None,
                  profile: str | None = None, deep=None, brief_line_fn=None,
                  state_loader=None, read_budget: int = PRIVATE_READ_BUDGET,
-                 model_probe=None, drafter=None):
+                 model_probe=None, drafter=None, probe=None):
         self.db = db
         # Default collector is live adapters. Tests inject a local collector.
         self.collector = collector
+        # Named-company board probe (tests inject; live path asks the ATS APIs).
+        # Tests with a local collector get a silent probe: no network, ever.
+        self.probe = probe if probe is not None else (
+            (lambda ja, name: None) if collector is not None else None)
         self.today = today or date.today()
         # Judgment hooks (tests only). Live path uses job_alerts itself.
         self.fetch_jd = fetch_jd
@@ -2882,9 +2913,17 @@ class Runner:
                                 brief_content=brief.get("content"))
         if self.profile is None and not ctx.text:
             raise HuntError("no_candidate_context")
+        # Move 3: the market universe follows the Brief (regions, named houses).
+        entries, source_summary = market_sources.select_sources(compiled, ja, probe=self.probe)
+        log.info("sources selected=%d founding=%d/%d added=%d named=%d regions=%s",
+                 source_summary["selected"], source_summary["founding"],
+                 source_summary["founding_total"], len(source_summary["added"]),
+                 len(source_summary["named"]), ",".join(source_summary["regions"]))
         try:
-            collector = self.collector if self.collector is not None else live_collect
-            raw = collector(compiled)
+            if self.collector is not None:
+                raw = self.collector(compiled)
+            else:
+                raw = live_collect(compiled, scraper_entries=entries)
         except HuntError:
             raise
         except Exception as e:
@@ -2897,7 +2936,7 @@ class Runner:
             state = load_verdict_state(agent_id, agent_no)
         prior = self.db.prior_edition_payloads(agent_id)
         edition_no = len(prior) + 1
-        sources = len(getattr(ja, "SCRAPERS", []) or [])
+        sources = source_summary["selected"]
         now = datetime.now(timezone.utc)
         result = run_hunt(
             ja, agent_id=agent_id, agent_no=agent_no, brief=brief,
@@ -2912,6 +2951,11 @@ class Runner:
         if "DUMMY ROLE" in result["html"]:
             raise HuntError("edition_persist_failed")
         result["agent_no"] = agent_no
+        # The universe this edition was hunted in: counts and company names
+        # only, kept with the edition so the person can be told the truth
+        # about where FOOUND looked. Never logged beyond the counts above.
+        result["payload"]["sources"] = dict(source_summary)
+        result["payload"].setdefault("counts", {})["sources"] = source_summary["selected"]
         return result
 
     def dry_run(self, agent_id: str, fixture_path: str | None = None) -> dict:
