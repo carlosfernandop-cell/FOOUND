@@ -20,7 +20,18 @@
 --     memory row is inserted (the client's verdict) → wake. Both debounced.
 --   · pg_cron: every 15 minutes → wake('clock'). The GitHub schedule stays
 --     in heartbeat.yml as a second, weaker clock; the concurrency group
---     keeps the two from overlapping.
+--     keeps the two from overlapping. A daily prune keeps the ledger to
+--     30 days. engine_wake_outcomes shows each wake's HTTP result.
+--
+-- Proof in production, two steps, no throwaway project:
+--   1. Apply with NO secret in Vault. Every trigger and the clock then
+--      record 'skipped:no_token' — triggers, debounce, cron and ledger are
+--      proven live with zero outbound calls.
+--   2. Carlos adds the fine-grained token (repository FOOUND only, Actions:
+--      read+write, one-year expiry) as Vault secret github_dispatch_token.
+--      The next queued job dispatches heartbeat.yml with reason job:<type>;
+--      engine_wake_outcomes shows 204. Revocation: delete the token on
+--      GitHub → outcomes show 401 → the GitHub schedule still beats.
 --
 -- The engine's contract is untouched: it still only executes intents the
 -- client expressed. This changes WHEN it looks, never WHAT it does.
@@ -118,10 +129,24 @@ create trigger memory_wake_engine
   after insert on memory
   for each row execute function wake_engine_on_confirm();
 
--- ---- the clock: every quarter hour ---------------------------------------
+-- ---- what happened to each wake: visible, never a secret ------------------
+-- pg_net keeps responses in net._http_response for a few hours; the join
+-- shows 204 (dispatched), 401/403 (token revoked or mis-scoped), 404
+-- (workflow or repo moved), or nothing yet. The token never appears here.
+create or replace view engine_wake_outcomes as
+  select w.id, w.reason, w.at, w.outcome, w.request_id,
+         r.status_code, left(r.error_msg, 120) as error
+    from engine_wakes w
+    left join net._http_response r on r.id = w.request_id
+   order by w.at desc;
+revoke all on engine_wake_outcomes from public, anon, authenticated;
+
+-- ---- the clock: every quarter hour; the ledger never grows without bound --
 do '
 begin
-  perform cron.unschedule(jobid) from cron.job where jobname = ''foound_wake_engine'';
+  perform cron.unschedule(jobid) from cron.job where jobname in (''foound_wake_engine'', ''foound_prune_wakes'');
 exception when others then null;
 end';
 select cron.schedule('foound_wake_engine', '*/15 * * * *', 'select wake_engine(''clock'')');
+select cron.schedule('foound_prune_wakes', '7 3 * * *',
+  'delete from engine_wakes where at < now() - interval ''30 days''');

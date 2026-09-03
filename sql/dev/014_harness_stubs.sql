@@ -16,6 +16,9 @@ begin
   return v;
 end';
 
+create table if not exists net._http_response (
+  id bigint primary key, status_code int, error_msg text, created timestamptz default now());
+
 create table if not exists vault.decrypted_secrets (name text primary key, decrypted_secret text);
 
 create table if not exists cron.job (jobid bigserial primary key, jobname text, schedule text, command text);
