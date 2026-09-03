@@ -32,6 +32,9 @@ on:
       - "sql/dev/012_harness_extras.sql"
       - "sql/013_brief_doors.sql"
       - "sql/test_migration_013.sql"
+      - "sql/015_candidate_doors.sql"
+      - "sql/test_migration_015.sql"
+      - "sql/dev/run_015_harness.sh"
       - "sql/dev/run_013_harness.sh"
       - "sql/014_wake_engine.sql"
       - "sql/test_migration_014.sql"
@@ -57,7 +60,7 @@ jobs:
         run: pip install requests
 
       - name: Everything compiles
-        run: python3 -m py_compile job_alerts.py foound_agent.py foound_state.py hunt_runner.py candidate_context.py brief_proposal.py market_sources.py
+        run: python3 -m py_compile job_alerts.py foound_agent.py foound_state.py hunt_runner.py candidate_context.py brief_proposal.py market_sources.py candidate_draft.py
 
       - name: No one-person literals in the per-agent path
         run: python3 test_no_agent_literals.py job_alerts.py
@@ -179,6 +182,36 @@ jobs:
           PGDATABASE: foound_013
           FOOUND_013_KEEP_DB: "1"
         run: bash sql/dev/run_013_harness.sh
+
+  migration-015:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: harness
+          POSTGRES_DB: foound_015
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Run 015 harness (disposable)
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: harness
+          PGDATABASE: foound_015
+          FOOUND_015_KEEP_DB: "1"
+        run: bash sql/dev/run_015_harness.sh
 
   migration-014:
     runs-on: ubuntu-latest
