@@ -2805,6 +2805,43 @@ def test_q_proposal_carries_its_own_readiness():
           and db.briefs[ok["id"]]["state"] == "abandoned", (gap["readiness"], gap["compiled_config"].get("readiness_reasons")))
 
 
+def test_q_sweep_stands_down_when_the_door_is_not_in_the_database():
+    """Before migration 013 is applied, jobs.type does not know propose_brief.
+    The production adapter names that (job_type_unknown) and the sweep stands
+    down with door_closed=1 instead of failing the heartbeat every beat."""
+    class Resp:
+        def __init__(self, code, text=""):
+            self.status_code, self.text, self.content = code, text, text.encode()
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                import requests
+                raise requests.HTTPError(response=self)
+        def json(self):
+            return json.loads(self.text) if self.text else []
+    class FakeRequests:
+        def post(self, url, headers=None, data=None, timeout=None):
+            return Resp(400, '{"code":"23514","message":"new row for relation \"jobs\" violates check constraint \"jobs_type_check\""}')
+    rest = hr.RestDb("https://example.supabase.co", "k")
+    rest._requests = FakeRequests()
+    try:
+        rest.enqueue_job("a", "propose_brief", {})
+        check("Q closed door named", False, "no error raised")
+    except hr.HuntError as e:
+        check("Q closed door named", e.name == "job_type_unknown", e.name)
+
+    class ClosedDb(MemoryDb):
+        def enqueue_job(self, agent_id, job_type, payload):
+            raise hr.HuntError("job_type_unknown")
+    db = ClosedDb()
+    for no in (2, 3):
+        aid = str(uuid.uuid4()); db.agent_numbers[aid] = no; db.agent_state[aid] = "mirror_ready"
+        for layer, st, src in N002_MEMORY:
+            db.add_memory(aid, [st], layer=layer, source=src)
+    out = hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY).sweep_proposals()
+    check("Q sweep stands down once, queues nothing", out.get("door_closed") == 1 and out["queued"] == 0
+          and not any(j["type"] == "propose_brief" for j in db.jobs.values()), out)
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

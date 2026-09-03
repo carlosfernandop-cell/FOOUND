@@ -97,6 +97,7 @@ NAMED_ERRORS = {
     "no_candidate_context",
     "no_role_families",
     "proposal_failed",
+    "job_type_unknown",
 }
 
 
@@ -2446,10 +2447,17 @@ class RestDb(HuntDb):
             self._post("jobs", {"agent_id": agent_id, "type": job_type, "payload": payload})
             return True
         except Exception as e:
-            # 409 from the partial unique index = already queued; anything else surfaces
+            # 409 from the partial unique index = already queued; a check
+            # violation on jobs.type means the database does not know this
+            # job type yet (migration not applied) — named, so the caller can
+            # stand down instead of failing every beat; anything else surfaces
             resp = getattr(e, "response", None)
-            if resp is not None and getattr(resp, "status_code", None) == 409:
+            code = getattr(resp, "status_code", None) if resp is not None else None
+            if code == 409:
                 return False
+            if code == 400 and ("23514" in (getattr(resp, "text", "") or "")
+                                or "jobs_type_check" in (getattr(resp, "text", "") or "")):
+                raise HuntError("job_type_unknown") from e
             raise
 
     def next_brief_version(self, agent_id: str) -> int:
@@ -2715,7 +2723,16 @@ class Runner:
             if last and last.get("status") == "failed" and str(last.get("requested_at") or "") >= newest:
                 out["failed_on_this"] += 1
                 continue
-            if self.db.enqueue_job(aid, "propose_brief", {"auto": True, "context_hash": h}):
+            try:
+                queued = self.db.enqueue_job(aid, "propose_brief", {"auto": True, "context_hash": h})
+            except HuntError as e:
+                if e.name != "job_type_unknown":
+                    raise
+                # The door (migration 013) is not in this database yet: say so
+                # once and stand down; the beat is not broken, the door is shut.
+                out["door_closed"] = 1
+                break
+            if queued:
                 out["queued"] += 1
             else:
                 out["already_queued"] += 1
