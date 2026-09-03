@@ -30,6 +30,11 @@ on:
       - "sql/test_migration_012.sql"
       - "sql/dev/run_012_harness.sh"
       - "sql/dev/012_harness_extras.sql"
+      - "sql/013_brief_doors.sql"
+      - "sql/test_migration_013.sql"
+      - "sql/dev/run_013_harness.sh"
+      - "candidate_context.py"
+      - "brief_proposal.py"
       - "sql/005_multiuser.sql"
       - "sql/006_jobs.sql"
   pull_request:
@@ -48,7 +53,7 @@ jobs:
         run: pip install requests
 
       - name: Everything compiles
-        run: python3 -m py_compile job_alerts.py foound_agent.py foound_state.py hunt_runner.py
+        run: python3 -m py_compile job_alerts.py foound_agent.py foound_state.py hunt_runner.py candidate_context.py brief_proposal.py
 
       - name: No one-person literals in the per-agent path
         run: python3 test_no_agent_literals.py job_alerts.py
@@ -136,3 +141,34 @@ jobs:
           PGDATABASE: foound_012
           FOOUND_012_KEEP_DB: "1"
         run: bash sql/dev/run_012_harness.sh
+
+  # Disposable Postgres. Never production. Proves migration 013 empirically.
+  migration-013:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: harness
+          POSTGRES_DB: foound_013
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Run 013 harness (disposable)
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: harness
+          PGDATABASE: foound_013
+          FOOUND_013_KEEP_DB: "1"
+        run: bash sql/dev/run_013_harness.sh
