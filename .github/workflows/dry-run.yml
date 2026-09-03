@@ -12,6 +12,12 @@
 
 name: dry-run
 
+# Two ways to fire, both by hand:
+#   1. workflow_dispatch — the Run workflow button (GitHub shows it only
+#      once this file is on the default branch).
+#   2. a push to the working branch whose commit message contains
+#      [dry-run] — the branch-safe path: testing adapts to the branch;
+#      the branch never touches main to make testing easier.
 on:
   workflow_dispatch:
     inputs:
@@ -19,6 +25,8 @@ on:
         description: "Agent number (001) or UUID"
         required: true
         default: "001"
+  push:
+    branches: [move-1-one-judge]
 
 concurrency:
   group: hunt-runner
@@ -26,6 +34,7 @@ concurrency:
 
 jobs:
   dry-run:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[dry-run]')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -41,4 +50,4 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FOOUND_STATE_DIR: /tmp/foound-state
-        run: python hunt_runner.py --dry-run "${{ github.event.inputs.agent }}"
+        run: python hunt_runner.py --dry-run "${{ github.event.inputs.agent || '001' }}"
