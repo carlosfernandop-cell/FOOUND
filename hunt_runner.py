@@ -60,6 +60,7 @@ log = logging.getLogger("hunt_runner")
 DEFAULT_SEAT_CAP = 11
 MAX_SEAT_CAP = 20
 HUNT_JOB_TYPES = ("compile_brief", "refresh_readiness", "first_edition", "propose_brief", "draft_candidate")
+CANDIDATE_DRAFT_MAX_TOKENS = 7000
 MAX_JOBS_PER_RUN = 10
 
 # Move 1 read budget for the private hunt. Fixed for Stage 1 by contract:
@@ -2134,9 +2135,11 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
     }
 
 
-def draft_with_model(ja, prompt: str) -> str:
-    """One Messages call for the Brief draft. Returns the reply text ('' on
-    any failure). Nothing about the reply is logged here."""
+def draft_with_model(ja, prompt: str, max_tokens: int = 2500) -> str:
+    """One Messages call for a draft (Brief, Candidate page). Returns the
+    reply text ('' on any failure). Nothing about the reply is logged here.
+    A reply cut off at max_tokens is unbalanced JSON, which the parsers
+    read as no_json — so the budget must fit the shape asked for."""
     key = getattr(ja, "ANTHROPIC_KEY", "") or ""
     if not key:
         return ""
@@ -2147,7 +2150,7 @@ def draft_with_model(ja, prompt: str) -> str:
             headers={"x-api-key": key, "anthropic-version": "2023-06-01",
                      "content-type": "application/json"},
             json={"model": getattr(ja, "CLAUDE_MODEL", "claude-sonnet-5"),
-                  "max_tokens": 2500, "messages": [{"role": "user", "content": prompt}]},
+                  "max_tokens": int(max_tokens), "messages": [{"role": "user", "content": prompt}]},
             timeout=180,
         )
         if not r.ok:
@@ -2912,7 +2915,12 @@ class Runner:
         ctx = candidate_context(ja, agent_id, agent_no, memory_rows=rows, brief_content=None)
         if ctx.kind != "memory" or not rows:
             raise HuntError("no_candidate_context")
-        drafter = self.drafter if self.drafter is not None else (lambda prompt: draft_with_model(ja, prompt))
+        # Live (2026-09-03, beat #10): both drafts failed with no_json after
+        # ~30 s each — the page (six chapters with narratives, three
+        # trusted-withs, grounds) does not fit the Brief's 2,500-token budget
+        # and arrived cut off. The Candidate page gets the budget its shape needs.
+        drafter = self.drafter if self.drafter is not None else (
+            lambda prompt: draft_with_model(ja, prompt, max_tokens=CANDIDATE_DRAFT_MAX_TOKENS))
         valid_ids = [str(r.get("id")) for r in rows]
         page, reason, attempts = None, "", 0
         for attempt in (1, 2):
