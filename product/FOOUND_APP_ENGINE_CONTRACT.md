@@ -263,7 +263,31 @@ representation. We are avoiding new schema.*
   enough to hunt (v1: no usable hunt authority in content — need
   include terms and accepted locations).
 - READY if compile produced an executable hunt config from authorized
-  Brief subjects.
+  Brief subjects **and** FOOUND has a Candidate Context for the person
+  (Move 2): at least one active memory row with provenance `confirmed`.
+  Otherwise BLOCKED with the reason `no_candidate_context` — the app
+  should say "confirm your record" rather than let a commission fail.
+  №001 alone keeps `profile.md` as an interim context until he confirms.
+
+## Candidate Context (Move 2 — Person from Memory)
+
+- The judge reads one document about the person. For any client it is
+  compiled at hunt time from **confirmed Memory only** (status `active`,
+  provenance `confirmed`; layers record → self → model → behavior),
+  statements verbatim, plus the active Brief's own chapter lines as
+  "what they are looking for". Stated / extracted / inferred rows are
+  beliefs awaiting a verdict and never enter. Retracted, superseded and
+  tension rows never enter.
+- The context informs judgment quality inside the Brief's universe. It
+  never admits a role the Brief did not authorize (eligibility is decided
+  before judgment, by the Brief alone).
+- Every edition's `payload.candidate_context` is a receipt, never the
+  text: `{kind: memory | profile.md, hash, statements, layers, sources,
+  format}`. The hash is the context's version.
+- The three judge prompts are parameterized by the client's voice
+  (`persona`, `pronouns`, `judgment_lenses`); №001's values are the
+  original literals, so his prompts are byte-identical. Any other client
+  is "one client" in the neutral third person.
 - Schema still *allows* `'limited'` (005) and `commission_agent()`
   still honors the existing limited-ack gate on non-at_work paths.
   This slice does not invent limited-ack behavior and does not write
