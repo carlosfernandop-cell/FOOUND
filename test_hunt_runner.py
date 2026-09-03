@@ -133,6 +133,13 @@ class MemoryDb(hr.HuntDb):
         rec.setdefault("id", str(uuid.uuid4()))
         self.editions.append(rec)
 
+    def replace_edition(self, edition_id: str, row: dict):
+        for e in self.editions:
+            if e["id"] == edition_id:
+                e.update({k: v for k, v in row.items() if k not in ("agent_id", "edition_date")})
+                return
+        raise RuntimeError("no such edition")
+
     def agent_no(self, agent_id: str):
         return self.agent_numbers.get(agent_id)
 
@@ -2706,8 +2713,14 @@ def test_q_full_chain_for_a_second_client():
                   score=_score_by_title({"Head of Design": (84, "why", "pause")}, default=(66, "w", "p")),
                   profile=None, state_loader=lambda _a, _n: None,
                   deep=lambda *_a, **_k: dict(DEEP_STUB), brief_line_fn=lambda *_a, **_k: "Fabric leads clear of the field.")
+    # The Brief coming into force already earned its edition at compile time
+    # (the agent is at work); the daily beat finds it queued and adds none.
+    from_brief = [j for j in db.jobs.values()
+                  if j["agent_id"] == aid and j["type"] == "first_edition" and j["status"] == "queued"]
+    check("Q chain: the Brief in force queued its own edition",
+          len(from_brief) == 1 and (from_brief[0].get("payload") or {}).get("reason") == "brief_in_force")
     beat = r.enqueue_daily()
-    check("Q chain: beat queued one edition", beat["queued"] == 1)
+    check("Q chain: beat finds that edition queued, adds none", beat["queued"] == 0 and beat["already_queued"] == 1)
     r.run()
     check("Q chain: edition written", len(db.editions) == 1 and db.editions[0]["agent_id"] == aid)
     p = db.editions[0]["payload"]
@@ -2979,6 +2992,45 @@ def test_v_sweep_drafts_the_candidate_once():
     check("V one job, for the settled person", len(queued) == 1 and queued[0]["agent_id"] == settled)
     again = hr.Runner(db, collector=lambda _c: []).sweep_candidates(now=now)
     check("V second beat queues nothing new", again["queued"] == 0 and again["in_flight"] == 1, again)
+
+
+def test_w_a_brief_in_force_earns_its_edition_today():
+    """Mara's case (2026-09-03): she confirmed Brief v3 while already at work,
+    with today's edition made from v2. "FOOUND is at work from it" must be
+    true today: compile queues the edition; the hunt rewrites the day's
+    edition from the Brief in force; a second job from the same Brief is a
+    no-op; an agent not at work queues nothing."""
+    db = MemoryDb()
+    aid = _n002(db); db.agent_state[aid] = "at_work"
+    old_id = str(uuid.uuid4())
+    db.editions.append({"id": old_id, "agent_id": aid, "edition_date": FROZEN_TODAY.isoformat(),
+                        "brief_version": 1, "payload": {"seats": []}, "html": "<p>v1</p>", "outcome": "empty"})
+    # the 013 door queued compile_brief for the Brief now in force (v2)
+    db.add_job(aid, "compile_brief", payload={"brief_version": 2})
+    hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY).run()
+    q = [j for j in db.jobs.values() if j["agent_id"] == aid and j["type"] == "first_edition" and j["status"] == "queued"]
+    check("W compile queued the edition for the Brief in force",
+          len(q) == 1 and q[0]["payload"] == {"brief_version": 2, "reason": "brief_in_force"})
+    raw = [{"title": "Head of Design", "company": "Fabric", "location": "Berlin", "url": "https://fabric/1"}]
+    r = hr.Runner(db, collector=lambda _c: raw, today=FROZEN_TODAY, fetch_jd=lambda _u: "",
+                  score=_score_by_title({"Head of Design": (84, "why", "pause")}, default=(66, "w", "p")),
+                  profile=None, state_loader=lambda _a, _n: None,
+                  deep=lambda *_a, **_k: dict(DEEP_STUB), brief_line_fn=lambda *_a, **_k: "Fabric leads.")
+    reports = r.run()
+    ed = [e for e in db.editions if e["agent_id"] == aid]
+    check("W one edition for the day, rewritten from v2",
+          len(ed) == 1 and ed[0]["id"] == old_id and ed[0]["brief_version"] == 2 and ed[0]["outcome"] == "seats"
+          and reports[0].action == "edition" and reports[0].detail.get("replaced_brief_version") == 1)
+    # the same Brief again today: nothing to do
+    db.add_job(aid, "first_edition", payload={"brief_version": 2, "daily": True})
+    rep = r.run()
+    check("W same Brief, same day: noop", rep[0].action == "noop" and len([e for e in db.editions if e["agent_id"] == aid]) == 1)
+    # not at work: compile queues nothing
+    b = _n002(db); db.agent_state[b] = "mirror_ready"
+    db.add_job(b, "compile_brief", payload={"brief_version": 2})
+    hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY).run()
+    check("W not at work: no edition queued",
+          not [j for j in db.jobs.values() if j["agent_id"] == b and j["type"] == "first_edition"])
 
 
 def main():
