@@ -195,8 +195,10 @@ editions row.*
   is false. Do not call or merge the public Shortlist publisher
   (`job_alerts.yml` / `docs/` GitHub Pages / `publish_public`).
 - Zero seats is a successful empty edition. `jobs.error` is technical
-  failure only (`no_active_brief` / `no_compiled_config` /
-  `readiness_blocked` / named adapter errors).
+  failure only (`no_active_brief` / `readiness_blocked` / named adapter
+  errors). Since Move 1 v1.2 the hunt compiles the active `Brief.content`
+  itself at hunt time; `briefs.compiled_config` is a receipt written by the
+  compile/readiness jobs, never an input to eligibility.
 - v1 market memory is personal: this agent's prior private
   `editions.payload` only. Do not use `public.market_seen` as personal
   history.
