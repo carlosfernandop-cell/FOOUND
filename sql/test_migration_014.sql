@@ -65,10 +65,41 @@ do $$ declare n int; begin
   if n <> 3 then raise exception 'FAIL W4 confirmed row did not wake: %', n; end if;
 end $$;
 
--- W5 · the clock is scheduled exactly once, every quarter hour
-do $$ declare n int; s text; begin
+-- W5 · the clock is scheduled exactly once, every quarter hour; the prune once a day
+do $$ declare n int; s text; p int; begin
   select count(*), min(schedule) into n, s from cron.job where jobname = 'foound_wake_engine';
   if n <> 1 or s <> '*/15 * * * *' then raise exception 'FAIL W5 cron: % %', n, s; end if;
+  select count(*) into p from cron.job where jobname = 'foound_prune_wakes' and command like '%30 days%';
+  if p <> 1 then raise exception 'FAIL W5 prune: %', p; end if;
+end $$;
+
+-- W5b · re-running the migration does not double the clock (idempotent)
+\ir dev/014_harness_reapply.sql
+do $$ declare n int; begin
+  select count(*) into n from cron.job where jobname in ('foound_wake_engine', 'foound_prune_wakes');
+  if n <> 2 then raise exception 'FAIL W5b re-apply doubled the cron: %', n; end if;
+end $$;
+
+-- W5c · a failed outbound wake is visible: outcomes view shows the HTTP status
+do $$ declare st int; begin
+  insert into net._http_response (id, status_code, error_msg)
+    select request_id, 401, 'Bad credentials' from engine_wakes where outcome = 'sent' order by id desc limit 1;
+  select status_code into st from engine_wake_outcomes where outcome = 'sent' order by at desc limit 1;
+  if st <> 401 then raise exception 'FAIL W5c outcome not visible: %', st; end if;
+  if exists (select 1 from engine_wake_outcomes where error like '%ghp_%') then raise exception 'FAIL W5c token in view'; end if;
+end $$;
+
+-- W5d · a burst of confirmations (bulk confirm) yields one wake, and the storm is visible but bounded
+update engine_wakes set at = at - interval '2 minutes';
+do $$ declare before_sent int; after_sent int; skipped int; begin
+  select count(*) into before_sent from engine_wakes where outcome = 'sent';
+  insert into memory (agent_id, layer, statement, provenance, source, status)
+    select 'a5454545-0000-4000-8000-000000000054', 'self', 'Statement ' || g, 'confirmed', 'note', 'active'
+      from generate_series(1, 30) g;
+  select count(*) into after_sent from engine_wakes where outcome = 'sent';
+  select count(*) into skipped from engine_wakes where outcome = 'skipped:debounced';
+  if after_sent - before_sent <> 1 then raise exception 'FAIL W5d burst sent % wakes', after_sent - before_sent; end if;
+  if skipped < 29 then raise exception 'FAIL W5d storm not recorded: %', skipped; end if;
 end $$;
 
 -- W6 · clients cannot call wake_engine or read the ledger
@@ -91,6 +122,7 @@ delete from agents where agent_no = 54;
 delete from auth.users where id = '54545454-5454-4545-8545-545454545454';
 delete from engine_wakes;
 delete from net.net_calls;
+delete from net._http_response;
 delete from vault.decrypted_secrets;
 
 select 'M014 OK' as result;
