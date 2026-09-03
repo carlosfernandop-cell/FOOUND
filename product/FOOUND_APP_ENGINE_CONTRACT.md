@@ -293,6 +293,53 @@ representation. We are avoiding new schema.*
   This slice does not invent limited-ack behavior and does not write
   the value.
 
+## The proposed Working Brief (Move 2 — decision A)
+
+*FOOUND drafts the Brief from confirmed Memory; the person confirms.
+Nobody has to ask.*
+
+- **FOOUND proposes on its own.** Every heartbeat (quarter-hourly), the
+  engine sweeps live agents: a client with something confirmed and no
+  Brief in force (no `proposed`, no `active` row) gets one `propose_brief`
+  job the moment their Mirror is settled (nothing left awaiting a
+  verdict) — or, if they left statements unanswered, once they have been
+  quiet for 20 minutes. People confirm what matters and walk away; that
+  is enough. A pending proposal drafted from an older understanding
+  (its `provenance.candidate_context_hash` no longer matches the
+  confirmed set) is redrafted the same way. An **active** Brief is never
+  touched by the sweep: learning never rewrites authority. A draft that
+  failed on this exact understanding is not retried until the client
+  confirms something new.
+- **The app may still ask.** Inserting `jobs {type: 'propose_brief'}`
+  is the client's own verb — for a redraft of an active Brief, or with
+  `payload.wrong: [{chapter, handle}, ...]` to send a proposal back with
+  the subjects marked wrong. Same job, same engine path; the sweep's
+  jobs carry `payload.auto: true`.
+- **Shape.** The proposal is a `briefs` row, `state = 'proposed'`,
+  version `next_brief_version(agent)`, `content` in the Brief grammar
+  (THE MOVE / ROLE SPACE / WHERE, optional AVOID) with each subject's
+  `grounds` (confirmed memory ids) and a `provenance` block the compiler
+  ignores. Any earlier `proposed` row is marked `abandoned` first.
+- **The proposal carries its own readiness.** `readiness` and
+  `compiled_config` are written on insert, from the same compiler that
+  will judge the Brief after activation. A subject whose handle is
+  "Still learning" is FOOUND admitting a gap: it compiles to nothing,
+  in whatever chapter it sits, so a Brief with an unknown WHERE is
+  `not_ready` with `no_accepted_locations` — never "ready" on a phrase
+  that is not a place. The room offers **Confirm** only on a `ready`
+  proposal; on a `not_ready` one it says what FOOUND could not read and
+  points to the feed (where the person speaks), not to a form.
+- **Activation is the client's door**: `activate_brief(p_brief uuid)`
+  (migration 013; owner-only; `proposed → active`, previous active →
+  `superseded`, `confirmed_at` set, one `compile_brief` queued; blocked
+  on empty content, archived agents, or any state but `proposed` /
+  `active`). The engine never activates. `commission_agent()` remains
+  the put-to-work gate.
+- Failure is legible: a `propose_brief` job that fails carries
+  `error = proposal_failed` (the model produced no usable draft twice)
+  or `no_candidate_context` (nothing confirmed). The app renders it and
+  the client's next confirmation re-opens the draft.
+
 ## Cross-boundary change protocol
 
 **Cross-boundary changes require contract review — both directions.**
