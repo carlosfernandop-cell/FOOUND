@@ -57,7 +57,7 @@ jobs:
         run: pip install requests
 
       - name: Everything compiles
-        run: python3 -m py_compile job_alerts.py foound_agent.py foound_state.py hunt_runner.py candidate_context.py brief_proposal.py
+        run: python3 -m py_compile job_alerts.py foound_agent.py foound_state.py hunt_runner.py candidate_context.py brief_proposal.py market_sources.py
 
       - name: No one-person literals in the per-agent path
         run: python3 test_no_agent_literals.py job_alerts.py
@@ -67,6 +67,9 @@ jobs:
 
       - name: Hunt runner vertical slice
         run: python3 test_hunt_runner.py
+
+      - name: Sources follow the Brief (Move 3)
+        run: python3 test_market_sources.py
 
       - name: Orchestration works end to end
         run: python3 test_main_endtoend.py
