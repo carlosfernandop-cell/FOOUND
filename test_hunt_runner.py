@@ -124,6 +124,12 @@ class MemoryDb(hr.HuntDb):
     def agent_no(self, agent_id: str):
         return self.agent_numbers.get(agent_id)
 
+    def agent_id_for_no(self, agent_no):
+        for aid, n in self.agent_numbers.items():
+            if n == agent_no:
+                return aid
+        return None
+
 
 class FakeState:
     """Stands in for foound_state.PrivateState."""
@@ -2091,6 +2097,124 @@ def test_i_why_now_uses_the_real_clock():
     db2 = MemoryDb(); aid2 = _ready_agent(db2, STRUCTURED, agent_no=9); db2.add_job(aid2, "first_edition")
     _runner(db2, raw, score=_score_by_title({}, default=(70, "w", "p"))).run()
     check("I non-001 why_now is UTC", re.search(r"still open as of \d{1,2}:\d{2} [AP]M UTC$", db2.editions[0]["payload"]["seats"][0]["why_now"]) is not None)
+
+
+# ---------------------------------------------------------------------------
+# D — v1.4: the original deep look made reliable (parsing + budget + pause)
+# ---------------------------------------------------------------------------
+
+GOOD_JSON = ('{"role": "New seat, not a succession.", "moment": "Brand under construction.", '
+             '"leadership": "Reports to the CMO.", "signal": "Two senior hires.", '
+             '"question": "Team size unstated.", "fit_after": 84, "verdict": "Still 82."}')
+
+
+class _Resp:
+    def __init__(self, blocks, stop_reason="end_turn", status=200):
+        self.status_code = status; self.ok = status < 400
+        self._body = {"content": blocks, "stop_reason": stop_reason, "usage": {"output_tokens": 1}}
+        self.text = "" if status < 400 else '{"error": {"message": "RAWERR"}}'
+    def json(self): return self._body
+
+
+def _with_deep_look(responses, fn):
+    """Run fn() with job_alerts.requests.post answering from `responses` in
+    order; returns (result, list of request bodies)."""
+    ja = hr._import_job_alerts_adapters()
+    saved_post, saved_key = ja.requests.post, ja.ANTHROPIC_KEY
+    calls = []
+    it = iter(responses)
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(json)
+        return next(it)
+    ja.requests.post, ja.ANTHROPIC_KEY = fake_post, "k"
+    try:
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            res = fn(ja)
+        return res, calls, out.getvalue()
+    finally:
+        ja.requests.post, ja.ANTHROPIC_KEY = saved_post, saved_key
+
+
+JOB = {"title": "Head of Brand", "company": "Acme", "location": "SF", "url": "https://x/1", "fit": 82,
+       "ai_why": "w", "ai_pause": "p"}
+
+
+def test_d_deep_look_json_anywhere_in_reply():
+    # (b) JSON in an earlier text block, a citation-only block last (the original read only the last block)
+    blocks = [{"type": "text", "text": "Let me look."}, {"type": "server_tool_use", "id": "1", "name": "web_search"},
+              {"type": "web_search_tool_result", "content": []},
+              {"type": "text", "text": "Findings.\n" + GOOD_JSON}, {"type": "text", "text": "Sources: example.com"}]
+    res, calls, out = _with_deep_look([_Resp(blocks)], lambda ja: ja.deep_look(JOB, "profile"))
+    check("D json in an earlier block is found", res is not None and res["verdict"] == "Still 82." and res["fit_after"] == 84, res)
+    check("D one call, bigger budget", len(calls) == 1 and calls[0]["max_tokens"] >= 3000 and calls[0]["max_tokens"] == hr._import_job_alerts_adapters().DEEP_LOOK_MAX_TOKENS)
+    # (c) nested brace and a brace inside a string (the flat regex could not match this)
+    nested = GOOD_JSON.replace('"Brand under construction."', '"Brand {under construction}."')
+    res, _, _ = _with_deep_look([_Resp([{"type": "text", "text": "Here:\n" + nested + "\nDone."}])],
+                                lambda ja: ja.deep_look(JOB, "profile"))
+    check("D nested braces parse", res is not None and res["moment"] == "Brand {under construction}.", res)
+    # a leading prose object without a verdict must not be mistaken for the answer
+    two = '{"note": "scratch"}\n' + GOOD_JSON
+    res, _, _ = _with_deep_look([_Resp([{"type": "text", "text": two}])], lambda ja: ja.deep_look(JOB, "profile"))
+    check("D picks the object that names a verdict", res is not None and res["verdict"] == "Still 82.")
+    # thin reply (fewer than four fields) is still refused as before
+    res, _, _ = _with_deep_look([_Resp([{"type": "text", "text": '{"verdict": "Still 82.", "role": "x"}'}])],
+                                lambda ja: ja.deep_look(JOB, "profile"))
+    check("D thin reply still None", res is None)
+
+
+def test_d_deep_look_truncation_and_pause_are_named():
+    # (a) budget exhausted mid-JSON → None, and the report names it
+    cut = GOOD_JSON[:60]
+    res, _, out = _with_deep_look([_Resp([{"type": "text", "text": "Findings.\n" + cut}], stop_reason="max_tokens")],
+                                  lambda ja: ja.deep_look(JOB, "profile"))
+    check("D truncated → None", res is None)
+    check("D truncated report carries stop_reason", "stop_reason=max_tokens" in out and "RAWERR" not in out)
+    check("D classifier: truncated", hr.classify_deep_look(None, out) == "truncated")
+    # (d) server pauses the turn: the call is continued with the assistant content and finishes
+    first = _Resp([{"type": "text", "text": "Searching."}, {"type": "server_tool_use", "id": "1", "name": "web_search"}], stop_reason="pause_turn")
+    second = _Resp([{"type": "text", "text": GOOD_JSON}])
+    res, calls, out = _with_deep_look([first, second], lambda ja: ja.deep_look(JOB, "profile"))
+    check("D pause_turn continued and parsed", res is not None and res["verdict"] == "Still 82." and len(calls) == 2)
+    check("D continuation carries the paused content", calls[1]["messages"][-1]["role"] == "assistant"
+          and calls[1]["messages"][-1]["content"] == first.json()["content"])
+    # a pause that never resolves within the turn cap is named, not looped forever
+    ja = hr._import_job_alerts_adapters()
+    paused = [_Resp([{"type": "text", "text": "..."}], stop_reason="pause_turn")] * ja.DEEP_LOOK_MAX_TURNS
+    res, calls, out = _with_deep_look(paused, lambda ja: ja.deep_look(JOB, "profile"))
+    check("D pause cap", res is None and len(calls) == ja.DEEP_LOOK_MAX_TURNS and hr.classify_deep_look(None, out) == "paused")
+    # HTTP failure path unchanged
+    res, _, out = _with_deep_look([_Resp([], status=400)], lambda ja: ja.deep_look(JOB, "profile"))
+    check("D http failure unchanged", res is None and hr.classify_deep_look(None, out) == "http_4xx")
+    check("D enums extended", "truncated" in hr.DEEP_REASONS and "paused" in hr.DEEP_REASONS)
+
+
+def test_d_deep_look_reaches_the_private_edition_end_to_end():
+    """Live path + the real deep_look parser over a realistic multi-block reply."""
+    raw = [{"title": "Creative Director", "company": "Acme", "location": "Remote", "url": "https://x/1"}]
+    ja = hr._import_job_alerts_adapters()
+    blocks = [{"type": "text", "text": "Looking."}, {"type": "server_tool_use", "id": "1", "name": "web_search"},
+              {"type": "web_search_tool_result", "content": []}, {"type": "text", "text": GOOD_JSON},
+              {"type": "text", "text": "(sources)"}]
+    saved_post = ja.requests.post
+    ja.requests.post = lambda url, headers=None, json=None, timeout=None: _Resp(blocks)
+    try:
+        db, out = _live_run(raw, score_fit=lambda *_a: (85, "w", "p"), deep_look=ja.deep_look,
+                            write_brief=lambda *_a: "One line.")
+    finally:
+        ja.requests.post = saved_post
+    p = db.editions[0]["payload"]
+    check("D end to end: deep=ok statline=ok", p["intelligence"] == {"deep": "ok", "statline": "ok"}, p["intelligence"])
+    check("D end to end: panel rendered", "I kept looking" in db.editions[0]["html"] and "Still 82." in db.editions[0]["html"])
+
+
+def test_d_dry_run_accepts_agent_number():
+    db = MemoryDb()
+    aid = _ready_agent(db, STRUCTURED, agent_no=1)
+    check("D memory db resolves 1", db.agent_id_for_no(1) == aid and db.agent_id_for_no(2) is None)
+    src = open(hr.__file__, encoding="utf-8").read()
+    check("D main resolves a numeric agent read-only", 'agent_id_for_no(int(agent_id))' in src and 'fullmatch(r"\\d{1,4}"' in src)
+    check("D RestDb query is a read", 'agents?agent_no=eq.' in src and 'select=id' in src)
 
 
 def test_h9_boundaries():

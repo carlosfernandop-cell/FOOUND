@@ -1380,7 +1380,7 @@ def _captured_stdio():
 DEEP_LOOK_THRESHOLD = 80   # the original loop's trigger; unchanged
 
 DEEP_REASONS = ("ok", "not_run", "not_triggered", "http_4xx", "http_5xx",
-                "no_json", "thin_reply", "error")
+                "no_json", "truncated", "paused", "thin_reply", "error")
 STATLINE_REASONS = ("ok", "not_run", "empty", "http_4xx", "http_5xx",
                     "unusable_reply", "error")
 
@@ -1400,6 +1400,10 @@ def classify_deep_look(out, captured: str) -> str:
     if "[deep look skipped: HTTP" in t:
         return _http_class(t, r"\[deep look skipped: HTTP") or "error"
     if "no JSON in reply" in t:
+        if "stop_reason=max_tokens" in t:
+            return "truncated"   # the research turn ran out of output budget
+        if "stop_reason=pause_turn" in t:
+            return "paused"      # server paused the turn and it was not resumed
         return "no_json"
     if "[deep look skipped:" in t:
         return "error"
@@ -2040,6 +2044,10 @@ class HuntDb:
     def agent_no(self, agent_id: str) -> Optional[int]:
         raise NotImplementedError
 
+    def agent_id_for_no(self, agent_no: int) -> Optional[str]:
+        """Read-only: the agent UUID for a public number (№001 → uuid)."""
+        raise NotImplementedError
+
 
 class RestDb(HuntDb):
     """Production transport: Supabase PostgREST with the service key."""
@@ -2171,6 +2179,12 @@ class RestDb(HuntDb):
             return int(rows[0]["agent_no"])
         except (KeyError, TypeError, ValueError):
             return None
+
+    def agent_id_for_no(self, agent_no: int) -> Optional[str]:
+        rows = self._get(f"agents?agent_no=eq.{int(agent_no)}&select=id&limit=1")
+        if not rows:
+            return None
+        return str(rows[0].get("id") or "") or None
 
 
 # ---------------------------------------------------------------------------
@@ -2475,7 +2489,15 @@ def main(argv: list[str] | None = None) -> int:
         fixture = argv[2].strip() if len(argv) > 2 and argv[2].strip() else None
         base = os.environ["SUPABASE_URL"]
         key = os.environ["SUPABASE_SERVICE_KEY"]
-        runner = Runner(db=RestDb(base, key))
+        db = RestDb(base, key)
+        if re.fullmatch(r"\d{1,4}", agent_id):
+            # A public agent number (001) instead of a UUID: resolve it, read-only.
+            resolved = db.agent_id_for_no(int(agent_id))
+            if not resolved:
+                log.info("dry-run unknown agent number")
+                return 1
+            agent_id = resolved
+        runner = Runner(db=db)
         try:
             runner.dry_run(agent_id, fixture)
         except HuntError as e:

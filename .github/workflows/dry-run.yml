@@ -1,0 +1,44 @@
+# FOOUND — read-only dry run of the private hunt (Move 1 v1.4).
+#
+# Fires by hand only. Runs `hunt_runner.py --dry-run <agent number>` with
+# the production keys GitHub already holds, so a verification needs no
+# Terminal and no key on anyone's machine. The dry run writes NOTHING:
+# no edition, no job, no signal, no Brief change (test-asserted:
+# test_r_dry_run_writes_nothing). No fixture file, no artifact.
+#
+# PUBLIC REPO: this log is public. The dry run prints one [operator] line
+# of counts, enums and hashes — never seat titles, URLs, Brief copy,
+# prompts or model output (test-asserted hygiene).
+
+name: dry-run
+
+on:
+  workflow_dispatch:
+    inputs:
+      agent:
+        description: "Agent number (001) or UUID"
+        required: true
+        default: "001"
+
+concurrency:
+  group: hunt-runner
+  cancel-in-progress: false
+
+jobs:
+  dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install requests==2.33.1
+      - name: Read-only dry run (counts and enums only)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FOOUND_STATE_DIR: /tmp/foound-state
+        run: python hunt_runner.py --dry-run "${{ github.event.inputs.agent }}"

@@ -1126,6 +1126,40 @@ def rank_with_fit(agent, matches: list, new_keys: set, second_look: set | None =
         return sorted(matches, key=heuristic, reverse=True), False
     return sorted(candidates, key=lambda j: (j.get("fit", -1), heuristic(j)), reverse=True), True
 
+DEEP_LOOK_MAX_TOKENS = 4000   # was 1,400: a five-search turn needs room to finish its JSON
+DEEP_LOOK_MAX_TURNS = 3       # continuations after a server-side pause_turn
+
+
+def _deep_look_json(blocks):
+    """The deep look's JSON object, wherever the reply put it.
+
+    Joins every text block in order and returns the last brace-balanced
+    object that names a verdict and parses as JSON. None if there is none
+    (truncated reply, no JSON, or prose only)."""
+    texts = [b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"]
+    joined = "\n".join(t for t in texts if t)
+    found = None
+    for m in re.finditer(r"\{", joined):
+        depth = 0
+        for i in range(m.start(), len(joined)):
+            ch = joined[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    span = joined[m.start():i + 1]
+                    if '"verdict"' in span:
+                        try:
+                            cand = json.loads(span)
+                            if isinstance(cand, dict):
+                                found = cand
+                        except Exception:
+                            pass
+                    break
+    return found
+
+
 def deep_look(job, profile: str):
     """Second pass on the day's lead: investigate with web search.
     The research is allowed to lower the score. Returns dict or None; never raises."""
@@ -1151,35 +1185,48 @@ def deep_look(job, profile: str):
             "fit_after is your revised integer score after research — it MAY be lower than the current score. "
             "Be honest; the research earns nothing if it can only agree."
         )
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
-            json={
-                "model": CLAUDE_MODEL,
-                "max_tokens": 1400,
-                "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=240,
-        )
-        if not r.ok:
-            print(f"[deep look skipped: HTTP {r.status_code} {r.text[:200]}]")
-            return None
-        blocks = r.json().get("content", [])
-        text = ""
-        for b in reversed(blocks):
-            if b.get("type") == "text" and b.get("text", "").strip():
-                text = b["text"]
+        # Move 1 v1.4: the same call, made reliable. The reply of a web-search
+        # turn is several text blocks around tool blocks, the JSON may sit in
+        # any of them, may contain a nested brace, and a long research turn
+        # may exhaust the budget or pause; the original parser read only the
+        # last block with a flat-brace regex under a 1,400-token cap and lost
+        # about half of all deep looks silently.
+        headers = {
+            "x-api-key": ANTHROPIC_KEY,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        messages = [{"role": "user", "content": prompt}]
+        blocks = []
+        stop_reason = ""
+        for _turn in range(DEEP_LOOK_MAX_TURNS):
+            r = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json={
+                    "model": CLAUDE_MODEL,
+                    "max_tokens": DEEP_LOOK_MAX_TOKENS,
+                    "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}],
+                    "messages": messages,
+                },
+                timeout=240,
+            )
+            if not r.ok:
+                print(f"[deep look skipped: HTTP {r.status_code} {r.text[:200]}]")
+                return None
+            body = r.json()
+            turn_blocks = body.get("content", []) or []
+            blocks.extend(turn_blocks)
+            stop_reason = str(body.get("stop_reason") or "")
+            if stop_reason != "pause_turn":
                 break
-        m = re.search(r"\{[^{}]*\}", text, re.S)
-        if not m:
-            print("[deep look skipped: no JSON in reply]")
+            # The server paused a long tool-use turn: hand its content back and let it finish.
+            messages = messages + [{"role": "assistant", "content": turn_blocks}]
+        d = _deep_look_json(blocks)
+        if d is None:
+            n_text = sum(1 for b in blocks if b.get("type") == "text")
+            print(f"[deep look skipped: no JSON in reply; stop_reason={stop_reason or 'none'} text_blocks={n_text}]")
             return None
-        d = json.loads(m.group(0))
         out = {}
         for k in ("role", "moment", "leadership", "signal", "question"):
             v = str(d.get(k, "")).strip()
