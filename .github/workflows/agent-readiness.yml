@@ -33,6 +33,10 @@ on:
       - "sql/013_brief_doors.sql"
       - "sql/test_migration_013.sql"
       - "sql/dev/run_013_harness.sh"
+      - "sql/014_wake_engine.sql"
+      - "sql/test_migration_014.sql"
+      - "sql/dev/run_014_harness.sh"
+      - "sql/dev/014_harness_stubs.sql"
       - "candidate_context.py"
       - "brief_proposal.py"
       - "sql/005_multiuser.sql"
@@ -172,3 +176,33 @@ jobs:
           PGDATABASE: foound_013
           FOOUND_013_KEEP_DB: "1"
         run: bash sql/dev/run_013_harness.sh
+
+  migration-014:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: harness
+          POSTGRES_DB: foound_014
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Run 013 harness (disposable)
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: harness
+          PGDATABASE: foound_014
+          FOOUND_014_KEEP_DB: "1"
+        run: bash sql/dev/run_014_harness.sh
