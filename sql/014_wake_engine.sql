@@ -89,7 +89,8 @@ begin
         ''X-GitHub-Api-Version'', ''2022-11-28'',
         ''User-Agent'', ''foound-wake'',
         ''Content-Type'', ''application/json''),
-      body := jsonb_build_object(''ref'', ''main'', ''inputs'', jsonb_build_object(''reason'', v_reason))
+      body := jsonb_build_object(''ref'', ''main'', ''inputs'', jsonb_build_object(''reason'', v_reason)),
+      timeout_milliseconds := 5000
     ) into v_req;
   exception when others then
     insert into engine_wakes (reason, outcome) values (v_reason, ''skipped:error'');
