@@ -34,7 +34,7 @@ import json
 import re
 import uuid
 import contextlib
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import hunt_runner as hr
 
@@ -74,11 +74,12 @@ class MemoryDb(hr.HuntDb):
         }
         return bid
 
-    def add_job(self, agent_id, type, status="queued", payload=None):
+    def add_job(self, agent_id, type, status="queued", payload=None, requested_at=None):
         jid = str(uuid.uuid4())
         self.jobs[jid] = {
             "id": jid, "agent_id": agent_id, "type": type,
             "status": status, "payload": payload or {},
+            "requested_at": requested_at or f"2026-09-{1 + len(self.jobs) % 28:02d}T00:00:00Z",
         }
         return jid
 
@@ -170,6 +171,22 @@ class MemoryDb(hr.HuntDb):
             return False
         self.add_job(agent_id, job_type, payload=payload)
         return True
+
+    def live_agents(self):
+        return [{"id": aid, "agent_no": n, "state": self.agent_state.get(aid, "mirror_ready")}
+                for aid, n in self.agent_numbers.items() if self.agent_state.get(aid) != "archived"]
+
+    def briefs_in_force(self, agent_id):
+        rows = [dict(b) for b in self.briefs.values() if b["agent_id"] == agent_id and b["state"] in ("proposed", "active")]
+        return sorted(rows, key=lambda b: -b["version"])
+
+    def open_mirror_count(self, agent_id):
+        return len([r for r in self.memory.get(agent_id, [])
+                    if r.get("status") == "active" and r.get("provenance") in ("stated", "extracted", "inferred")])
+
+    def last_job(self, agent_id, job_type):
+        rows = [j for j in self.jobs.values() if j["agent_id"] == agent_id and j["type"] == job_type]
+        return dict(rows[-1]) if rows else None
 
 
 class FakeState:
@@ -2700,6 +2717,92 @@ def test_h9_boundaries():
     check("H9 no memory reads", db.memory_reads == 0)
     check("H9 no market_seen reads", db.market_seen_reads == 0)
     check("H9 no publish", db.publish_calls == 0)
+
+
+def test_q_sweep_proposes_without_being_asked():
+    """Move 2: nobody asks FOOUND for a Brief. A settled Mirror with no Brief
+    in force gets one propose_brief job; an active Brief is never touched; an
+    open Mirror waits unless the client has been quiet; a proposal drafted
+    from the current understanding is left alone; a stale one is redrafted;
+    a draft that failed on this understanding is not retried."""
+    import candidate_context as cc
+    now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+    db = MemoryDb()
+
+    def person(no, *, confirm_all=True, state="mirror_ready"):
+        aid = str(uuid.uuid4()); db.agent_numbers[aid] = no; db.agent_state[aid] = state
+        rows = []
+        for layer, st, src in N002_MEMORY:
+            rows += db.add_memory(aid, [st], layer=layer, source=src)[-1:]
+        if not confirm_all:
+            db.add_memory(aid, ["Spent a year in Tokyo."], layer="record", source="resume.pdf", provenance="extracted")
+        return aid, rows
+
+    settled, _ = person(2)                                             # → queued
+    active, _ = person(3); db.add_brief(active, N002_BRIEF, readiness="ready")   # → has_active
+    nothing = str(uuid.uuid4()); db.agent_numbers[nothing] = 4; db.agent_state[nothing] = "feed_submitted"   # → no_confirmed
+    open_recent, rows_open = person(5, confirm_all=False)              # open Mirror, confirmed 5 min ago → waits
+    for r in db.memory[open_recent]:
+        r["created_at"] = "2026-09-03T11:55:00Z"
+    open_quiet, _ = person(6, confirm_all=False)                       # open Mirror, quiet 30 min → queued
+    for r in db.memory[open_quiet]:
+        r["created_at"] = "2026-09-03T11:30:00Z"
+    current, rows_cur = person(7)                                      # proposal from this understanding → current
+    h_cur = cc.context_hash(cc.confirmed_rows(db.confirmed_memory(current)), None)
+    db.add_brief(current, dict(N002_BRIEF, provenance={"candidate_context_hash": h_cur}), state="proposed", readiness="ready")
+    stale, _ = person(8)                                               # proposal from an older understanding → queued (redraft)
+    db.add_brief(stale, dict(N002_BRIEF, provenance={"candidate_context_hash": "old"}), state="proposed", readiness="ready")
+    failed, _ = person(9)                                              # failed after the newest confirmation → not retried
+    db.add_job(failed, "propose_brief", status="failed", requested_at="2026-09-03T11:00:00Z")
+    archived, _ = person(10, state="archived")                         # never seen
+    running, _ = person(11); db.add_job(running, "propose_brief", status="running")   # in flight
+
+    r = hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY)
+    out = r.sweep_proposals(now=now)
+    check("Q sweep counts", out == {"agents": 9, "queued": 3, "has_active": 1, "no_confirmed": 1, "mirror_open": 1,
+                                    "current": 1, "in_flight": 1, "failed_on_this": 1, "already_queued": 0}, out)
+    queued_for = sorted(db.agent_numbers[j["agent_id"]] for j in db.jobs.values()
+                        if j["type"] == "propose_brief" and j["status"] == "queued")
+    check("Q sweep queued for the settled, the quiet, and the stale", queued_for == [2, 6, 8], queued_for)
+    j = next(j for j in db.jobs.values() if j["agent_id"] == settled)
+    check("Q sweep payload names the understanding it drafts from",
+          j["payload"].get("auto") is True and len(j["payload"].get("context_hash", "")) == 64)
+    out2 = r.sweep_proposals(now=now)
+    check("Q second beat proposes nothing new", out2["queued"] == 0 and out2["in_flight"] == 4, out2)
+    # the failed one is retried once the client confirms something new
+    db.add_memory(failed, ["Open to Copenhagen."], layer="self", source="conversation")
+    db.memory[failed][-1]["created_at"] = "2026-09-03T11:59:00Z"
+    out3 = r.sweep_proposals(now=now + timedelta(minutes=30))
+    check("Q new confirmation reopens a failed draft; the recent one is now quiet", out3["queued"] == 2
+          and any(j["agent_id"] == failed and j["status"] == "queued" for j in db.jobs.values())
+          and any(j["agent_id"] == open_recent and j["status"] == "queued" for j in db.jobs.values()), out3)
+
+
+def test_q_proposal_carries_its_own_readiness():
+    """A proposal FOOUND cannot hunt from is stored with readiness not_ready
+    and the compiler's reasons, so the room can say so instead of offering
+    to confirm it; a huntable one is stored ready."""
+    db = MemoryDb()
+    aid = str(uuid.uuid4()); db.agent_numbers[aid] = 2
+    ids = [r["id"] for layer, st, src in N002_MEMORY for r in db.add_memory(aid, [st], layer=layer, source=src)[-1:]]
+    db.add_job(aid, "propose_brief")
+    hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY, drafter=lambda p: _draft_json(ids)).run()
+    ok = next(b for b in db.briefs.values() if b["agent_id"] == aid and b["state"] == "proposed")
+    blocking = [r for r in ok["compiled_config"]["readiness_reasons"] if not r.startswith("unmapped_location_phrase:")]
+    check("Q huntable proposal stored ready", ok["readiness"] == "ready" and blocking == [],
+          (ok["readiness"], ok["compiled_config"]["readiness_reasons"]))
+    no_where = json.dumps({"chapters": [
+        {"title": "THE MOVE", "subjects": [{"handle": "Lead", "lines": ["Lead design."], "grounds": [ids[2]]}]},
+        {"title": "ROLE SPACE", "subjects": [{"handle": "Craft", "lines": ["Head of Design."], "grounds": [ids[0]]}]},
+        {"title": "WHERE", "subjects": [{"handle": "Still learning", "lines": ["Where you want to work."], "grounds": []}]},
+    ]})
+    db.add_job(aid, "propose_brief")
+    hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY, drafter=lambda p: no_where).run()
+    gap = next(b for b in db.briefs.values() if b["agent_id"] == aid and b["state"] == "proposed")
+    check("Q unhuntable proposal stored not_ready with the reason",
+          gap["readiness"] == "not_ready" and "no_accepted_locations" in gap["compiled_config"]["readiness_reasons"]
+          and gap["content"]["provenance"]["executable"] is False and ok["id"] != gap["id"]
+          and db.briefs[ok["id"]]["state"] == "abandoned", (gap["readiness"], gap["compiled_config"].get("readiness_reasons")))
 
 
 def main():

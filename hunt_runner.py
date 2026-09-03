@@ -47,7 +47,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Callable, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -371,7 +371,13 @@ def _kind_hint(title: str) -> str | None:
 
 
 def _kind_of_subject(sub: dict) -> str:
-    """Bucket from chapter title first, then unit title. Handles are not keys."""
+    """Bucket from chapter title first, then unit title. Handles are not keys —
+    with one exception: a subject whose own handle says it is not settled
+    ("Still learning", "Avoid") is skipped whatever chapter it sits in. A
+    WHERE line FOOUND wrote as "Still learning" must never compile into a
+    place to hunt."""
+    if _kind_hint(sub.get("title") or "") == "skip":
+        return "skip"
     for title in (sub.get("context_title"), sub.get("title")):
         kind = _kind_hint(title or "")
         if kind in ("skip", "place", "role", "move"):
@@ -927,6 +933,35 @@ def compiled_config_hash(compiled: dict) -> str:
     }
     raw = json.dumps(body, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+PROPOSAL_QUIET_MINUTES = 20
+
+
+def _quiet_since(stamp: str, now: datetime) -> bool:
+    """True when `stamp` (ISO, from the database) is older than
+    PROPOSAL_QUIET_MINUTES relative to `now`. Unparseable → not quiet."""
+    try:
+        t = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return (now - t) >= timedelta(minutes=PROPOSAL_QUIET_MINUTES)
+
+
+def _proposal_context_hash(brief: dict) -> str:
+    """The Candidate Context hash a FOOUND-written proposal was drafted
+    from (content.provenance.candidate_context_hash), or "" for a Brief
+    written by hand."""
+    content = brief.get("content") or {}
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except json.JSONDecodeError:
+            return ""
+    prov = content.get("provenance") if isinstance(content, dict) else None
+    return str((prov or {}).get("candidate_context_hash") or "") if isinstance(prov, dict) else ""
 
 
 def current_engine_sha() -> str:
@@ -2237,6 +2272,26 @@ class HuntDb:
     def insert_brief(self, row: dict) -> None:
         raise NotImplementedError
 
+    # -- Move 2: FOOUND proposes on its own (sweep_proposals) -----------------
+    def live_agents(self) -> list[dict]:
+        """Read-only: every agent not archived (id, agent_no, state)."""
+        raise NotImplementedError
+
+    def briefs_in_force(self, agent_id: str) -> list[dict]:
+        """Read-only: this agent's proposed and active Brief rows
+        (id, version, state, content, readiness), newest version first."""
+        raise NotImplementedError
+
+    def open_mirror_count(self, agent_id: str) -> int:
+        """Read-only: how many active memory rows still await the client's
+        verdict (provenance stated/extracted/inferred). 0 = Mirror settled."""
+        raise NotImplementedError
+
+    def last_job(self, agent_id: str, job_type: str) -> Optional[dict]:
+        """Read-only: the most recent job of this type for this agent
+        (id, status, requested_at, payload), or None."""
+        raise NotImplementedError
+
 
 class RestDb(HuntDb):
     """Production transport: Supabase PostgREST with the service key."""
@@ -2410,6 +2465,27 @@ class RestDb(HuntDb):
 
     def insert_brief(self, row: dict) -> None:
         self._post("briefs", row)
+
+    def live_agents(self) -> list[dict]:
+        return list(self._get("agents?state=neq.archived&select=id,agent_no,state"
+                              "&order=agent_no.asc&limit=500") or [])
+
+    def briefs_in_force(self, agent_id: str) -> list[dict]:
+        return list(self._get(
+            f"briefs?agent_id=eq.{agent_id}&state=in.(proposed,active)"
+            "&select=id,version,state,content,readiness&order=version.desc&limit=10") or [])
+
+    def open_mirror_count(self, agent_id: str) -> int:
+        rows = self._get(
+            f"memory?agent_id=eq.{agent_id}&status=eq.active"
+            "&provenance=in.(stated,extracted,inferred)&select=id&limit=50")
+        return len(rows or [])
+
+    def last_job(self, agent_id: str, job_type: str) -> Optional[dict]:
+        rows = self._get(
+            f"jobs?agent_id=eq.{agent_id}&type=eq.{job_type}"
+            "&select=id,status,requested_at,payload&order=requested_at.desc&limit=1")
+        return rows[0] if rows else None
 
 
 # ---------------------------------------------------------------------------
@@ -2595,6 +2671,57 @@ class Runner:
         log.info("enqueue_daily " + " ".join(f"{k}={v}" for k, v in out.items()))
         return out
 
+    def sweep_proposals(self, now: datetime | None = None) -> dict:
+        """Move 2: FOOUND proposes on its own. Nobody should have to ask
+        FOOUND to write their Brief. Once something is confirmed and no
+        Brief is in force, one propose_brief job is queued as soon as the
+        Mirror is settled (nothing left awaiting a verdict) — or, when the
+        client left statements unanswered, once they have been quiet for
+        PROPOSAL_QUIET_MINUTES (people confirm what matters and walk away;
+        that must be enough). A pending proposal drafted from an older
+        understanding (its Candidate Context hash no longer matches) is
+        redrafted the same way. An ACTIVE Brief is never touched: learning
+        never rewrites authority. A draft that already failed on this exact
+        understanding is not retried until the client confirms something
+        new. Counts only."""
+        import candidate_context as cc
+        now = now or datetime.now(timezone.utc)
+        out = {"agents": 0, "queued": 0, "has_active": 0, "no_confirmed": 0, "mirror_open": 0,
+               "current": 0, "in_flight": 0, "failed_on_this": 0, "already_queued": 0}
+        for a in self.db.live_agents():
+            out["agents"] += 1
+            aid = a.get("id")
+            force = self.db.briefs_in_force(aid)
+            if any(b.get("state") == "active" for b in force):
+                out["has_active"] += 1
+                continue
+            rows = cc.confirmed_rows(self.db.confirmed_memory(aid))
+            if not rows:
+                out["no_confirmed"] += 1
+                continue
+            newest = max((str(r.get("created_at") or "") for r in rows), default="")
+            if self.db.open_mirror_count(aid) > 0 and not _quiet_since(newest, now):
+                out["mirror_open"] += 1
+                continue
+            h = cc.context_hash(rows, None)
+            proposed = [b for b in force if b.get("state") == "proposed"]
+            if proposed and _proposal_context_hash(proposed[0]) == h:
+                out["current"] += 1
+                continue
+            last = self.db.last_job(aid, "propose_brief")
+            if last and last.get("status") in ("queued", "running"):
+                out["in_flight"] += 1
+                continue
+            if last and last.get("status") == "failed" and str(last.get("requested_at") or "") >= newest:
+                out["failed_on_this"] += 1
+                continue
+            if self.db.enqueue_job(aid, "propose_brief", {"auto": True, "context_hash": h}):
+                out["queued"] += 1
+            else:
+                out["already_queued"] += 1
+        log.info("sweep_proposals " + " ".join(f"{k}={v}" for k, v in out.items()))
+        return out
+
     def _propose_brief(self, job: dict, report: RunReport) -> RunReport:
         """Move 2: FOOUND drafts a PROPOSED Working Brief from confirmed
         Memory for the client to confirm (activate_brief). Inert until then.
@@ -2640,9 +2767,14 @@ class Runner:
         content = dict(content, provenance=dict(
             bp.provenance(current_engine_sha(), ctx.hash, getattr(ja, "CLAUDE_MODEL", ""), attempts),
             executable=executable, compiler_reasons=[] if executable else [reasons]))
+        # The proposal carries its own readiness receipt, so the room can say
+        # "FOOUND cannot hunt from this yet" instead of offering to confirm it.
+        compiled = compile_from_content(content)
+        readiness = readiness_of(compiled)
         abandoned = self.db.abandon_proposed_briefs(agent_id)
         version = self.db.next_brief_version(agent_id)
-        self.db.insert_brief({"agent_id": agent_id, "version": version, "state": "proposed", "content": content})
+        self.db.insert_brief({"agent_id": agent_id, "version": version, "state": "proposed", "content": content,
+                              "compiled_config": persistable_compiled(compiled), "readiness": readiness})
         self.db.complete(job["id"])
         n_subjects = sum(len(c["subjects"]) for c in content["chapters"])
         log.info("propose_brief job=%s version=%d chapters=%d subjects=%d executable=%s attempts=%d abandoned=%d",
@@ -2845,6 +2977,11 @@ def main(argv: list[str] | None = None) -> int:
         base = os.environ["SUPABASE_URL"]
         key = os.environ["SUPABASE_SERVICE_KEY"]
         Runner(db=RestDb(base, key)).enqueue_daily()
+        return 0
+    if argv and argv[0] == "--sweep-proposals":
+        base = os.environ["SUPABASE_URL"]
+        key = os.environ["SUPABASE_SERVICE_KEY"]
+        Runner(db=RestDb(base, key)).sweep_proposals()
         return 0
     if argv:
         log.info("unknown args")
