@@ -59,7 +59,7 @@ log = logging.getLogger("hunt_runner")
 # Seat cap: the original Shortlist's eleven, unless the Brief says otherwise.
 DEFAULT_SEAT_CAP = 11
 MAX_SEAT_CAP = 20
-HUNT_JOB_TYPES = ("compile_brief", "refresh_readiness", "first_edition", "propose_brief")
+HUNT_JOB_TYPES = ("compile_brief", "refresh_readiness", "first_edition", "propose_brief", "draft_candidate")
 MAX_JOBS_PER_RUN = 10
 
 # Move 1 read budget for the private hunt. Fixed for Stage 1 by contract:
@@ -98,6 +98,7 @@ NAMED_ERRORS = {
     "hunt_adapter_failed",
     "edition_persist_failed",
     "no_candidate_context",
+    "candidate_draft_failed",
     "no_role_families",
     "proposal_failed",
     "job_type_unknown",
@@ -2322,6 +2323,21 @@ class HuntDb:
         (id, status, requested_at, payload), or None."""
         raise NotImplementedError
 
+    # -- Move 4: the Candidate page ---------------------------------------
+    def candidate_count(self, agent_id: str) -> int:
+        """Read-only: how many candidates rows this agent has (any state)."""
+        raise NotImplementedError
+
+    def next_candidate_version(self, agent_id: str) -> int:
+        raise NotImplementedError
+
+    def retire_candidate_drafts(self, agent_id: str) -> int:
+        """Engine-written drafts the person never published: draft → unpublished."""
+        raise NotImplementedError
+
+    def insert_candidate(self, row: dict) -> None:
+        raise NotImplementedError
+
 
 class RestDb(HuntDb):
     """Production transport: Supabase PostgREST with the service key."""
@@ -2463,7 +2479,7 @@ class RestDb(HuntDb):
     def confirmed_memory(self, agent_id: str) -> list[dict]:
         rows = self._get(
             f"memory?agent_id=eq.{agent_id}&status=eq.active&provenance=eq.confirmed"
-            "&select=id,layer,statement,source,provenance,status,created_at"
+            "&select=id,layer,statement,handle,source,provenance,status,created_at"
             "&order=created_at.asc&limit=1000"
         )
         return list(rows or [])
@@ -2528,6 +2544,24 @@ class RestDb(HuntDb):
             f"jobs?agent_id=eq.{agent_id}&type=eq.{job_type}"
             "&select=id,status,requested_at,payload&order=requested_at.desc&limit=1")
         return rows[0] if rows else None
+
+    def candidate_count(self, agent_id: str) -> int:
+        rows = self._get(f"candidates?agent_id=eq.{agent_id}&select=id&limit=50")
+        return len(rows or [])
+
+    def next_candidate_version(self, agent_id: str) -> int:
+        rows = self._get(f"candidates?agent_id=eq.{agent_id}&select=version&order=version.desc&limit=1")
+        try:
+            return int(rows[0]["version"]) + 1 if rows else 1
+        except (KeyError, TypeError, ValueError):
+            return 1
+
+    def retire_candidate_drafts(self, agent_id: str) -> int:
+        rows = self._patch(f"candidates?agent_id=eq.{agent_id}&state=eq.draft", {"state": "unpublished"})
+        return len(rows or [])
+
+    def insert_candidate(self, row: dict) -> None:
+        self._post("candidates", row)
 
 
 # ---------------------------------------------------------------------------
@@ -2622,6 +2656,8 @@ class Runner:
             return self._first_edition(job, report)
         if kind == "propose_brief":
             return self._propose_brief(job, report)
+        if kind == "draft_candidate":
+            return self._draft_candidate(job, report)
         raise HuntError("compile_failed")
 
     def _load_active(self, agent_id: str) -> dict:
@@ -2839,6 +2875,88 @@ class Runner:
                               "subjects": n_subjects, "executable": executable, "attempts": attempts})
         return report
 
+    def _draft_candidate(self, job: dict, report: RunReport) -> RunReport:
+        """Move 4: FOOUND drafts the person's Candidate page from confirmed
+        Memory, once. A draft is inert: the person edits it in their room and
+        publishes it through publish_candidate (migration 015). Counts only."""
+        import candidate_draft as cd
+        agent_id = job["agent_id"]
+        ja = _import_job_alerts_adapters()
+        agent_no = _lookup_agent_no(self.db, agent_id)
+        rows = self.db.confirmed_memory(agent_id)
+        ctx = candidate_context(ja, agent_id, agent_no, memory_rows=rows, brief_content=None)
+        if ctx.kind != "memory" or not rows:
+            raise HuntError("no_candidate_context")
+        drafter = self.drafter if self.drafter is not None else (lambda prompt: draft_with_model(ja, prompt))
+        valid_ids = [str(r.get("id")) for r in rows]
+        page, reason, attempts = None, "", 0
+        for attempt in (1, 2):
+            attempts = attempt
+            with _silent_stdio():
+                text = drafter(cd.draft_candidate_prompt(ctx.text, rows))
+            page, reason = cd.parse_candidate_draft(text or "", valid_ids)
+            if page is not None:
+                break
+        if page is None:
+            log.info("draft_candidate job=%s outcome=failed reason=%s attempts=%d", job["id"], reason or "no_json", attempts)
+            raise HuntError("candidate_draft_failed")
+        page = dict(page, provenance=cd.provenance(current_engine_sha(), ctx.hash, getattr(ja, "CLAUDE_MODEL", ""), attempts))
+        retired = self.db.retire_candidate_drafts(agent_id)
+        version = self.db.next_candidate_version(agent_id)
+        self.db.insert_candidate({"agent_id": agent_id, "version": version, "state": "draft",
+                                  "content": "", "page": page})
+        self.db.complete(job["id"])
+        log.info("draft_candidate job=%s version=%d chapters=%d trusted=%d attempts=%d retired=%d",
+                 job["id"], version, len(page["chapters"]), len(page["trusted_with"]), attempts, retired)
+        report.action = "drafted"
+        report.detail.update({"version": version, "chapters": len(page["chapters"]),
+                              "trusted": len(page["trusted_with"]), "attempts": attempts})
+        return report
+
+    def sweep_candidates(self, now: datetime | None = None) -> dict:
+        """Move 4: once a person has confirmed their record and the Mirror is
+        settled (or quiet), FOOUND drafts their Candidate page, once. Never
+        redrafted on its own: a public page must not change under them, and a
+        draft they are editing must not be overwritten. Counts only."""
+        import candidate_context as cc
+        now = now or datetime.now(timezone.utc)
+        out = {"agents": 0, "queued": 0, "has_page": 0, "no_confirmed": 0, "mirror_open": 0,
+               "in_flight": 0, "failed_on_this": 0, "already_queued": 0}
+        for a in self.db.live_agents():
+            out["agents"] += 1
+            aid = a.get("id")
+            if self.db.candidate_count(aid) > 0:
+                out["has_page"] += 1
+                continue
+            rows = cc.confirmed_rows(self.db.confirmed_memory(aid))
+            if not rows:
+                out["no_confirmed"] += 1
+                continue
+            newest = max((str(r.get("created_at") or "") for r in rows), default="")
+            if self.db.open_mirror_count(aid) > 0 and not _quiet_since(newest, now):
+                out["mirror_open"] += 1
+                continue
+            last = self.db.last_job(aid, "draft_candidate")
+            if last and last.get("status") in ("queued", "running"):
+                out["in_flight"] += 1
+                continue
+            if last and last.get("status") == "failed" and str(last.get("requested_at") or "") >= newest:
+                out["failed_on_this"] += 1
+                continue
+            try:
+                queued = self.db.enqueue_job(aid, "draft_candidate", {"auto": True})
+            except HuntError as e:
+                if e.name != "job_type_unknown":
+                    raise
+                out["door_closed"] = 1
+                break
+            if queued:
+                out["queued"] += 1
+            else:
+                out["already_queued"] += 1
+        log.info("sweep_candidates " + " ".join(f"{k}={v}" for k, v in out.items()))
+        return out
+
     @staticmethod
     def _compile_for_hunt(brief: dict) -> dict:
         """v1.2: the hunt's authority is the active Brief.content, compiled
@@ -3049,7 +3167,9 @@ def main(argv: list[str] | None = None) -> int:
     if argv and argv[0] == "--sweep-proposals":
         base = os.environ["SUPABASE_URL"]
         key = os.environ["SUPABASE_SERVICE_KEY"]
-        Runner(db=RestDb(base, key)).sweep_proposals()
+        runner = Runner(db=RestDb(base, key))
+        runner.sweep_proposals()
+        runner.sweep_candidates()
         return 0
     if argv:
         log.info("unknown args")
