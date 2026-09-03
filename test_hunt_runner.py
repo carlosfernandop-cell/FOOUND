@@ -52,6 +52,16 @@ class MemoryDb(hr.HuntDb):
         self.market_seen_reads = 0
         self.publish_calls = 0
         self.agent_numbers: dict[str, int] = {}
+        self.memory: dict[str, list[dict]] = {}
+
+    def add_memory(self, agent_id, statements, *, layer="record", provenance="confirmed",
+                   status="active", source="profile.md"):
+        rows = self.memory.setdefault(agent_id, [])
+        for i, st in enumerate(statements):
+            rows.append({"id": str(uuid.uuid4()), "agent_id": agent_id, "layer": layer,
+                         "statement": st, "provenance": provenance, "status": status,
+                         "source": source, "created_at": f"2026-08-{10 + len(rows):02d}T00:00:00Z"})
+        return rows
 
     def add_brief(self, agent_id, content, compiled_config=None,
                   readiness=None, version=1, state="active"):
@@ -129,6 +139,10 @@ class MemoryDb(hr.HuntDb):
             if n == agent_no:
                 return aid
         return None
+
+    def confirmed_memory(self, agent_id):
+        return [dict(r) for r in self.memory.get(agent_id, [])
+                if r.get("status") == "active" and r.get("provenance") == "confirmed"]
 
 
 class FakeState:
@@ -434,6 +448,7 @@ def test_refresh_compiles_if_missing():
     db = MemoryDb()
     aid = str(uuid.uuid4())
     db.add_brief(aid, COMPLETE, compiled_config=None, readiness=None)
+    db.add_memory(aid, ["Led brand at Acme."])
     jid = db.add_job(aid, "refresh_readiness")
     reports = hr.Runner(db, collector=lambda _c: []).run()
     check("refresh action", reports[0].action == "refreshed")
@@ -485,6 +500,7 @@ def test_compile_job_writes_ready():
     db = MemoryDb()
     aid = str(uuid.uuid4())
     db.add_brief(aid, COMPLETE)
+    db.add_memory(aid, ["Led brand at Acme."])          # a person FOOUND can judge for
     jid = db.add_job(aid, "compile_brief")
     reports = hr.Runner(db, collector=lambda _c: []).run()
     check("compile action", reports[0].action == "compiled")
@@ -494,6 +510,30 @@ def test_compile_job_writes_ready():
     cfg = brief["compiled_config"]
     check("compile persisted include", bool(cfg["include"]))
     check("compile persisted note", "temporary" in cfg["readiness_architecture"])
+    check("compile: no person reason when memory is confirmed", "no_candidate_context" not in cfg["readiness_reasons"])
+
+
+def test_compile_names_the_missing_person():
+    """Move 2: a complete Brief with nothing confirmed in Memory is not ready —
+    the reason is named so the app can say 'confirm your record' instead of
+    letting a commission fail later with no_candidate_context."""
+    db = MemoryDb()
+    aid = str(uuid.uuid4())
+    db.add_brief(aid, COMPLETE)
+    db.add_memory(aid, ["Led brand at Acme."], provenance="stated")   # a belief, not yet confirmed
+    db.add_job(aid, "compile_brief")
+    reports = hr.Runner(db, collector=lambda _c: []).run()
+    brief = db.active_brief(aid)
+    check("compile: not ready without a person", reports[0].readiness == "not_ready" and brief["readiness"] == "not_ready")
+    check("compile: reason named", "no_candidate_context" in brief["compiled_config"]["readiness_reasons"])
+    check("compile: Brief itself still complete", bool(brief["compiled_config"]["include"]) and bool(brief["compiled_config"]["accepted_locations"]))
+    db2 = MemoryDb()
+    aid2 = str(uuid.uuid4()); db2.agent_numbers[aid2] = 1
+    db2.add_brief(aid2, COMPLETE)
+    db2.add_job(aid2, "refresh_readiness")
+    r2 = hr.Runner(db2, collector=lambda _c: []).run()
+    check("refresh: №001 ready via interim profile.md", r2[0].readiness == "ready"
+          and "no_candidate_context" not in db2.active_brief(aid2)["compiled_config"]["readiness_reasons"])
 
 
 def test_role_key_precedence():
@@ -832,8 +872,10 @@ def test_c_h2_complete_brief_ready():
     check("C engine default excludes", cfg["exclude_type"] == list(hr.ENGINE_DEFAULT_EXCLUDES))
     check("C seat_cap default 11", cfg["seat_cap"] == 11)
     check("C priority empty unless structured", cfg["priority_companies"] == [])
-    check("C search queries engine default",
-          cfg["search_queries"] == list(hr.ENGINE_DEFAULT_SEARCH_QUERIES))
+    check("C search queries: engine defaults first, then the Brief's own seats (Move 2)",
+          cfg["search_queries"][:3] == list(hr.ENGINE_DEFAULT_SEARCH_QUERIES)
+          and all(q.startswith('"') and q.endswith('"') for q in cfg["search_queries"][3:])
+          and len(cfg["search_queries"]) <= hr.MAX_SEARCH_QUERIES)
     check("C reasons empty when ready", cfg["readiness_reasons"] == [])
     check("C _readiness stripped on persist",
           "_readiness" not in hr.persistable_compiled(cfg))
@@ -1301,14 +1343,22 @@ def test_f_001_resolves_to_profile_md():
 
     ja.load_agent_config = watch
     try:
-        base, profile, ev = hr.candidate_context(ja, "some-uuid", 1)
+        ctx = hr.candidate_context(ja, "some-uuid", 1)
     finally:
         ja.load_agent_config = real
-    check("F №001 asked for 001", asked == ["001"], asked)
-    check("F №001 has a profile", bool(profile) and "Candidate Profile" in profile)
-    check("F №001 evidence map carried", len(ev) >= 1)
-    base2, profile2, _ = hr.candidate_context(ja, "other-uuid", 2)
-    check("F №002 has no context", base2 is None and profile2 == "")
+    check("F №001 asked for 001", "001" in asked, asked)
+    check("F №001 interim is profile.md", ctx.kind == "profile.md" and "Candidate Profile" in ctx.text and ctx.hash)
+    check("F №001 evidence map carried", len(ctx.evidence_map) >= 1)
+    ctx2 = hr.candidate_context(ja, "other-uuid", 2)
+    check("F №002 has no context without confirmed memory", ctx2.kind == "" and ctx2.text == "")
+    rows = [{"id": "m1", "layer": "record", "statement": "Led design at Acme.", "provenance": "confirmed",
+             "status": "active", "source": "resume.pdf", "created_at": "2026-08-01"}]
+    ctx3 = hr.candidate_context(ja, "other-uuid", 2, memory_rows=rows, brief_content=STRUCTURED)
+    check("F №002 with confirmed memory has a memory context", ctx3.kind == "memory" and "Led design at Acme." in ctx3.text
+          and ctx3.statements == 1 and ctx3.base is None and ctx3.evidence_map == [])
+    ctx4 = hr.candidate_context(ja, "some-uuid", 1, memory_rows=rows, brief_content=STRUCTURED)
+    check("F №001 with confirmed memory: Memory wins over profile.md", ctx4.kind == "memory" and "Candidate Profile" not in ctx4.text
+          and ctx4.name == "Carlos" and len(ctx4.evidence_map) >= 1)
 
 
 def test_f_non_001_never_touches_profile_md():
@@ -1486,11 +1536,11 @@ def test_r_edition_html_contract():
     db = MemoryDb()
     aid = _ready_agent(db, SPECIMEN_5d260731, agent_no=1)
     db.add_job(aid, "first_edition")
-    deep = lambda job, _p: {"role": "New seat", "moment": "Rebrand", "leadership": "CMO",
+    deep = lambda job, _p, **_kw: {"role": "New seat", "moment": "Rebrand", "leadership": "CMO",
                             "signal": "Hiring", "question": "Scope", "verdict": "Still 82.", "fit_after": 80}
     brief_args = []
 
-    def brief_fn(n, total_fetched, n_companies, ranked, new_keys):
+    def brief_fn(n, total_fetched, n_companies, ranked, new_keys, **_kw):
         brief_args.append((n, total_fetched, n_companies, [j["company"] for j in ranked], set(new_keys)))
         return "Adobe leads clear of the field."
 
@@ -1946,13 +1996,13 @@ def test_i_live_path_runs_deep_look_and_statline():
         calls["score"] += 1
         return (85 if job["company"] == "Acme" else 66, "why " + job["company"], "pause " + job["company"])
 
-    def deep_look(job, profile):
+    def deep_look(job, profile, **_kw):
         calls["deep"] += 1
         check("I deep_look sees the lead", job["company"] == "Acme" and job.get("fit") == 85)
         check("I deep_look sees the candidate context", "Carlos" in (profile or "") or len(profile or "") > 50)
         return dict(DEEP_STUB)
 
-    def write_brief(n, total, n_companies, ranked, new_keys):
+    def write_brief(n, total, n_companies, ranked, new_keys, **_kw):
         calls["brief"] += 1
         check("I write_brief gets the seated list", n == 2 and len(ranked) == 2 and total == 2)
         check("I write_brief gets Shortlist-shaped new keys", all("|" in k for k in new_keys) and len(new_keys) == 2)
@@ -1978,11 +2028,11 @@ def test_i_deep_look_not_triggered_below_threshold():
     raw = [{"title": "Creative Director", "company": "Acme", "location": "Remote", "url": "https://x/1"}]
     calls = {"deep": 0, "brief": 0}
 
-    def deep_look(*_a):
+    def deep_look(*_a, **_kw):
         calls["deep"] += 1
         return dict(DEEP_STUB)
 
-    def write_brief(*_a):
+    def write_brief(*_a, **_kw):
         calls["brief"] += 1
         return ""       # the model may decide nothing is notable
 
@@ -1999,8 +2049,8 @@ def test_i_heuristic_day_marks_both_not_run():
     raw = [{"title": "Creative Director", "company": "Acme", "location": "Remote", "url": "https://x/1"}]
     calls = {"deep": 0, "brief": 0}
     db, out = _live_run(raw, score_fit=lambda *_a: (None, None, None), key="",
-                        deep_look=lambda *_a: calls.__setitem__("deep", 1) or DEEP_STUB,
-                        write_brief=lambda *_a: calls.__setitem__("brief", 1) or "x")
+                        deep_look=lambda *_a, **_kw: calls.__setitem__("deep", 1) or DEEP_STUB,
+                        write_brief=lambda *_a, **_kw: calls.__setitem__("brief", 1) or "x")
     p = db.editions[0]["payload"]
     check("I heuristic: neither called", calls == {"deep": 0, "brief": 0})
     check("I heuristic: not_run / not_run", p["intelligence"] == {"deep": "not_run", "statline": "not_run"}
@@ -2020,11 +2070,11 @@ def test_i_silent_failures_are_named_and_never_leak():
 
     h = H(); h.setFormatter(logging.Formatter("%(message)s")); hr.log.addHandler(h); hr.log.setLevel(logging.INFO)
 
-    def deep_look(*_a):
+    def deep_look(*_a, **_kw):
         print("[deep look skipped: HTTP 400 {\"error\": \"workspace header required RAWBODY\"}]")
         return None
 
-    def write_brief(*_a):
+    def write_brief(*_a, **_kw):
         print("  [Brief API 529] overloaded RAWBODY")
         return None
 
@@ -2068,8 +2118,8 @@ def test_i_injected_scorer_still_stubs_deep_and_brief():
     ja = hr._import_job_alerts_adapters()
     saved = (ja.deep_look, ja.write_brief)
     hit = {"deep": 0, "brief": 0}
-    ja.deep_look = lambda *_a: hit.__setitem__("deep", 1) or DEEP_STUB
-    ja.write_brief = lambda *_a: hit.__setitem__("brief", 1) or "x"
+    ja.deep_look = lambda *_a, **_kw: hit.__setitem__("deep", 1) or DEEP_STUB
+    ja.write_brief = lambda *_a, **_kw: hit.__setitem__("brief", 1) or "x"
     try:
         db = MemoryDb(); aid = _ready_agent(db, STRUCTURED); db.add_job(aid, "first_edition")
         _runner(db, raw, score=_score_by_title({}, default=(90, "w", "p"))).run()
@@ -2200,7 +2250,7 @@ def test_d_deep_look_reaches_the_private_edition_end_to_end():
     ja.requests.post = lambda url, headers=None, json=None, timeout=None: _Resp(blocks)
     try:
         db, out = _live_run(raw, score_fit=lambda *_a: (85, "w", "p"), deep_look=ja.deep_look,
-                            write_brief=lambda *_a: "One line.")
+                            write_brief=lambda *_a, **_kw: "One line.")
     finally:
         ja.requests.post = saved_post
     p = db.editions[0]["payload"]
@@ -2215,6 +2265,215 @@ def test_d_dry_run_accepts_agent_number():
     src = open(hr.__file__, encoding="utf-8").read()
     check("D main resolves a numeric agent read-only", 'agent_id_for_no(int(agent_id))' in src and 'fullmatch(r"\\d{1,4}"' in src)
     check("D RestDb query is a read", 'agents?agent_no=eq.' in src and 'select=id' in src)
+
+
+# ---------------------------------------------------------------------------
+# P — Move 2: Person from Memory (Candidate Context + judge voice)
+# ---------------------------------------------------------------------------
+
+N002_MEMORY = [
+    ("record", "Head of Product Design at Northwind since 2022, leading a team of 14 across Berlin and Lisbon.", "linkedin"),
+    ("record", "Design Director at Klarna (2018–2022): rebuilt the design system and the onboarding flow used by 20M people.", "resume.pdf"),
+    ("self", "I want to run design for a company whose product is still being defined, not polish a finished one.", "conversation"),
+    ("self", "Berlin is home; London and Amsterdam are easy. Not the US for now.", "conversation"),
+]
+
+N002_BRIEF = {"chapters": [
+    {"title": "THE MOVE", "subjects": [{"handle": "Lead", "lines": ["Lead design for a product still being defined."]}]},
+    {"title": "ROLE SPACE", "subjects": [{"handle": "Craft", "lines": ["Head of Design, VP Design, Design Director."]}]},
+    {"title": "WHERE", "subjects": [{"handle": "Geography", "lines": ["Berlin, London, Amsterdam, remote Europe."]}]},
+]}
+
+
+def _n002(db, confirm=True):
+    """A second client: confirmed memory (or not), an active Brief, no profile.md."""
+    aid = str(uuid.uuid4())
+    compiled = hr.compile_from_content(N002_BRIEF)
+    assert hr.readiness_of(compiled) == "ready", compiled.get("readiness_reasons")
+    db.add_brief(aid, N002_BRIEF, compiled_config=hr.persistable_compiled(compiled), readiness="ready", version=2)
+    db.agent_numbers[aid] = 2
+    for layer, st, src in N002_MEMORY:
+        db.add_memory(aid, [st], layer=layer, source=src,
+                      provenance="confirmed" if confirm else "stated")
+    return aid
+
+
+def test_p_compiler_reads_seats_outside_001_vocabulary():
+    """Move 2: the ROLE gate must work for a designer, a marketer, a C-level —
+    not only for creative-director seats. Bare ranks never become families."""
+    fam = hr._extract_role_families
+    check("P vp design is one family, never bare vp", fam("VP Design") == ["vp design"] and fam("VP of Design") == ["vp design"])
+    check("P chief officers", fam("Chief Design Officer") == ["chief design officer"] and fam("Chief Brand Officer") == ["chief brand officer"])
+    check("P bare ranks refused", fam("VP") == [] and fam("Director") == [] and fam("Head") == [])
+    check("P creative abbreviations still whole titles", fam("Group CD, ECD, Head of Creative") == ["group cd", "ecd", "head of creative"])
+    check("P generic variants for an unknown seat", hr.expand_role_family("vp design") == ["vp design", "vp of design", "vp, design"]
+          and hr.expand_role_family("head of product design") == ["head of product design", "head, product design"])
+    check("P hand rows untouched for №001's seats", hr.expand_role_family("creative director") == list(hr.ROLE_SYNONYMS["creative director"]))
+    c = hr.compile_from_content(N002_BRIEF)
+    check("P №002 Brief compiles ready with real families", hr.readiness_of(c) == "ready"
+          and c["families"] == ["head of design", "vp design", "design director"] and "vp" not in c["include"])
+    check("P №002 market is fetched for their seats, not only filtered",
+          '"head of design"' in c["search_queries"] and '"vp design"' in c["search_queries"] and '"design director"' in c["search_queries"])
+    ja = hr._import_job_alerts_adapters()
+    agent = hr.agent_config_from_brief(ja, c, agent_id="x", agent_no=2)
+    check("P VP Sales is not eligible under a design Brief", not ja.passes_title(agent, "VP Sales, EMEA")
+          and not ja.passes_title(agent, "SVP Engineering") and ja.passes_title(agent, "VP, Design") and ja.passes_title(agent, "Director of Design, Growth"))
+
+
+def test_p_compiler_is_verbatim_deterministic_and_confirmed_only():
+    import candidate_context as cc
+    rows = []
+    for i, (layer, st, src) in enumerate(N002_MEMORY):
+        rows.append({"id": f"m{i}", "layer": layer, "statement": st, "source": src,
+                     "provenance": "confirmed", "status": "active", "created_at": f"2026-08-0{i+1}"})
+    rows += [
+        {"id": "x1", "layer": "record", "statement": "UNCONFIRMED CLAIM", "source": "s", "provenance": "stated", "status": "active", "created_at": "2026-08-09"},
+        {"id": "x2", "layer": "model", "statement": "INFERRED CLAIM", "source": "s", "provenance": "inferred", "status": "active", "created_at": "2026-08-09"},
+        {"id": "x3", "layer": "record", "statement": "RETRACTED CLAIM", "source": "s", "provenance": "confirmed", "status": "retracted", "created_at": "2026-08-09"},
+        {"id": "x4", "layer": "record", "statement": "SUPERSEDED CLAIM", "source": "s", "provenance": "stated", "status": "superseded", "created_at": "2026-08-09"},
+        {"id": "x5", "layer": "self", "statement": "TENSION CLAIM", "source": "s", "provenance": "confirmed", "status": "tension", "created_at": "2026-08-09"},
+    ]
+    out = cc.compile_candidate_context(name="Ada", rows=rows, brief_content=N002_BRIEF)
+    t = out["text"]
+    check("P confirmed statements verbatim", all(st in t for _l, st, _s in N002_MEMORY))
+    check("P nothing unconfirmed enters", not any(k in t for k in ("UNCONFIRMED", "INFERRED", "RETRACTED", "SUPERSEDED", "TENSION")))
+    check("P counts", out["statements"] == 4 and out["layers"]["record"] == 2 and out["layers"]["self"] == 2)
+    check("P sources listed", out["sources"] == ["conversation", "linkedin", "resume.pdf"])
+    check("P layer order record then self", t.index("## Record") < t.index("## In their own words"))
+    check("P brief rendered as authorization", "## What they are looking for" in t and "ROLE SPACE: Head of Design, VP Design, Design Director." in t
+          and "never to admit a role the Brief did not authorize" in t)
+    check("P name in heading", t.startswith("# Candidate Context — Ada"))
+    import random
+    shuffled = list(rows); random.Random(7).shuffle(shuffled)
+    out2 = cc.compile_candidate_context(name="Ada", rows=shuffled, brief_content=N002_BRIEF)
+    check("P deterministic", out2["text"] == t and out2["hash"] == out["hash"] and len(out["hash"]) == 64)
+    rows[0] = dict(rows[0], statement=rows[0]["statement"] + " Also Paris.")
+    check("P hash tracks statements", cc.compile_candidate_context(name="Ada", rows=rows, brief_content=N002_BRIEF)["hash"] != out["hash"])
+    check("P hash tracks Brief", cc.compile_candidate_context(name="Ada", rows=shuffled, brief_content=STRUCTURED)["hash"] != out["hash"])
+    empty = cc.compile_candidate_context(name="Ada", rows=[r for r in rows if r["provenance"] != "confirmed"], brief_content=N002_BRIEF)
+    check("P no confirmed rows → no context", empty["text"] == "" and empty["hash"] == "" and empty["statements"] == 0)
+    check("P no Brief → no authorization section, still a context", "## What they are looking for" not in
+          cc.compile_candidate_context(name="Ada", rows=shuffled, brief_content=None)["text"])
+
+
+def test_p_second_client_is_judged_from_memory_without_profile_md():
+    """№002 end to end on the live path: confirmed Memory → context → the
+    original judge (neutral voice) → private edition, with no profile.md."""
+    raw = [{"title": "Head of Design", "company": "Fabric", "location": "Berlin", "url": "https://fabric/1"},
+           {"title": "Design Director, Growth", "company": "Orbit", "location": "London", "url": "https://orbit/1"},
+           {"title": "Creative Director", "company": "Suno", "location": "NYC", "url": "https://suno/1"}]
+    ja = hr._import_job_alerts_adapters()
+    seen = {"profiles": [], "prompts": [], "deep": 0, "brief": 0, "opened_profile_md": 0}
+    real_open = ja.load_profile
+
+    def load_profile_spy(agent):
+        seen["opened_profile_md"] += 1
+        return real_open(agent)
+
+    def score_fit(agent, profile, job, jd):
+        seen["profiles"].append(profile)
+        seen["prompts"].append(ja.JudgeVoice(agent).one + "|" + ja.JudgeVoice(agent).obj)
+        return (86 if job["company"] == "Fabric" else 71, "why " + job["company"], "pause")
+
+    def deep_look(job, profile, agent=None, **_kw):
+        seen["deep"] += 1
+        check("P deep look reads the memory context", "Northwind" in profile and "Candidate Profile" not in profile)
+        check("P deep look voice is the client's", ja.JudgeVoice(agent).one == "one client")
+        return dict(DEEP_STUB)
+
+    def write_brief(n, total, nc, ranked, new_keys, agent=None, as_of=None, **_kw):
+        seen["brief"] += 1
+        check("P statline voice and clock", ja.JudgeVoice(agent).one == "one client" and as_of and "UTC" in as_of)
+        return "Fabric leads clear of the field."
+
+    saved = {k: getattr(ja, k) for k in ("score_fit", "deep_look", "write_brief", "ANTHROPIC_KEY", "load_profile")}
+    ja.score_fit, ja.deep_look, ja.write_brief, ja.ANTHROPIC_KEY, ja.load_profile = score_fit, deep_look, write_brief, "k", load_profile_spy
+    db = MemoryDb()
+    aid = _n002(db)
+    jid = db.add_job(aid, "first_edition")
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            hr.Runner(db, collector=lambda _c: raw, today=FROZEN_TODAY, fetch_jd=lambda _u: "",
+                      score=None, profile=None, state_loader=lambda _a, _n: None).run()
+    finally:
+        for k, v in saved.items():
+            setattr(ja, k, v)
+    check("P job done", db.jobs[jid]["status"] == "done" and db.jobs[jid].get("error") in (None, ""), db.jobs[jid])
+    p = db.editions[0]["payload"]
+    check("P eligibility is the Brief's: Suno NYC out, Berlin/London in", sorted(s["company"] for s in p["seats"]) == ["Fabric", "Orbit"]
+          and p["counts"]["eligible"] == 2)
+    check("P judged against the memory context, never profile.md", len(seen["profiles"]) == 2
+          and all("Northwind" in pr and "Klarna" in pr and "Candidate Profile" not in pr for pr in seen["profiles"])
+          and seen["opened_profile_md"] == 0)
+    check("P Brief rendered inside the context", all("ROLE SPACE: Head of Design" in pr for pr in seen["profiles"]))
+    check("P neutral voice", all(pp == "one client|them" for pp in seen["prompts"]), seen["prompts"])
+    check("P deep look and statline ran for №002", seen["deep"] == 1 and seen["brief"] == 1
+          and p["intelligence"] == {"deep": "ok", "statline": "ok"})
+    cc = p["candidate_context"]
+    check("P receipt: memory, 4 statements, hash, no text", cc["kind"] == "memory" and cc["statements"] == 4
+          and len(cc["hash"]) == 64 and cc["sources"] == ["conversation", "linkedin", "resume.pdf"]
+          and "Northwind" not in json.dumps(cc))
+    h = db.editions[0]["html"]
+    check("P greeting without a name is plain", re.search(r'class="brief">Good (morning|afternoon|evening)\.</p>', h) is not None)
+    check("P edition rendered", "I kept looking" in h and "Fabric leads clear of the field." in h and "Northwind" not in h)
+
+
+def test_p_second_client_without_confirmed_memory_is_refused_before_any_call():
+    raw = [{"title": "Head of Design", "company": "Fabric", "location": "Berlin", "url": "https://fabric/1"}]
+    calls = {"collector": 0, "score": 0}
+
+    def collector(_c):
+        calls["collector"] += 1
+        return raw
+
+    db = MemoryDb()
+    aid = _n002(db, confirm=False)      # beliefs exist, none confirmed
+    jid = db.add_job(aid, "first_edition")
+    hr.Runner(db, collector=collector, today=FROZEN_TODAY, fetch_jd=lambda _u: "",
+              score=lambda *_a: calls.__setitem__("score", 1) or (80, "w", "p"), profile=None,
+              state_loader=lambda _a, _n: None).run()
+    check("P unconfirmed beliefs are not a context", db.jobs[jid]["error"] == "no_candidate_context")
+    check("P refused before collection and judgment", calls == {"collector": 0, "score": 0} and db.editions == [])
+
+
+def test_p_001_prompts_are_byte_identical_to_the_originals():
+    """The three prompts for №001 must not move: his persona, pronouns and
+    judgment lenses are the original literals, now as config."""
+    ja = hr._import_job_alerts_adapters()
+    agent = ja.load_agent_config("001")
+    v = ja.JudgeVoice(agent)
+    check("P 001 persona", v.one == "one senior creative director" and (v.subj, v.obj, v.poss) == ("he", "him", "his"))
+    check("P 001 lenses verbatim", v.lenses == "the companies he has built for, brands he entered before their identity was fixed, cities he calls home, teams he built from zero")
+    check("P 001 rubric verbatim", v.rubric == "seniority match, craft match, brand-led scope, AI-era relevance")
+    check("P public call sites pass no agent (original wording)", ja.JudgeVoice(None).one == "one senior creative director"
+          and ja.JudgeVoice(None).a_persona == "a senior creative director")
+    captured = []
+    saved = (ja.requests.post, ja.ANTHROPIC_KEY)
+    ja.requests.post = lambda url, headers=None, json=None, timeout=None: (captured.append(json["messages"][0]["content"]), _Resp([{"type": "text", "text": "{}"}]))[1]
+    ja.ANTHROPIC_KEY = "k"
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            ja.score_fit(agent, "PROFILE", {"title": "Creative Director", "company": "Apple", "location": "Culver City", "url": "u"}, "JD")
+            ja.deep_look({"title": "Creative Director", "company": "Apple", "location": "Culver City", "url": "u", "fit": 85, "ai_why": "w", "ai_pause": "p"}, "PROFILE")
+            ja.write_brief(1, 100, 41, [{"title": "Creative Director", "company": "Apple", "location": "Culver City", "fit": 85}], set())
+    finally:
+        ja.requests.post, ja.ANTHROPIC_KEY = saved
+    check("P 001 score prompt literal", "You are the personal career agent of one senior creative director." in captured[0]
+          and "judging ONE role for HIM specifically" in captured[0]
+          and "NOTE: He has flagged Apple as a priority target — he asked his agent to watch this company closely." in captured[0]
+          and "seniority match, craft match, brand-led scope, AI-era relevance for THIS candidate" in captured[0]
+          and "spoken to him as you/your (never his name, never he/his)" in captured[0]
+          and "name what he should verify first" in captured[0])
+    deep_p = [c for c in captured if c.startswith("You are FOOUND")]
+    brief_p = [c for c in captured if "THE SHORTLIST" in c]
+    check("P 001 deep prompt literal", deep_p and "You are FOOUND, the personal career agent of one senior creative director." in deep_p[0]
+          and "CANDIDATE PROFILE (judge against HIM):" in deep_p[0])
+    check("P 001 statline prompt literal", brief_p and "your one client, a senior creative director. The page already" in brief_p[0]
+          and "8:00 AM ET" in brief_p[0])
+    neutral = ja.JudgeVoice(hr.agent_config_from_brief(ja, hr.compile_from_content(N002_BRIEF), agent_id="x", agent_no=2))
+    check("P a neutral client never sees he/him/his or a discipline", not re.search(r"\b(he|him|his)\b", neutral.one + "|" + neutral.lenses)
+          and "creative director" not in neutral.one)
 
 
 def test_h9_boundaries():

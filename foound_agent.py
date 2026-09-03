@@ -37,6 +37,15 @@ class AgentConfig:
     search_queries: list = field(default_factory=list)
     market_sources: list = field(default_factory=list)   # empty = all sources
 
+    # --- JUDGE VOICE (Move 2): how the original prompts name this person ---
+    # The three model prompts were written for №001 and carried his discipline
+    # and pronouns as literals. They are parameters now; №001's values are the
+    # original literals, so his judge is byte-identical. A client with no
+    # persona is "one client" and is referred to in the neutral third person.
+    persona: str = ""                       # e.g. "senior creative director"
+    pronouns: tuple = ("they", "them", "their")   # (subject, object, possessive)
+    judgment_lenses: str = ""               # the WHY guidance's pattern clause
+
     # --- presentation ---
     manual_jobs: list = field(default_factory=list)
     evidence_map: list = field(default_factory=list)
@@ -89,6 +98,9 @@ class AgentConfig:
             manual_jobs=list(row.get("manual_jobs") or []),
             evidence_map=[tuple(x) for x in (row.get("evidence_map") or [])],
             email_footer=list(row.get("email_footer") or []),
+            persona=str(row.get("persona") or ""),
+            pronouns=tuple(row.get("pronouns") or ("they", "them", "their")),
+            judgment_lenses=str(row.get("judgment_lenses") or ""),
         ).validate()
 
     def to_row(self) -> dict:
@@ -109,6 +121,9 @@ class AgentConfig:
             "manual_jobs": list(self.manual_jobs),
             "evidence_map": [list(x) for x in self.evidence_map],
             "email_footer": list(self.email_footer),
+            "persona": self.persona,
+            "pronouns": list(self.pronouns),
+            "judgment_lenses": self.judgment_lenses,
         }
 
 
@@ -172,6 +187,11 @@ BOOTSTRAP_001 = AgentConfig(
         "added_by":  "Carlos — 2026-08-11",
     },
 ],
+    # The original prompt literals, verbatim, so №001's judge does not move.
+    persona="senior creative director",
+    pronouns=("he", "him", "his"),
+    judgment_lenses=("the companies he has built for, brands he entered before their identity "
+                     "was fixed, cities he calls home, teams he built from zero"),
     evidence_map=[("MAL", "/candidate/#c-mal"), ("Airbnb", "/candidate/#c-airbnb"),
                ("Publicis", "/candidate/#c-publicis"), ("Ogilvy", "/candidate/#c-ogilvy"),
                ("AKQA", "/candidate/#c-akqa")],

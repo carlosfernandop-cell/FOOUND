@@ -143,12 +143,68 @@ ROLE_SYNONYMS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _generic_variants(f: str) -> list[str]:
+    """Move 2: the same shapes ROLE_SYNONYMS hand-writes for №001's seats,
+    derived for any seat — so "vp design" also reads "vp, design" and
+    "vp of design", "design director" also reads "director of design" and
+    "director, design", "head of design" also reads "head, design".
+    Substring matching (job_alerts.passes_title) does the rest."""
+    words = f.split()
+    out = [f]
+    if len(words) >= 2 and words[0] in ("vp", "svp", "evp", "head"):
+        rank = words[0]
+        craft = " ".join(w for w in words[1:] if w not in ("of", "the"))
+        if craft:
+            if rank == "head":
+                out.append(f"head, {craft}")
+            else:
+                out += [f"{rank} {craft}", f"{rank} of {craft}", f"{rank}, {craft}"]
+    if len(words) >= 2 and words[-1] == "director":
+        craft = " ".join(words[:-1])
+        out += [f"director of {craft}", f"director, {craft}"]
+    seen, uniq = set(), []
+    for v in out:
+        v = _norm_phrase(v)
+        if v and v not in seen and v not in _BARE_RANKS:
+            seen.add(v); uniq.append(v)
+    return uniq
+
+
+MAX_SEARCH_QUERIES = 8
+
+
+def search_queries_for(families) -> list[str]:
+    """What the search-based adapters should ask for, for THIS Brief (Move 2).
+
+    The engine defaults stay (recall for every client); the Brief's own
+    families are added as quoted titles so a client outside №001's seats
+    is actually fetched, not only filtered. Capped, order-stable."""
+    out = list(ENGINE_DEFAULT_SEARCH_QUERIES)
+    seen = {q.strip('"').lower() for q in out}
+    for f in families or []:
+        f = _norm_phrase(f)
+        if not f or f in seen or len(out) >= MAX_SEARCH_QUERIES:
+            continue
+        seen.add(f)
+        out.append(f'"{f}"')
+    return out
+
+
 def expand_role_family(family: str) -> list[str]:
-    """One Brief family → its include phrases. Unknown titles map to themselves."""
+    """One Brief family → its include phrases. Known seats use the hand rows;
+    any other seat gets the same shapes derived (Move 2)."""
     f = _norm_phrase(family)
     if not f:
         return []
-    return list(ROLE_SYNONYMS.get(f, (f,)))
+    hand = list(ROLE_SYNONYMS.get(f, ()))
+    if hand and hand != [f]:
+        return hand                        # a written row is authoritative (№001's proven gate)
+    # No row, or a row that only names itself: derive the same shapes.
+    out = list(hand)
+    for v in _generic_variants(f):
+        if v not in out:
+            out.append(v)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -467,21 +523,36 @@ def _looks_like_role_title(phrase: str) -> bool:
     if len(words) == 2 and words[0] in _ROLE_RANKS and words[1] in _ROLE_ABBREV:
         return True
     if len(words) >= 2 and words[-1] in _ROLE_NUCLEI:
-        if sum(1 for w in words if w in _ROLE_NUCLEI) > 1:
+        # "chief <craft> officer" carries two nuclei by construction (Move 2)
+        if sum(1 for w in words if w in _ROLE_NUCLEI) > 1 and not (words[0] == "chief" and words[-1] == "officer"):
             return False
         return all(
             w in _ROLE_RANKS or w in _CRAFT_ADJECTIVES or w in _ROLE_NUCLEI
-            or w in _ROLE_ABBREV
+            or w in _ROLE_ABBREV or w == "chief"
             for w in words
         )
+    # Move 2: seats outside №001's vocabulary. "VP Design", "VP of Marketing",
+    # "SVP Brand", "Chief Design Officer" are whole titles: a rank or
+    # abbreviation followed by the craft it leads. Without this, "VP Design"
+    # collapsed to the bare abbreviation "vp" and matched every VP posting.
+    if 2 <= len(words) <= 4 and words[0] in _ROLE_ABBREV | {"head", "director", "chief"}:
+        rest = [w for w in words[1:] if w not in ("of", "the")]
+        if words[0] == "chief":
+            return len(rest) >= 1 and rest[-1] == "officer" and all(w in _CRAFT_ADJECTIVES or w == "officer" for w in rest)
+        return bool(rest) and all(w in _CRAFT_ADJECTIVES for w in rest)
     return False
 
 
 def _as_family(phrase: str) -> str:
-    """Bare CD is Creative Director. Group/Executive CD and ECD stay as written."""
+    """Bare CD is Creative Director. Group/Executive CD and ECD stay as written.
+    "VP of Design" and "VP Design" are one family (Move 2); "Head of X" keeps
+    its conventional form."""
     p = _norm_phrase(phrase)
     if p == "cd":
         return "creative director"
+    m = re.match(r"^(vp|svp|evp) of (.+)$", p)
+    if m:
+        return f"{m.group(1)} {m.group(2)}"
     return p
 
 
@@ -576,6 +647,12 @@ def _add_unique(dest: list[str], raw: str) -> bool:
     return True
 
 
+# Rank words that are never a family on their own. The creative-seat
+# abbreviations (cd, ecd, gcd) and C-level abbreviations are whole titles
+# and stay.
+_BARE_RANKS = _ROLE_RANKS | {"vp", "svp", "evp", "director", "head", "chief", "lead", "officer", "manager"}
+
+
 def _extract_role_families(text: str) -> list[str]:
     found: list[str] = []
     for item in _list_items(text):
@@ -588,7 +665,9 @@ def _extract_role_families(text: str) -> list[str]:
             inner = _as_family(span)
             if _looks_like_role_title(span) or _looks_like_role_title(inner):
                 _add_unique(found, inner)
-    return found
+    # A bare rank ("vp", "director") is never a family: as an include term it
+    # would admit every posting with that word.
+    return [f for f in found if f not in _BARE_RANKS]
 
 
 
@@ -812,7 +891,7 @@ def compile_from_content(content, compiled_at: str | None = None,
         "exclude_type": exclude,
         "location_phrases": location_phrases,
         "accepted_locations": accepted,
-        "search_queries": list(ENGINE_DEFAULT_SEARCH_QUERIES),
+        "search_queries": search_queries_for(families),
         "priority_companies": priority,
         "seat_cap": bags["seat_cap"],
         "compiled_at": compiled_at,
@@ -1350,7 +1429,7 @@ def build_payload(seats: list[dict], compiled: dict, engine_sha: str,
             "deep": ledger.get("deep"),
             "intelligence": dict(ledger.get("intelligence") or {}),
             "read_budget": ledger.get("read_budget"),
-            "candidate_context": ledger.get("candidate_context") or "",
+            "candidate_context": ledger.get("candidate_context") or {},
         })
     return out
 
@@ -1463,7 +1542,8 @@ def _adapter_labels(ja) -> dict[str, str]:
 
 def agent_config_from_brief(ja, compiled: dict, *, agent_id: str,
                             agent_no: int | None, name: str = "",
-                            evidence_map=None, profile_path: str = ""):
+                            evidence_map=None, profile_path: str = "",
+                            voice=None):
     """Build the AgentConfig the original loop judges with.
 
     Everything here is Brief-derived or engine-default. Nothing is copied
@@ -1493,6 +1573,11 @@ def agent_config_from_brief(ja, compiled: dict, *, agent_id: str,
         manual_jobs=[],
         evidence_map=list(evidence_map or []),
         email_footer=[],
+        # Judge voice (Move 2): №001 keeps the original prompt literals via his
+        # bootstrap; everyone else is "one client", neutral third person.
+        persona=getattr(voice, "persona", "") if voice is not None else "",
+        pronouns=tuple(getattr(voice, "pronouns", ()) or ("they", "them", "their")) if voice is not None else ("they", "them", "their"),
+        judgment_lenses=getattr(voice, "judgment_lenses", "") if voice is not None else "",
     )
 
 
@@ -1573,27 +1658,75 @@ def load_verdict_state(agent_id: str, agent_no: int | None):
                                       agent_no=None, published_dir="docs")
 
 
-def candidate_context(ja, agent_id: str, agent_no: int | None) -> tuple[object, str, list]:
-    """(base AgentConfig or None, profile text, evidence_map) for scoring.
+class CandidateContext:
+    """What the judge will read about this person, and where it came from.
 
-    Move 1: №001's interim Candidate Context is profile.md via BOOTSTRAP_001.
-    Everyone else has none yet → HuntError('no_candidate_context'), raised
-    by the caller before any model call. Move 2 replaces this with the
-    compiled Candidate Context from confirmed Memory.
+    kind      "memory"      compiled from confirmed Memory (Move 2, any client)
+              "profile.md"  №001's interim document, used only while he has
+                            confirmed nothing yet
+              ""            none — the hunt refuses before any model call
     """
+    __slots__ = ("kind", "text", "hash", "statements", "layers", "sources",
+                 "format", "base", "evidence_map", "name")
+
+    def __init__(self, kind="", text="", hash="", statements=0, layers=None,
+                 sources=None, format=0, base=None, evidence_map=None, name=""):
+        self.kind = kind; self.text = text; self.hash = hash
+        self.statements = statements; self.layers = dict(layers or {})
+        self.sources = list(sources or []); self.format = format
+        self.base = base; self.evidence_map = list(evidence_map or []); self.name = name
+
+    def receipt(self) -> dict:
+        """Ledger entry: enums, counts and a hash. Never the text."""
+        return {"kind": self.kind, "hash": self.hash, "statements": self.statements,
+                "layers": self.layers, "sources": self.sources, "format": self.format}
+
+
+def candidate_context(ja, agent_id: str, agent_no: int | None,
+                      memory_rows=None, brief_content=None, name: str = "") -> CandidateContext:
+    """Confirmed Memory → Candidate Context, for any client.
+
+    Move 2: the document the original judge reads is compiled from the
+    rows the client confirmed, plus the active Brief's own words. A client
+    who has confirmed nothing has no context → HuntError('no_candidate_context')
+    is raised by the caller before collection and before any model call.
+    №001 alone keeps `profile.md` as an interim while his confirmed set is
+    empty; the moment he confirms, Memory wins, like everyone else.
+    """
+    import candidate_context as cc
+    compiled = cc.compile_candidate_context(name=name, rows=memory_rows or [],
+                                            brief_content=brief_content)
+    if compiled["text"]:
+        base = None
+        if agent_no == 1 or str(agent_id or "") in ("001", "1"):
+            base = _bootstrap_001(ja)          # evidence links for the public candidate page
+        return CandidateContext(kind="memory", text=compiled["text"], hash=compiled["hash"],
+                                statements=compiled["statements"], layers=compiled["layers"],
+                                sources=compiled["sources"], format=compiled["format"],
+                                base=base, evidence_map=getattr(base, "evidence_map", []) if base else [],
+                                name=name or (getattr(base, "name", "") if base else ""))
     if agent_no == 1 or str(agent_id or "") in ("001", "1"):
-        loader = getattr(ja, "load_agent_config", None)
-        if callable(loader):
-            try:
-                base = loader("001")
-            except Exception:
-                base = None
-            if base is not None and getattr(base, "profile_path", ""):
-                with _silent_stdio():
-                    profile = ja.load_profile(base) or ""
-                if profile:
-                    return base, profile, list(getattr(base, "evidence_map", []) or [])
-    return None, "", []
+        base = _bootstrap_001(ja)
+        if base is not None and getattr(base, "profile_path", ""):
+            with _silent_stdio():
+                profile = ja.load_profile(base) or ""
+            if profile:
+                return CandidateContext(kind="profile.md", text=profile,
+                                        hash=hashlib.sha256(profile.encode("utf-8")).hexdigest(),
+                                        statements=0, base=base,
+                                        evidence_map=list(getattr(base, "evidence_map", []) or []),
+                                        name=getattr(base, "name", ""))
+    return CandidateContext()
+
+
+def _bootstrap_001(ja):
+    loader = getattr(ja, "load_agent_config", None)
+    if not callable(loader):
+        return None
+    try:
+        return loader("001")
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1613,7 +1746,7 @@ def _judgment_hooks(ja, *, fetch_jd=None, score=None, profile=None,
     saved = {}
 
     def _set(name, value):
-        saved[name] = getattr(ja, name)
+        saved.setdefault(name, getattr(ja, name))   # first value wins: restore the original
         setattr(ja, name, value)
 
     try:
@@ -1709,6 +1842,7 @@ def classify_model_failure(ja) -> str:
 def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
              compiled: dict, raw: list[dict], prior_payloads: list[dict],
              state, today: date, now: datetime, profile: str | None = None,
+             memory_rows=None,
              fetch_jd=None, score=None, deep=None, brief_line_fn=None,
              name: str = "", edition_no: int | None = None,
              sources: int | None = None, read_budget: int = PRIVATE_READ_BUDGET,
@@ -1720,16 +1854,21 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
     has no Candidate Context (Move 1: only №001 has one, via profile.md).
     """
     # 2. authority → AgentConfig ------------------------------------------
-    base, ctx_profile, evidence_map = candidate_context(ja, agent_id, agent_no)
-    if profile is not None:               # test seam / future Candidate Context
-        ctx_profile = profile
+    ctx = candidate_context(ja, agent_id, agent_no, memory_rows=memory_rows,
+                            brief_content=brief.get("content"), name=name)
+    if profile is not None:               # test seam: an injected document
+        ctx = CandidateContext(kind="injected", text=profile, base=ctx.base,
+                               evidence_map=ctx.evidence_map, name=ctx.name)
+    ctx_profile = ctx.text
+    base = ctx.base
     if not ctx_profile:
         raise HuntError("no_candidate_context")
     agent = agent_config_from_brief(
         ja, compiled, agent_id=agent_id, agent_no=agent_no,
-        name=name or (getattr(base, "name", "") if base is not None else ""),
-        evidence_map=evidence_map,
+        name=name or ctx.name,
+        evidence_map=ctx.evidence_map,
         profile_path=getattr(base, "profile_path", "") if base is not None else "",
+        voice=base,
     )
     if not agent.include:
         raise HuntError("no_role_families")
@@ -1812,7 +1951,7 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
             if ((ranked[0].get("fit") or 0) >= DEEP_LOOK_THRESHOLD
                     or ranked[0].get("company") in agent.priority_companies):
                 with _captured_stdio() as buf:
-                    deep_out = ja.deep_look(ranked[0], ctx_profile)
+                    deep_out = ja.deep_look(ranked[0], ctx_profile, agent=agent)
                 deep_reason = classify_deep_look(deep_out, buf.getvalue())
                 if deep_out:
                     ranked[0]["deep"] = deep_out
@@ -1823,7 +1962,8 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
             legacy_new = {ja.dedup_key(j.get("title") or "", j.get("company") or "")
                           for j in ranked if j.get("role_key") in new_keys}
             with _captured_stdio() as buf:
-                brief_line = ja.write_brief(n, len(raw or []), sources or 0, ranked, legacy_new)
+                brief_line = ja.write_brief(n, len(raw or []), sources or 0, ranked, legacy_new,
+                                            agent=agent, as_of=compiled_clock(now, agent_no))
             brief_reason = classify_brief_line(brief_line, buf.getvalue())
 
         # 11. why now, labels -------------------------------------------------
@@ -1898,7 +2038,7 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
         "deep": deep_out,
         "intelligence": {"deep": deep_reason, "statline": brief_reason},
         "read_budget": read_budget,
-        "candidate_context": "profile.md" if base is not None and profile is None else "injected",
+        "candidate_context": ctx.receipt(),
     }
     context = {
         "greeting": greeting,
@@ -2048,6 +2188,11 @@ class HuntDb:
         """Read-only: the agent UUID for a public number (№001 → uuid)."""
         raise NotImplementedError
 
+    def confirmed_memory(self, agent_id: str) -> list[dict]:
+        """Read-only: this agent's active, client-confirmed memory rows
+        (id, layer, statement, source, provenance, status, created_at)."""
+        raise NotImplementedError
+
 
 class RestDb(HuntDb):
     """Production transport: Supabase PostgREST with the service key."""
@@ -2186,6 +2331,14 @@ class RestDb(HuntDb):
             return None
         return str(rows[0].get("id") or "") or None
 
+    def confirmed_memory(self, agent_id: str) -> list[dict]:
+        rows = self._get(
+            f"memory?agent_id=eq.{agent_id}&status=eq.active&provenance=eq.confirmed"
+            "&select=id,layer,statement,source,provenance,status,created_at"
+            "&order=created_at.asc&limit=1000"
+        )
+        return list(rows or [])
+
 
 # ---------------------------------------------------------------------------
 # Processor
@@ -2279,10 +2432,36 @@ class Runner:
             raise HuntError("no_active_brief")
         return brief
 
+    def _with_person(self, agent_id: str, brief: dict, compiled: dict) -> tuple[dict, str]:
+        """Move 2: the stored readiness the app shows must also say whether
+        FOOUND can judge for this person yet. A Brief can be complete while
+        nothing is confirmed in Memory — the hunt would refuse with
+        no_candidate_context, so readiness says so first, as a named reason
+        (`no_candidate_context`), instead of letting a commission fail later.
+        №001's interim profile.md counts as a context until he confirms."""
+        readiness = readiness_of(compiled)
+        try:
+            ja = _import_job_alerts_adapters()
+            agent_no = _lookup_agent_no(self.db, agent_id)
+            ctx = candidate_context(ja, agent_id, agent_no,
+                                    memory_rows=self.db.confirmed_memory(agent_id),
+                                    brief_content=brief.get("content"))
+            has_context = bool(ctx.text)
+        except Exception as e:
+            log.info("candidate context check failed agent=%s class=%s", agent_id, type(e).__name__)
+            has_context = False
+        reasons = list(compiled.get("readiness_reasons") or [])
+        if not has_context and "no_candidate_context" not in reasons:
+            reasons.append("no_candidate_context")
+        compiled = dict(compiled, readiness_reasons=reasons)
+        if not has_context:
+            readiness = "not_ready"
+        return compiled, readiness
+
     def _compile(self, job: dict, report: RunReport) -> RunReport:
         brief = self._load_active(job["agent_id"])
         compiled = compile_from_content(brief.get("content") or {})
-        readiness = readiness_of(compiled)
+        compiled, readiness = self._with_person(job["agent_id"], brief, compiled)
         if readiness not in ("ready", "not_ready"):
             raise HuntError("compile_failed")
         self.db.write_compile(brief["id"], compiled, readiness)
@@ -2301,13 +2480,9 @@ class Runner:
 
     def _refresh(self, job: dict, report: RunReport) -> RunReport:
         brief = self._load_active(job["agent_id"])
-        existing = brief.get("compiled_config")
-        if not existing:
-            compiled = compile_from_content(brief.get("content") or {})
-        else:
-            # Recompute from current Brief.content (authority), not stale config.
-            compiled = compile_from_content(brief.get("content") or {})
-        readiness = readiness_of(compiled)
+        # Recompute from current Brief.content (authority), never stale config.
+        compiled = compile_from_content(brief.get("content") or {})
+        compiled, readiness = self._with_person(job["agent_id"], brief, compiled)
         self.db.write_compile(brief["id"], compiled, readiness)
         self.db.complete(job["id"])
         log.info("refreshed job=%s readiness=%s", job["id"], readiness)
@@ -2385,10 +2560,10 @@ class Runner:
         agent_no = _lookup_agent_no(self.db, agent_id)
         # Candidate Context is checked before collection so a client without
         # one costs nothing and reaches no adapter and no model.
-        _base, ctx_profile, _ev = candidate_context(ja, agent_id, agent_no)
-        if self.profile is not None:
-            ctx_profile = self.profile
-        if not ctx_profile:
+        memory_rows = self.db.confirmed_memory(agent_id)
+        ctx = candidate_context(ja, agent_id, agent_no, memory_rows=memory_rows,
+                                brief_content=brief.get("content"))
+        if self.profile is None and not ctx.text:
             raise HuntError("no_candidate_context")
         try:
             collector = self.collector if self.collector is not None else live_collect
@@ -2413,6 +2588,7 @@ class Runner:
             state=state, today=self.today, now=now,
             profile=self.profile, fetch_jd=self.fetch_jd, score=self.score,
             deep=self.deep, brief_line_fn=self.brief_line_fn,
+            memory_rows=memory_rows,
             edition_no=edition_no, sources=sources,
             read_budget=self.read_budget, model_probe=self.model_probe,
         )
