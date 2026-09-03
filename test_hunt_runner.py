@@ -185,6 +185,24 @@ class MemoryDb(hr.HuntDb):
                     if r.get("status") == "active" and r.get("provenance") in ("stated", "extracted", "inferred")
                     and r.get("handle") and r.get("layer") in ("record", "self", "model")])
 
+    def candidate_count(self, agent_id):
+        return len([c for c in getattr(self, "candidates", []) if c["agent_id"] == agent_id])
+
+    def next_candidate_version(self, agent_id):
+        return len([c for c in getattr(self, "candidates", []) if c["agent_id"] == agent_id]) + 1
+
+    def retire_candidate_drafts(self, agent_id):
+        n = 0
+        for c in getattr(self, "candidates", []):
+            if c["agent_id"] == agent_id and c["state"] == "draft":
+                c["state"] = "unpublished"; n += 1
+        return n
+
+    def insert_candidate(self, row):
+        if not hasattr(self, "candidates"):
+            self.candidates = []
+        self.candidates.append(dict(row))
+
     def last_job(self, agent_id, job_type):
         rows = [j for j in self.jobs.values() if j["agent_id"] == agent_id and j["type"] == job_type]
         return dict(rows[-1]) if rows else None
@@ -2853,6 +2871,114 @@ def test_q_sweep_stands_down_when_the_door_is_not_in_the_database():
     out = hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY).sweep_proposals()
     check("Q sweep stands down once, queues nothing", out.get("door_closed") == 1 and out["queued"] == 0
           and not any(j["type"] == "propose_brief" for j in db.jobs.values()), out)
+
+
+# ---------------------------------------------------------------------------
+# V · Move 4: the Candidate page is drafted from confirmed Memory, once
+# ---------------------------------------------------------------------------
+
+def _candidate_json(ids, **over):
+    page = {
+        "line": "This is the candidate I work for. Fourteen years of product design. The pattern: she builds the function while the product is still being decided.",
+        "now": "Head of Product Design, Northwind", "based": "Berlin", "since": "2012",
+        "chapters": [
+            {"company": "Northwind", "years": "{2022–}", "at_rest": "Head of Product Design · first design leader",
+             "narrative": "Hired as the first design leader. Built the team.", "meta": "Berlin · 2022–present", "grounds": [ids[0]]},
+            {"company": "Klarna", "years": "2018-22", "at_rest": "Lead Product Designer", "narrative": "Checkout, then the design system.",
+             "meta": "Stockholm · 2018–2022", "grounds": [ids[1]]},
+            {"company": "Invented Corp", "years": "{2010–12}", "at_rest": "Nothing", "narrative": "Made up.", "meta": "", "grounds": ["not-a-real-id"]},
+        ],
+        "trusted_with": [
+            {"word": "The first hire", "line": "Twice the first design leader.", "grounds": [ids[0]]},
+            {"word": "Ungrounded", "line": "No statement says this.", "grounds": []},
+        ],
+        "references": [{"name": "Jonas", "quote": "Invented quote", "who": "CPO"}],
+        "own_words": "The model must never write this.",
+        "links": {"linkedin": "https://linkedin.com/in/invented"},
+        "languages": "EN / SV",
+    }
+    page.update(over)
+    return "Here is the page:\n" + json.dumps(page)
+
+
+def test_v_draft_candidate_job_writes_a_grounded_inert_draft():
+    db = MemoryDb()
+    aid = str(uuid.uuid4()); db.agent_numbers[aid] = 2
+    rows = []
+    for layer, st, src in N002_MEMORY:
+        rows += db.add_memory(aid, [st], layer=layer, source=src)[-1:]
+    ids = [r["id"] for r in rows]
+    prompts = []
+
+    def drafter(prompt):
+        prompts.append(prompt)
+        return _candidate_json(ids)
+
+    jid = db.add_job(aid, "draft_candidate")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        reports = hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY, drafter=drafter).run()
+    check("V job done", db.jobs[jid]["status"] == "done" and reports[0].action == "drafted", db.jobs[jid])
+    check("V prompt grounded with ids, third person, no em dashes asked", all(f"[{i}]" in prompts[0] for i in ids)
+          and "third person" in prompts[0] and "Never use em dashes" in prompts[0] and "where they are based" in prompts[0])
+    cands = db.candidates
+    check("V one draft, version 1, never published by the engine", len(cands) == 1 and cands[0]["state"] == "draft"
+          and cands[0]["version"] == 1 and cands[0]["content"] == "")
+    page = cands[0]["page"]
+    check("V ungrounded chapter dropped, years normalised", [c["company"] for c in page["chapters"]] == ["Northwind", "Klarna"]
+          and page["chapters"][1]["years"] == "{2018-22}")
+    check("V ungrounded trusted-with dropped", [t["word"] for t in page["trusted_with"]] == ["The first hire"])
+    check("V nothing invented survives: no references, no own words, no links, no name",
+          page["references"] == [] and page["own_words"] == "" and page["links"] == {} and page["name"] == [])
+    check("V never open_to", "open_to" not in page)
+    check("V line begins as the dossier", page["line"].startswith("This is the candidate I work for."))
+    check("V provenance receipt", page["provenance"]["drafted_by"] == "engine" and len(page["provenance"]["candidate_context_hash"]) == 64)
+    check("V console carries no page text", "Northwind" not in out.getvalue() and "Berlin" not in out.getvalue())
+    # a second draft retires the first
+    db.add_job(aid, "draft_candidate")
+    hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY, drafter=drafter).run()
+    states = sorted((c["version"], c["state"]) for c in db.candidates)
+    check("V redraft retires the old draft", states == [(1, "unpublished"), (2, "draft")], states)
+
+
+def test_v_draft_candidate_refuses_a_page_with_no_grounded_chapter():
+    db = MemoryDb()
+    aid = str(uuid.uuid4()); db.agent_numbers[aid] = 2
+    for layer, st, src in N002_MEMORY:
+        db.add_memory(aid, [st], layer=layer, source=src)
+    jid = db.add_job(aid, "draft_candidate")
+    hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY,
+              drafter=lambda p: _candidate_json(["nope", "nope-2"])).run()
+    check("V failed, named", db.jobs[jid]["status"] == "failed" and db.jobs[jid]["error"] == "candidate_draft_failed", db.jobs[jid])
+    check("V nothing written", not getattr(db, "candidates", []))
+
+
+def test_v_sweep_drafts_the_candidate_once():
+    now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+    db = MemoryDb()
+
+    def person(no, *, confirm_all=True):
+        aid = str(uuid.uuid4()); db.agent_numbers[aid] = no; db.agent_state[aid] = "at_work"
+        for layer, st, src in N002_MEMORY:
+            db.add_memory(aid, [st], layer=layer, source=src)
+        if not confirm_all:
+            db.add_memory(aid, ["Spent a year in Tokyo."], layer="record", source="resume.pdf", provenance="extracted")
+        return aid
+
+    settled = person(2)                                                # → queued
+    has_page = person(3); db.insert_candidate({"agent_id": has_page, "version": 1, "state": "published", "page": {}})  # → has_page
+    nothing = str(uuid.uuid4()); db.agent_numbers[nothing] = 4; db.agent_state[nothing] = "feed_submitted"   # → no_confirmed
+    open_recent = person(5, confirm_all=False)
+    for r in db.memory[open_recent]:
+        r["created_at"] = "2026-09-03T11:55:00Z"                        # → mirror_open
+    failed = person(6); db.add_job(failed, "draft_candidate", status="failed", requested_at="2026-09-03T11:59:00Z")  # → failed_on_this
+    out = hr.Runner(db, collector=lambda _c: []).sweep_candidates(now=now)
+    check("V sweep counts", out["agents"] == 5 and out["queued"] == 1 and out["has_page"] == 1
+          and out["no_confirmed"] == 1 and out["mirror_open"] == 1 and out["failed_on_this"] == 1, out)
+    queued = [j for j in db.jobs.values() if j["type"] == "draft_candidate" and j["status"] == "queued"]
+    check("V one job, for the settled person", len(queued) == 1 and queued[0]["agent_id"] == settled)
+    again = hr.Runner(db, collector=lambda _c: []).sweep_candidates(now=now)
+    check("V second beat queues nothing new", again["queued"] == 0 and again["in_flight"] == 1, again)
 
 
 def main():
