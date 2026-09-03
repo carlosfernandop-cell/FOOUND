@@ -1,0 +1,68 @@
+# FOOUND — heartbeat (Move 2). The engine runs on its own clock so a client
+# never needs Carlos to press a button.
+#
+# Every run: (1) synthesis — reads what clients fed; (2) proposal sweep —
+# a client whose Mirror is settled and who has no Brief in force gets one
+# propose_brief job (FOOUND proposes; nobody has to ask); (3) daily
+# enqueue — one edition job per at_work agent whose Brief is ready and who
+# has no edition today (idempotent; the handler no-ops on a same-day
+# edition); (4) hunt — processes queued jobs: compile_brief,
+# refresh_readiness, propose_brief, first_edition. Nothing runs that a
+# client's confirmed intent (or the daily clock) did not call for.
+#
+# The daily enqueue is OFF until FOOUND_DAILY_EDITIONS is set to "1" in the
+# repository's Actions variables — turning it on is the product decision
+# "editions arrive every day". Everything else here only executes intents
+# already expressed through the app.
+#
+# PUBLIC REPO: logs are public. Both runners print ids, counts and enums
+# only — never statement text, seat titles, URLs, prompts or model output.
+
+name: heartbeat
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"     # every quarter hour (UTC); GitHub may delay a few minutes
+  workflow_dispatch:
+
+concurrency:
+  group: hunt-runner            # never alongside hunt-runner / dry-run
+  cancel-in-progress: false
+
+jobs:
+  beat:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: >
+          pip install requests==2.33.1 anthropic==1.0.0
+          pypdf==3.17.4 python-docx==1.2.0
+      - name: Synthesis (what clients fed)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python synthesis_runner.py
+      - name: Propose Briefs (settled Mirrors without a Brief)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python hunt_runner.py --sweep-proposals
+      - name: Daily editions (only when switched on)
+        if: ${{ vars.FOOUND_DAILY_EDITIONS == '1' }}
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python hunt_runner.py --enqueue-daily
+      - name: Hunt (queued jobs)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          FOOUND_STATE_DIR: /tmp/foound-state
+        run: python hunt_runner.py

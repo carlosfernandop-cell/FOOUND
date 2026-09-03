@@ -1014,28 +1014,63 @@ def fit_tier(score) -> str:
         return "Worth considering"
     return "Wildcard"
 
+class JudgeVoice:
+    """How the three prompts name the person (Move 2 — Person from Memory).
+
+    The originals were written for №001 and carried "one senior creative
+    director" and he/him/his as literals. Those literals are now №001's
+    AgentConfig values, so his prompts are byte-identical; any other client
+    is "one client", referred to in the neutral third person, and the WHY
+    guidance's pattern clause comes from the config or falls back to a
+    person-neutral reading of the same idea."""
+
+    def __init__(self, agent=None):
+        persona = (getattr(agent, "persona", "") or "").strip() if agent is not None else "senior creative director"
+        pr = tuple(getattr(agent, "pronouns", ()) or ()) if agent is not None else ("he", "him", "his")
+        if len(pr) != 3:
+            pr = ("they", "them", "their")
+        self.one = f"one {persona}" if persona else "one client"
+        self.subj, self.obj, self.poss = pr
+        self.Subj = self.subj[:1].upper() + self.subj[1:]
+        self.OBJ = self.obj.upper()
+        self.rubric = ("seniority match, craft match, brand-led scope, AI-era relevance"
+                       if persona == "senior creative director"
+                       else "seniority match, craft match, scope match, and the direction the candidate has authorized")
+        lenses = (getattr(agent, "judgment_lenses", "") or "").strip() if agent is not None else ""
+        if agent is None:
+            lenses = ("the companies he has built for, brands he entered before their identity "
+                      "was fixed, cities he calls home, teams he built from zero")
+        self.lenses = lenses or (f"the organisations {self.subj} {'has' if self.subj != 'they' else 'have'} built for, "
+                                 f"the moments {self.subj} {'enters' if self.subj != 'they' else 'enter'} before they are settled, "
+                                 f"the places {self.subj} {'calls' if self.subj != 'they' else 'call'} home, "
+                                 f"what {self.subj} {'has' if self.subj != 'they' else 'have'} built")
+        # grammatical helpers for the neutral case
+        self.has = "has" if self.subj != "they" else "have"
+        self.a_persona = f"a {persona}" if persona else ""
+
+
 def score_fit(agent, profile: str, job: dict, jd_text: str):
     """Ask Claude to argue one role for this candidate: score + the case for,
     and the honest case against. Returns (score, why, pause) or (None, None, None)."""
     try:
+        v = JudgeVoice(agent)
         prompt = (
-            "You are the personal career agent of one senior creative director. Write plainly. Never use em dashes or long dashes anywhere; use commas, colons, or periods instead. "
-            "You are judging ONE role for HIM specifically, and you will present "
-            "your reasoning to him directly.\n\n"
+            f"You are the personal career agent of {v.one}. Write plainly. Never use em dashes or long dashes anywhere; use commas, colons, or periods instead. "
+            f"You are judging ONE role for {v.OBJ} specifically, and you will present "
+            f"your reasoning to {v.obj} directly.\n\n"
             f"CANDIDATE PROFILE:\n{profile}\n\n"
             f"ROLE: {job['title']} at {job['company']} — {job.get('location','')}\n\n"
-            + (f"NOTE: He has flagged {job['company']} as a priority target — he asked his agent to watch this company closely. "
-               "Weigh his stated affinity as real fit-relevant information, but stay honest about the role itself.\n\n"
+            + (f"NOTE: {v.Subj} {v.has} flagged {job['company']} as a priority target — {v.subj} asked {v.poss} agent to watch this company closely. "
+               f"Weigh {v.poss} stated affinity as real fit-relevant information, but stay honest about the role itself.\n\n"
                if job.get("company") in agent.priority_companies else "")
             + f"JOB POSTING TEXT (may include page boilerplate — ignore navigation/footer noise):\n"
             f"{jd_text or '(no description available — judge from title and company)'}\n\n"
             "Return ONLY a JSON object, no other text:\n"
-            '{"score": <0-100 integer — seniority match, craft match, brand-led scope, AI-era relevance for THIS candidate>, '
-            '"why": "<WHY I CHOSE IT: one or two sentences, max 200 chars, spoken to him as you/your (never his name, never he/his). '
-            "Connect THIS role to his specific pattern — the companies he has built for, brands he entered before their identity "
-            "was fixed, cities he calls home, teams he built from zero. Perceptive and confident, not flattering. No emoji, no exclamation points.>\", "
+            f'{{"score": <0-100 integer — {v.rubric} for THIS candidate>, '
+            f'"why": "<WHY I CHOSE IT: one or two sentences, max 200 chars, spoken to {v.obj} as you/your (never {v.poss} name, never {v.subj}/{v.poss}). '
+            f"Connect THIS role to {v.poss} specific pattern — {v.lenses}. Perceptive and confident, not flattering. No emoji, no exclamation points.>\", "
             '"pause": "<WHAT GIVES ME PAUSE: one sentence, max 140 chars, the honest counterargument — remit too narrow, seniority ambiguity, '
-            "scope skewed to execution, thin posting, location friction. Every role has one; if genuinely nothing, name what he should verify first. Same voice.>\"}"
+            f"scope skewed to execution, thin posting, location friction. Every role has one; if genuinely nothing, name what {v.subj} should verify first. Same voice.>\"}}"
         )
         for attempt in (1, 2):
             r = requests.post(
@@ -1160,20 +1195,22 @@ def _deep_look_json(blocks):
     return found
 
 
-def deep_look(job, profile: str):
+def deep_look(job, profile: str, agent=None):
     """Second pass on the day's lead: investigate with web search.
-    The research is allowed to lower the score. Returns dict or None; never raises."""
+    The research is allowed to lower the score. Returns dict or None; never raises.
+    `agent` (Move 2) sets the voice; None keeps №001's original wording."""
     if not ANTHROPIC_KEY:
         return None
     try:
+        v = JudgeVoice(agent)
         prompt = (
-            "You are FOOUND, the personal career agent of one senior creative director. Write plainly. Never use em dashes or long dashes anywhere; use commas, colons, or periods instead. "
+            f"You are FOOUND, the personal career agent of {v.one}. Write plainly. Never use em dashes or long dashes anywhere; use commas, colons, or periods instead. "
             "Today your lead recommendation is:\n"
             f"ROLE: {job['title']} at {job['company']} — {job.get('location','')}\n"
             f"URL: {job.get('url','')}\n"
             f"Your current fit score: {job.get('fit')}/100. Your reasoning so far: {job.get('ai_why','')}\n"
             f"Your stated concern: {job.get('ai_pause','')}\n\n"
-            f"CANDIDATE PROFILE (judge against HIM):\n{profile[:5000]}\n\n"
+            f"CANDIDATE PROFILE (judge against {v.OBJ}):\n{profile[:5000]}\n\n"
             "Use web search to investigate: is this role new or a succession? What is the company's "
             "brand/creative moment right now? Who would this likely report to? What recent hiring or "
             "investment signals exist? What is the biggest unresolved risk?\n\n"
@@ -1246,12 +1283,16 @@ def deep_look(job, profile: str):
         print(f"[deep look skipped: {e}]")
         return None
 
-def write_brief(n: int, total_fetched: int, n_companies: int, ranked: list, new_keys: set):
+def write_brief(n: int, total_fetched: int, n_companies: int, ranked: list, new_keys: set,
+                agent=None, as_of: str | None = None):
     """Ask Claude to write the one-line morning report from the run's real data.
-    Returns the line, or None (caller falls back to the fixed template)."""
+    Returns the line, or None (caller falls back to the fixed template).
+    `agent` sets the voice and `as_of` the clock named in the run data (Move 2);
+    both default to №001's original wording."""
     if not ANTHROPIC_KEY or n == 0:
         return None
     try:
+        v = JudgeVoice(agent)
         from datetime import datetime as _dt, timezone as _tz
         now = _dt.now(_tz.utc)
         facts = []
@@ -1271,10 +1312,10 @@ def write_brief(n: int, total_fetched: int, n_companies: int, ranked: list, new_
         n_new = sum(1 for j in ranked if dedup_key(j["title"], j["company"]) in new_keys)
         prompt = (
             "Write plainly. Never use em dashes or long dashes anywhere; use commas, colons, or periods instead. You are the personal career agent behind THE SHORTLIST. You just finished this "
-            "morning's run for your one client, a senior creative director. The page already "
+            f"morning's run for your one client{', ' + v.a_persona if v.a_persona else ''}. The page already "
             "reports the numbers — your job is ONE short observation, if the data earns it.\n\n"
             "RUN DATA (real, this morning):\n"
-            f"- Scanned {total_fetched:,} openings at {n_companies} companies, 8:00 AM ET\n"
+            f"- Scanned {total_fetched:,} openings at {n_companies} companies, {as_of or '8:00 AM ET'}\n"
             f"- {n} made the cut, {n_new} newly listed today\n"
             f"- The ranked list:\n" + "\n".join(facts) + "\n\n"
             "RULES:\n"

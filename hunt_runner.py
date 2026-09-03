@@ -47,7 +47,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Callable, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -57,7 +57,7 @@ log = logging.getLogger("hunt_runner")
 # Seat cap: the original Shortlist's eleven, unless the Brief says otherwise.
 DEFAULT_SEAT_CAP = 11
 MAX_SEAT_CAP = 20
-HUNT_JOB_TYPES = ("compile_brief", "refresh_readiness", "first_edition")
+HUNT_JOB_TYPES = ("compile_brief", "refresh_readiness", "first_edition", "propose_brief")
 MAX_JOBS_PER_RUN = 10
 
 # Move 1 read budget for the private hunt. Fixed for Stage 1 by contract:
@@ -96,6 +96,8 @@ NAMED_ERRORS = {
     "edition_persist_failed",
     "no_candidate_context",
     "no_role_families",
+    "proposal_failed",
+    "job_type_unknown",
 }
 
 
@@ -143,12 +145,68 @@ ROLE_SYNONYMS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _generic_variants(f: str) -> list[str]:
+    """Move 2: the same shapes ROLE_SYNONYMS hand-writes for №001's seats,
+    derived for any seat — so "vp design" also reads "vp, design" and
+    "vp of design", "design director" also reads "director of design" and
+    "director, design", "head of design" also reads "head, design".
+    Substring matching (job_alerts.passes_title) does the rest."""
+    words = f.split()
+    out = [f]
+    if len(words) >= 2 and words[0] in ("vp", "svp", "evp", "head"):
+        rank = words[0]
+        craft = " ".join(w for w in words[1:] if w not in ("of", "the"))
+        if craft:
+            if rank == "head":
+                out.append(f"head, {craft}")
+            else:
+                out += [f"{rank} {craft}", f"{rank} of {craft}", f"{rank}, {craft}"]
+    if len(words) >= 2 and words[-1] == "director":
+        craft = " ".join(words[:-1])
+        out += [f"director of {craft}", f"director, {craft}"]
+    seen, uniq = set(), []
+    for v in out:
+        v = _norm_phrase(v)
+        if v and v not in seen and v not in _BARE_RANKS:
+            seen.add(v); uniq.append(v)
+    return uniq
+
+
+MAX_SEARCH_QUERIES = 8
+
+
+def search_queries_for(families) -> list[str]:
+    """What the search-based adapters should ask for, for THIS Brief (Move 2).
+
+    The engine defaults stay (recall for every client); the Brief's own
+    families are added as quoted titles so a client outside №001's seats
+    is actually fetched, not only filtered. Capped, order-stable."""
+    out = list(ENGINE_DEFAULT_SEARCH_QUERIES)
+    seen = {q.strip('"').lower() for q in out}
+    for f in families or []:
+        f = _norm_phrase(f)
+        if not f or f in seen or len(out) >= MAX_SEARCH_QUERIES:
+            continue
+        seen.add(f)
+        out.append(f'"{f}"')
+    return out
+
+
 def expand_role_family(family: str) -> list[str]:
-    """One Brief family → its include phrases. Unknown titles map to themselves."""
+    """One Brief family → its include phrases. Known seats use the hand rows;
+    any other seat gets the same shapes derived (Move 2)."""
     f = _norm_phrase(family)
     if not f:
         return []
-    return list(ROLE_SYNONYMS.get(f, (f,)))
+    hand = list(ROLE_SYNONYMS.get(f, ()))
+    if hand and hand != [f]:
+        return hand                        # a written row is authoritative (№001's proven gate)
+    # No row, or a row that only names itself: derive the same shapes.
+    out = list(hand)
+    for v in _generic_variants(f):
+        if v not in out:
+            out.append(v)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -314,7 +372,13 @@ def _kind_hint(title: str) -> str | None:
 
 
 def _kind_of_subject(sub: dict) -> str:
-    """Bucket from chapter title first, then unit title. Handles are not keys."""
+    """Bucket from chapter title first, then unit title. Handles are not keys —
+    with one exception: a subject whose own handle says it is not settled
+    ("Still learning", "Avoid") is skipped whatever chapter it sits in. A
+    WHERE line FOOUND wrote as "Still learning" must never compile into a
+    place to hunt."""
+    if _kind_hint(sub.get("title") or "") == "skip":
+        return "skip"
     for title in (sub.get("context_title"), sub.get("title")):
         kind = _kind_hint(title or "")
         if kind in ("skip", "place", "role", "move"):
@@ -467,21 +531,36 @@ def _looks_like_role_title(phrase: str) -> bool:
     if len(words) == 2 and words[0] in _ROLE_RANKS and words[1] in _ROLE_ABBREV:
         return True
     if len(words) >= 2 and words[-1] in _ROLE_NUCLEI:
-        if sum(1 for w in words if w in _ROLE_NUCLEI) > 1:
+        # "chief <craft> officer" carries two nuclei by construction (Move 2)
+        if sum(1 for w in words if w in _ROLE_NUCLEI) > 1 and not (words[0] == "chief" and words[-1] == "officer"):
             return False
         return all(
             w in _ROLE_RANKS or w in _CRAFT_ADJECTIVES or w in _ROLE_NUCLEI
-            or w in _ROLE_ABBREV
+            or w in _ROLE_ABBREV or w == "chief"
             for w in words
         )
+    # Move 2: seats outside №001's vocabulary. "VP Design", "VP of Marketing",
+    # "SVP Brand", "Chief Design Officer" are whole titles: a rank or
+    # abbreviation followed by the craft it leads. Without this, "VP Design"
+    # collapsed to the bare abbreviation "vp" and matched every VP posting.
+    if 2 <= len(words) <= 4 and words[0] in _ROLE_ABBREV | {"head", "director", "chief"}:
+        rest = [w for w in words[1:] if w not in ("of", "the")]
+        if words[0] == "chief":
+            return len(rest) >= 1 and rest[-1] == "officer" and all(w in _CRAFT_ADJECTIVES or w == "officer" for w in rest)
+        return bool(rest) and all(w in _CRAFT_ADJECTIVES for w in rest)
     return False
 
 
 def _as_family(phrase: str) -> str:
-    """Bare CD is Creative Director. Group/Executive CD and ECD stay as written."""
+    """Bare CD is Creative Director. Group/Executive CD and ECD stay as written.
+    "VP of Design" and "VP Design" are one family (Move 2); "Head of X" keeps
+    its conventional form."""
     p = _norm_phrase(phrase)
     if p == "cd":
         return "creative director"
+    m = re.match(r"^(vp|svp|evp) of (.+)$", p)
+    if m:
+        return f"{m.group(1)} {m.group(2)}"
     return p
 
 
@@ -576,6 +655,12 @@ def _add_unique(dest: list[str], raw: str) -> bool:
     return True
 
 
+# Rank words that are never a family on their own. The creative-seat
+# abbreviations (cd, ecd, gcd) and C-level abbreviations are whole titles
+# and stay.
+_BARE_RANKS = _ROLE_RANKS | {"vp", "svp", "evp", "director", "head", "chief", "lead", "officer", "manager"}
+
+
 def _extract_role_families(text: str) -> list[str]:
     found: list[str] = []
     for item in _list_items(text):
@@ -588,7 +673,9 @@ def _extract_role_families(text: str) -> list[str]:
             inner = _as_family(span)
             if _looks_like_role_title(span) or _looks_like_role_title(inner):
                 _add_unique(found, inner)
-    return found
+    # A bare rank ("vp", "director") is never a family: as an include term it
+    # would admit every posting with that word.
+    return [f for f in found if f not in _BARE_RANKS]
 
 
 
@@ -812,7 +899,7 @@ def compile_from_content(content, compiled_at: str | None = None,
         "exclude_type": exclude,
         "location_phrases": location_phrases,
         "accepted_locations": accepted,
-        "search_queries": list(ENGINE_DEFAULT_SEARCH_QUERIES),
+        "search_queries": search_queries_for(families),
         "priority_companies": priority,
         "seat_cap": bags["seat_cap"],
         "compiled_at": compiled_at,
@@ -847,6 +934,35 @@ def compiled_config_hash(compiled: dict) -> str:
     }
     raw = json.dumps(body, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+PROPOSAL_QUIET_MINUTES = 20
+
+
+def _quiet_since(stamp: str, now: datetime) -> bool:
+    """True when `stamp` (ISO, from the database) is older than
+    PROPOSAL_QUIET_MINUTES relative to `now`. Unparseable → not quiet."""
+    try:
+        t = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return (now - t) >= timedelta(minutes=PROPOSAL_QUIET_MINUTES)
+
+
+def _proposal_context_hash(brief: dict) -> str:
+    """The Candidate Context hash a FOOUND-written proposal was drafted
+    from (content.provenance.candidate_context_hash), or "" for a Brief
+    written by hand."""
+    content = brief.get("content") or {}
+    if isinstance(content, str):
+        try:
+            content = json.loads(content)
+        except json.JSONDecodeError:
+            return ""
+    prov = content.get("provenance") if isinstance(content, dict) else None
+    return str((prov or {}).get("candidate_context_hash") or "") if isinstance(prov, dict) else ""
 
 
 def current_engine_sha() -> str:
@@ -1350,7 +1466,7 @@ def build_payload(seats: list[dict], compiled: dict, engine_sha: str,
             "deep": ledger.get("deep"),
             "intelligence": dict(ledger.get("intelligence") or {}),
             "read_budget": ledger.get("read_budget"),
-            "candidate_context": ledger.get("candidate_context") or "",
+            "candidate_context": ledger.get("candidate_context") or {},
         })
     return out
 
@@ -1463,7 +1579,8 @@ def _adapter_labels(ja) -> dict[str, str]:
 
 def agent_config_from_brief(ja, compiled: dict, *, agent_id: str,
                             agent_no: int | None, name: str = "",
-                            evidence_map=None, profile_path: str = ""):
+                            evidence_map=None, profile_path: str = "",
+                            voice=None):
     """Build the AgentConfig the original loop judges with.
 
     Everything here is Brief-derived or engine-default. Nothing is copied
@@ -1493,6 +1610,11 @@ def agent_config_from_brief(ja, compiled: dict, *, agent_id: str,
         manual_jobs=[],
         evidence_map=list(evidence_map or []),
         email_footer=[],
+        # Judge voice (Move 2): №001 keeps the original prompt literals via his
+        # bootstrap; everyone else is "one client", neutral third person.
+        persona=getattr(voice, "persona", "") if voice is not None else "",
+        pronouns=tuple(getattr(voice, "pronouns", ()) or ("they", "them", "their")) if voice is not None else ("they", "them", "their"),
+        judgment_lenses=getattr(voice, "judgment_lenses", "") if voice is not None else "",
     )
 
 
@@ -1573,27 +1695,75 @@ def load_verdict_state(agent_id: str, agent_no: int | None):
                                       agent_no=None, published_dir="docs")
 
 
-def candidate_context(ja, agent_id: str, agent_no: int | None) -> tuple[object, str, list]:
-    """(base AgentConfig or None, profile text, evidence_map) for scoring.
+class CandidateContext:
+    """What the judge will read about this person, and where it came from.
 
-    Move 1: №001's interim Candidate Context is profile.md via BOOTSTRAP_001.
-    Everyone else has none yet → HuntError('no_candidate_context'), raised
-    by the caller before any model call. Move 2 replaces this with the
-    compiled Candidate Context from confirmed Memory.
+    kind      "memory"      compiled from confirmed Memory (Move 2, any client)
+              "profile.md"  №001's interim document, used only while he has
+                            confirmed nothing yet
+              ""            none — the hunt refuses before any model call
     """
+    __slots__ = ("kind", "text", "hash", "statements", "layers", "sources",
+                 "format", "base", "evidence_map", "name")
+
+    def __init__(self, kind="", text="", hash="", statements=0, layers=None,
+                 sources=None, format=0, base=None, evidence_map=None, name=""):
+        self.kind = kind; self.text = text; self.hash = hash
+        self.statements = statements; self.layers = dict(layers or {})
+        self.sources = list(sources or []); self.format = format
+        self.base = base; self.evidence_map = list(evidence_map or []); self.name = name
+
+    def receipt(self) -> dict:
+        """Ledger entry: enums, counts and a hash. Never the text."""
+        return {"kind": self.kind, "hash": self.hash, "statements": self.statements,
+                "layers": self.layers, "sources": self.sources, "format": self.format}
+
+
+def candidate_context(ja, agent_id: str, agent_no: int | None,
+                      memory_rows=None, brief_content=None, name: str = "") -> CandidateContext:
+    """Confirmed Memory → Candidate Context, for any client.
+
+    Move 2: the document the original judge reads is compiled from the
+    rows the client confirmed, plus the active Brief's own words. A client
+    who has confirmed nothing has no context → HuntError('no_candidate_context')
+    is raised by the caller before collection and before any model call.
+    №001 alone keeps `profile.md` as an interim while his confirmed set is
+    empty; the moment he confirms, Memory wins, like everyone else.
+    """
+    import candidate_context as cc
+    compiled = cc.compile_candidate_context(name=name, rows=memory_rows or [],
+                                            brief_content=brief_content)
+    if compiled["text"]:
+        base = None
+        if agent_no == 1 or str(agent_id or "") in ("001", "1"):
+            base = _bootstrap_001(ja)          # evidence links for the public candidate page
+        return CandidateContext(kind="memory", text=compiled["text"], hash=compiled["hash"],
+                                statements=compiled["statements"], layers=compiled["layers"],
+                                sources=compiled["sources"], format=compiled["format"],
+                                base=base, evidence_map=getattr(base, "evidence_map", []) if base else [],
+                                name=name or (getattr(base, "name", "") if base else ""))
     if agent_no == 1 or str(agent_id or "") in ("001", "1"):
-        loader = getattr(ja, "load_agent_config", None)
-        if callable(loader):
-            try:
-                base = loader("001")
-            except Exception:
-                base = None
-            if base is not None and getattr(base, "profile_path", ""):
-                with _silent_stdio():
-                    profile = ja.load_profile(base) or ""
-                if profile:
-                    return base, profile, list(getattr(base, "evidence_map", []) or [])
-    return None, "", []
+        base = _bootstrap_001(ja)
+        if base is not None and getattr(base, "profile_path", ""):
+            with _silent_stdio():
+                profile = ja.load_profile(base) or ""
+            if profile:
+                return CandidateContext(kind="profile.md", text=profile,
+                                        hash=hashlib.sha256(profile.encode("utf-8")).hexdigest(),
+                                        statements=0, base=base,
+                                        evidence_map=list(getattr(base, "evidence_map", []) or []),
+                                        name=getattr(base, "name", ""))
+    return CandidateContext()
+
+
+def _bootstrap_001(ja):
+    loader = getattr(ja, "load_agent_config", None)
+    if not callable(loader):
+        return None
+    try:
+        return loader("001")
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -1613,7 +1783,7 @@ def _judgment_hooks(ja, *, fetch_jd=None, score=None, profile=None,
     saved = {}
 
     def _set(name, value):
-        saved[name] = getattr(ja, name)
+        saved.setdefault(name, getattr(ja, name))   # first value wins: restore the original
         setattr(ja, name, value)
 
     try:
@@ -1709,6 +1879,7 @@ def classify_model_failure(ja) -> str:
 def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
              compiled: dict, raw: list[dict], prior_payloads: list[dict],
              state, today: date, now: datetime, profile: str | None = None,
+             memory_rows=None,
              fetch_jd=None, score=None, deep=None, brief_line_fn=None,
              name: str = "", edition_no: int | None = None,
              sources: int | None = None, read_budget: int = PRIVATE_READ_BUDGET,
@@ -1720,16 +1891,21 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
     has no Candidate Context (Move 1: only №001 has one, via profile.md).
     """
     # 2. authority → AgentConfig ------------------------------------------
-    base, ctx_profile, evidence_map = candidate_context(ja, agent_id, agent_no)
-    if profile is not None:               # test seam / future Candidate Context
-        ctx_profile = profile
+    ctx = candidate_context(ja, agent_id, agent_no, memory_rows=memory_rows,
+                            brief_content=brief.get("content"), name=name)
+    if profile is not None:               # test seam: an injected document
+        ctx = CandidateContext(kind="injected", text=profile, base=ctx.base,
+                               evidence_map=ctx.evidence_map, name=ctx.name)
+    ctx_profile = ctx.text
+    base = ctx.base
     if not ctx_profile:
         raise HuntError("no_candidate_context")
     agent = agent_config_from_brief(
         ja, compiled, agent_id=agent_id, agent_no=agent_no,
-        name=name or (getattr(base, "name", "") if base is not None else ""),
-        evidence_map=evidence_map,
+        name=name or ctx.name,
+        evidence_map=ctx.evidence_map,
         profile_path=getattr(base, "profile_path", "") if base is not None else "",
+        voice=base,
     )
     if not agent.include:
         raise HuntError("no_role_families")
@@ -1812,7 +1988,7 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
             if ((ranked[0].get("fit") or 0) >= DEEP_LOOK_THRESHOLD
                     or ranked[0].get("company") in agent.priority_companies):
                 with _captured_stdio() as buf:
-                    deep_out = ja.deep_look(ranked[0], ctx_profile)
+                    deep_out = ja.deep_look(ranked[0], ctx_profile, agent=agent)
                 deep_reason = classify_deep_look(deep_out, buf.getvalue())
                 if deep_out:
                     ranked[0]["deep"] = deep_out
@@ -1823,7 +1999,8 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
             legacy_new = {ja.dedup_key(j.get("title") or "", j.get("company") or "")
                           for j in ranked if j.get("role_key") in new_keys}
             with _captured_stdio() as buf:
-                brief_line = ja.write_brief(n, len(raw or []), sources or 0, ranked, legacy_new)
+                brief_line = ja.write_brief(n, len(raw or []), sources or 0, ranked, legacy_new,
+                                            agent=agent, as_of=compiled_clock(now, agent_no))
             brief_reason = classify_brief_line(brief_line, buf.getvalue())
 
         # 11. why now, labels -------------------------------------------------
@@ -1898,7 +2075,7 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
         "deep": deep_out,
         "intelligence": {"deep": deep_reason, "statline": brief_reason},
         "read_budget": read_budget,
-        "candidate_context": "profile.md" if base is not None and profile is None else "injected",
+        "candidate_context": ctx.receipt(),
     }
     context = {
         "greeting": greeting,
@@ -1927,6 +2104,30 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
         "intelligence": ledger["intelligence"],
         "authority": ledger["authority"],
     }
+
+
+def draft_with_model(ja, prompt: str) -> str:
+    """One Messages call for the Brief draft. Returns the reply text ('' on
+    any failure). Nothing about the reply is logged here."""
+    key = getattr(ja, "ANTHROPIC_KEY", "") or ""
+    if not key:
+        return ""
+    try:
+        import requests
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"x-api-key": key, "anthropic-version": "2023-06-01",
+                     "content-type": "application/json"},
+            json={"model": getattr(ja, "CLAUDE_MODEL", "claude-sonnet-5"),
+                  "max_tokens": 2500, "messages": [{"role": "user", "content": prompt}]},
+            timeout=180,
+        )
+        if not r.ok:
+            return ""
+        blocks = (r.json() or {}).get("content", []) or []
+        return "\n".join(b.get("text", "") for b in blocks if b.get("type") == "text")
+    except Exception:
+        return ""
 
 
 def operator_line(agent_no, counts: dict, engine: str, outcome: str,
@@ -2046,6 +2247,50 @@ class HuntDb:
 
     def agent_id_for_no(self, agent_no: int) -> Optional[str]:
         """Read-only: the agent UUID for a public number (№001 → uuid)."""
+        raise NotImplementedError
+
+    def confirmed_memory(self, agent_id: str) -> list[dict]:
+        """Read-only: this agent's active, client-confirmed memory rows
+        (id, layer, statement, source, provenance, status, created_at)."""
+        raise NotImplementedError
+
+    def at_work_agents(self) -> list[dict]:
+        """Read-only: agents in state at_work (id, agent_no)."""
+        raise NotImplementedError
+
+    def enqueue_job(self, agent_id: str, job_type: str, payload: dict) -> bool:
+        """Insert a queued job; False when one is already queued for
+        (agent, type) — the partial unique index makes this idempotent."""
+        raise NotImplementedError
+
+    def next_brief_version(self, agent_id: str) -> int:
+        raise NotImplementedError
+
+    def abandon_proposed_briefs(self, agent_id: str) -> int:
+        """Engine-written proposals that were never confirmed: proposed → abandoned."""
+        raise NotImplementedError
+
+    def insert_brief(self, row: dict) -> None:
+        raise NotImplementedError
+
+    # -- Move 2: FOOUND proposes on its own (sweep_proposals) -----------------
+    def live_agents(self) -> list[dict]:
+        """Read-only: every agent not archived (id, agent_no, state)."""
+        raise NotImplementedError
+
+    def briefs_in_force(self, agent_id: str) -> list[dict]:
+        """Read-only: this agent's proposed and active Brief rows
+        (id, version, state, content, readiness), newest version first."""
+        raise NotImplementedError
+
+    def open_mirror_count(self, agent_id: str) -> int:
+        """Read-only: how many active memory rows still await the client's
+        verdict (provenance stated/extracted/inferred). 0 = Mirror settled."""
+        raise NotImplementedError
+
+    def last_job(self, agent_id: str, job_type: str) -> Optional[dict]:
+        """Read-only: the most recent job of this type for this agent
+        (id, status, requested_at, payload), or None."""
         raise NotImplementedError
 
 
@@ -2186,6 +2431,70 @@ class RestDb(HuntDb):
             return None
         return str(rows[0].get("id") or "") or None
 
+    def confirmed_memory(self, agent_id: str) -> list[dict]:
+        rows = self._get(
+            f"memory?agent_id=eq.{agent_id}&status=eq.active&provenance=eq.confirmed"
+            "&select=id,layer,statement,source,provenance,status,created_at"
+            "&order=created_at.asc&limit=1000"
+        )
+        return list(rows or [])
+
+    def at_work_agents(self) -> list[dict]:
+        return list(self._get("agents?state=eq.at_work&select=id,agent_no&order=agent_no.asc&limit=500") or [])
+
+    def enqueue_job(self, agent_id: str, job_type: str, payload: dict) -> bool:
+        try:
+            self._post("jobs", {"agent_id": agent_id, "type": job_type, "payload": payload})
+            return True
+        except Exception as e:
+            # 409 from the partial unique index = already queued; a check
+            # violation on jobs.type means the database does not know this
+            # job type yet (migration not applied) — named, so the caller can
+            # stand down instead of failing every beat; anything else surfaces
+            resp = getattr(e, "response", None)
+            code = getattr(resp, "status_code", None) if resp is not None else None
+            if code == 409:
+                return False
+            if code == 400 and ("23514" in (getattr(resp, "text", "") or "")
+                                or "jobs_type_check" in (getattr(resp, "text", "") or "")):
+                raise HuntError("job_type_unknown") from e
+            raise
+
+    def next_brief_version(self, agent_id: str) -> int:
+        rows = self._get(f"briefs?agent_id=eq.{agent_id}&select=version&order=version.desc&limit=1")
+        try:
+            return int(rows[0]["version"]) + 1 if rows else 1
+        except (KeyError, TypeError, ValueError):
+            return 1
+
+    def abandon_proposed_briefs(self, agent_id: str) -> int:
+        rows = self._patch(f"briefs?agent_id=eq.{agent_id}&state=eq.proposed", {"state": "abandoned"})
+        return len(rows or [])
+
+    def insert_brief(self, row: dict) -> None:
+        self._post("briefs", row)
+
+    def live_agents(self) -> list[dict]:
+        return list(self._get("agents?state=neq.archived&select=id,agent_no,state"
+                              "&order=agent_no.asc&limit=500") or [])
+
+    def briefs_in_force(self, agent_id: str) -> list[dict]:
+        return list(self._get(
+            f"briefs?agent_id=eq.{agent_id}&state=in.(proposed,active)"
+            "&select=id,version,state,content,readiness&order=version.desc&limit=10") or [])
+
+    def open_mirror_count(self, agent_id: str) -> int:
+        rows = self._get(
+            f"memory?agent_id=eq.{agent_id}&status=eq.active"
+            "&provenance=in.(stated,extracted,inferred)&select=id&limit=50")
+        return len(rows or [])
+
+    def last_job(self, agent_id: str, job_type: str) -> Optional[dict]:
+        rows = self._get(
+            f"jobs?agent_id=eq.{agent_id}&type=eq.{job_type}"
+            "&select=id,status,requested_at,payload&order=requested_at.desc&limit=1")
+        return rows[0] if rows else None
+
 
 # ---------------------------------------------------------------------------
 # Processor
@@ -2209,7 +2518,7 @@ class Runner:
                  today: date | None = None, fetch_jd=None, score=None,
                  profile: str | None = None, deep=None, brief_line_fn=None,
                  state_loader=None, read_budget: int = PRIVATE_READ_BUDGET,
-                 model_probe=None):
+                 model_probe=None, drafter=None):
         self.db = db
         # Default collector is live adapters. Tests inject a local collector.
         self.collector = collector
@@ -2225,6 +2534,8 @@ class Runner:
         self.read_budget = read_budget
         # Model-failure classifier (tests inject). Live path: one probe call.
         self.model_probe = model_probe
+        # Brief drafter (tests inject). Live path: draft_with_model.
+        self.drafter = drafter
 
     def run(self, limit: int = MAX_JOBS_PER_RUN) -> list[RunReport]:
         reports = []
@@ -2271,6 +2582,8 @@ class Runner:
             return self._refresh(job, report)
         if kind == "first_edition":
             return self._first_edition(job, report)
+        if kind == "propose_brief":
+            return self._propose_brief(job, report)
         raise HuntError("compile_failed")
 
     def _load_active(self, agent_id: str) -> dict:
@@ -2279,10 +2592,36 @@ class Runner:
             raise HuntError("no_active_brief")
         return brief
 
+    def _with_person(self, agent_id: str, brief: dict, compiled: dict) -> tuple[dict, str]:
+        """Move 2: the stored readiness the app shows must also say whether
+        FOOUND can judge for this person yet. A Brief can be complete while
+        nothing is confirmed in Memory — the hunt would refuse with
+        no_candidate_context, so readiness says so first, as a named reason
+        (`no_candidate_context`), instead of letting a commission fail later.
+        №001's interim profile.md counts as a context until he confirms."""
+        readiness = readiness_of(compiled)
+        try:
+            ja = _import_job_alerts_adapters()
+            agent_no = _lookup_agent_no(self.db, agent_id)
+            ctx = candidate_context(ja, agent_id, agent_no,
+                                    memory_rows=self.db.confirmed_memory(agent_id),
+                                    brief_content=brief.get("content"))
+            has_context = bool(ctx.text)
+        except Exception as e:
+            log.info("candidate context check failed agent=%s class=%s", agent_id, type(e).__name__)
+            has_context = False
+        reasons = list(compiled.get("readiness_reasons") or [])
+        if not has_context and "no_candidate_context" not in reasons:
+            reasons.append("no_candidate_context")
+        compiled = dict(compiled, readiness_reasons=reasons)
+        if not has_context:
+            readiness = "not_ready"
+        return compiled, readiness
+
     def _compile(self, job: dict, report: RunReport) -> RunReport:
         brief = self._load_active(job["agent_id"])
         compiled = compile_from_content(brief.get("content") or {})
-        readiness = readiness_of(compiled)
+        compiled, readiness = self._with_person(job["agent_id"], brief, compiled)
         if readiness not in ("ready", "not_ready"):
             raise HuntError("compile_failed")
         self.db.write_compile(brief["id"], compiled, readiness)
@@ -2301,13 +2640,9 @@ class Runner:
 
     def _refresh(self, job: dict, report: RunReport) -> RunReport:
         brief = self._load_active(job["agent_id"])
-        existing = brief.get("compiled_config")
-        if not existing:
-            compiled = compile_from_content(brief.get("content") or {})
-        else:
-            # Recompute from current Brief.content (authority), not stale config.
-            compiled = compile_from_content(brief.get("content") or {})
-        readiness = readiness_of(compiled)
+        # Recompute from current Brief.content (authority), never stale config.
+        compiled = compile_from_content(brief.get("content") or {})
+        compiled, readiness = self._with_person(job["agent_id"], brief, compiled)
         self.db.write_compile(brief["id"], compiled, readiness)
         self.db.complete(job["id"])
         log.info("refreshed job=%s readiness=%s", job["id"], readiness)
@@ -2315,6 +2650,156 @@ class Runner:
         report.readiness = readiness
         return report
 
+
+    def enqueue_daily(self) -> dict:
+        """The heartbeat's other half (Move 2): every at_work agent with an
+        active, ready Brief and no edition today gets one queued edition job
+        (type first_edition — the daily edition; the handler is a no-op
+        when today's edition already exists). Idempotent: the jobs table
+        allows one queued job per (agent, type). Counts only."""
+        out = {"at_work": 0, "queued": 0, "already_queued": 0, "has_edition": 0,
+               "no_brief": 0, "not_ready": 0}
+        for a in self.db.at_work_agents():
+            out["at_work"] += 1
+            aid = a.get("id")
+            brief = self.db.active_brief(aid)
+            if not brief:
+                out["no_brief"] += 1
+                continue
+            if brief.get("readiness") != "ready":
+                out["not_ready"] += 1
+                continue
+            if self.db.editions_for_day(aid, self.today):
+                out["has_edition"] += 1
+                continue
+            if self.db.enqueue_job(aid, "first_edition", {"brief_version": brief.get("version"), "daily": True}):
+                out["queued"] += 1
+            else:
+                out["already_queued"] += 1
+        log.info("enqueue_daily " + " ".join(f"{k}={v}" for k, v in out.items()))
+        return out
+
+    def sweep_proposals(self, now: datetime | None = None) -> dict:
+        """Move 2: FOOUND proposes on its own. Nobody should have to ask
+        FOOUND to write their Brief. Once something is confirmed and no
+        Brief is in force, one propose_brief job is queued as soon as the
+        Mirror is settled (nothing left awaiting a verdict) — or, when the
+        client left statements unanswered, once they have been quiet for
+        PROPOSAL_QUIET_MINUTES (people confirm what matters and walk away;
+        that must be enough). A pending proposal drafted from an older
+        understanding (its Candidate Context hash no longer matches) is
+        redrafted the same way. An ACTIVE Brief is never touched: learning
+        never rewrites authority. A draft that already failed on this exact
+        understanding is not retried until the client confirms something
+        new. Counts only."""
+        import candidate_context as cc
+        now = now or datetime.now(timezone.utc)
+        out = {"agents": 0, "queued": 0, "has_active": 0, "no_confirmed": 0, "mirror_open": 0,
+               "current": 0, "in_flight": 0, "failed_on_this": 0, "already_queued": 0}
+        for a in self.db.live_agents():
+            out["agents"] += 1
+            aid = a.get("id")
+            force = self.db.briefs_in_force(aid)
+            if any(b.get("state") == "active" for b in force):
+                out["has_active"] += 1
+                continue
+            rows = cc.confirmed_rows(self.db.confirmed_memory(aid))
+            if not rows:
+                out["no_confirmed"] += 1
+                continue
+            newest = max((str(r.get("created_at") or "") for r in rows), default="")
+            if self.db.open_mirror_count(aid) > 0 and not _quiet_since(newest, now):
+                out["mirror_open"] += 1
+                continue
+            h = cc.context_hash(rows, None)
+            proposed = [b for b in force if b.get("state") == "proposed"]
+            if proposed and _proposal_context_hash(proposed[0]) == h:
+                out["current"] += 1
+                continue
+            last = self.db.last_job(aid, "propose_brief")
+            if last and last.get("status") in ("queued", "running"):
+                out["in_flight"] += 1
+                continue
+            if last and last.get("status") == "failed" and str(last.get("requested_at") or "") >= newest:
+                out["failed_on_this"] += 1
+                continue
+            try:
+                queued = self.db.enqueue_job(aid, "propose_brief", {"auto": True, "context_hash": h})
+            except HuntError as e:
+                if e.name != "job_type_unknown":
+                    raise
+                # The door (migration 013) is not in this database yet: say so
+                # once and stand down; the beat is not broken, the door is shut.
+                out["door_closed"] = 1
+                break
+            if queued:
+                out["queued"] += 1
+            else:
+                out["already_queued"] += 1
+        log.info("sweep_proposals " + " ".join(f"{k}={v}" for k, v in out.items()))
+        return out
+
+    def _propose_brief(self, job: dict, report: RunReport) -> RunReport:
+        """Move 2: FOOUND drafts a PROPOSED Working Brief from confirmed
+        Memory for the client to confirm (activate_brief). Inert until then.
+        Console and logs carry counts and enums only."""
+        import brief_proposal as bp
+        agent_id = job["agent_id"]
+        ja = _import_job_alerts_adapters()
+        agent_no = _lookup_agent_no(self.db, agent_id)
+        rows = self.db.confirmed_memory(agent_id)
+        ctx = candidate_context(ja, agent_id, agent_no, memory_rows=rows, brief_content=None)
+        if ctx.kind != "memory" or not rows:
+            raise HuntError("no_candidate_context")   # profile.md is not a source of intent
+        drafter = self.drafter if self.drafter is not None else (lambda prompt: draft_with_model(ja, prompt))
+        valid_ids = [str(r.get("id")) for r in rows]
+        content, feedback, reason, attempts = None, "", "", 0
+        # The client marked subjects of the previous proposal wrong (app payload
+        # {"wrong": [{"chapter": ..., "handle": ...}, ...]}): the redraft is told.
+        payload = job.get("payload") or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = {}
+        wrong = payload.get("wrong") if isinstance(payload, dict) else None
+        if isinstance(wrong, list) and wrong:
+            named = "; ".join(f"{str(w.get('chapter') or '').strip()} / {str(w.get('handle') or '').strip()}"
+                              for w in wrong if isinstance(w, dict))[:400]
+            feedback = f"The client marked these subjects of the previous draft as wrong: {named}. Do not repeat them; write from the confirmed statements only."
+        for attempt in (1, 2):
+            attempts = attempt
+            with _silent_stdio():
+                text = drafter(bp.draft_brief_prompt(ctx.text, rows, feedback=feedback))
+            content, reason = bp.parse_brief_draft(text or "", valid_ids)
+            if content is None:
+                continue
+            ok, feedback = bp.check_proposal(content, compile_from_content, readiness_of)
+            if ok:
+                break
+        if content is None:
+            log.info("propose_brief job=%s outcome=failed reason=%s attempts=%d", job["id"], reason or "no_json", attempts)
+            raise HuntError("proposal_failed")
+        executable, reasons = bp.check_proposal(content, compile_from_content, readiness_of)
+        content = dict(content, provenance=dict(
+            bp.provenance(current_engine_sha(), ctx.hash, getattr(ja, "CLAUDE_MODEL", ""), attempts),
+            executable=executable, compiler_reasons=[] if executable else [reasons]))
+        # The proposal carries its own readiness receipt, so the room can say
+        # "FOOUND cannot hunt from this yet" instead of offering to confirm it.
+        compiled = compile_from_content(content)
+        readiness = readiness_of(compiled)
+        abandoned = self.db.abandon_proposed_briefs(agent_id)
+        version = self.db.next_brief_version(agent_id)
+        self.db.insert_brief({"agent_id": agent_id, "version": version, "state": "proposed", "content": content,
+                              "compiled_config": persistable_compiled(compiled), "readiness": readiness})
+        self.db.complete(job["id"])
+        n_subjects = sum(len(c["subjects"]) for c in content["chapters"])
+        log.info("propose_brief job=%s version=%d chapters=%d subjects=%d executable=%s attempts=%d abandoned=%d",
+                 job["id"], version, len(content["chapters"]), n_subjects, executable, attempts, abandoned)
+        report.action = "proposed"
+        report.detail.update({"version": version, "chapters": len(content["chapters"]),
+                              "subjects": n_subjects, "executable": executable, "attempts": attempts})
+        return report
 
     @staticmethod
     def _compile_for_hunt(brief: dict) -> dict:
@@ -2385,10 +2870,10 @@ class Runner:
         agent_no = _lookup_agent_no(self.db, agent_id)
         # Candidate Context is checked before collection so a client without
         # one costs nothing and reaches no adapter and no model.
-        _base, ctx_profile, _ev = candidate_context(ja, agent_id, agent_no)
-        if self.profile is not None:
-            ctx_profile = self.profile
-        if not ctx_profile:
+        memory_rows = self.db.confirmed_memory(agent_id)
+        ctx = candidate_context(ja, agent_id, agent_no, memory_rows=memory_rows,
+                                brief_content=brief.get("content"))
+        if self.profile is None and not ctx.text:
             raise HuntError("no_candidate_context")
         try:
             collector = self.collector if self.collector is not None else live_collect
@@ -2413,6 +2898,7 @@ class Runner:
             state=state, today=self.today, now=now,
             profile=self.profile, fetch_jd=self.fetch_jd, score=self.score,
             deep=self.deep, brief_line_fn=self.brief_line_fn,
+            memory_rows=memory_rows,
             edition_no=edition_no, sources=sources,
             read_budget=self.read_budget, model_probe=self.model_probe,
         )
@@ -2503,6 +2989,16 @@ def main(argv: list[str] | None = None) -> int:
         except HuntError as e:
             log.info("dry-run failed error=%s", e.name)
             return 1
+        return 0
+    if argv and argv[0] == "--enqueue-daily":
+        base = os.environ["SUPABASE_URL"]
+        key = os.environ["SUPABASE_SERVICE_KEY"]
+        Runner(db=RestDb(base, key)).enqueue_daily()
+        return 0
+    if argv and argv[0] == "--sweep-proposals":
+        base = os.environ["SUPABASE_URL"]
+        key = os.environ["SUPABASE_SERVICE_KEY"]
+        Runner(db=RestDb(base, key)).sweep_proposals()
         return 0
     if argv:
         log.info("unknown args")

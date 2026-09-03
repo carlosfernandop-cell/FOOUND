@@ -34,7 +34,7 @@ import json
 import re
 import uuid
 import contextlib
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import hunt_runner as hr
 
@@ -52,6 +52,17 @@ class MemoryDb(hr.HuntDb):
         self.market_seen_reads = 0
         self.publish_calls = 0
         self.agent_numbers: dict[str, int] = {}
+        self.memory: dict[str, list[dict]] = {}
+        self.agent_state: dict[str, str] = {}
+
+    def add_memory(self, agent_id, statements, *, layer="record", provenance="confirmed",
+                   status="active", source="profile.md"):
+        rows = self.memory.setdefault(agent_id, [])
+        for i, st in enumerate(statements):
+            rows.append({"id": str(uuid.uuid4()), "agent_id": agent_id, "layer": layer,
+                         "statement": st, "provenance": provenance, "status": status,
+                         "source": source, "created_at": f"2026-08-{10 + len(rows):02d}T00:00:00Z"})
+        return rows
 
     def add_brief(self, agent_id, content, compiled_config=None,
                   readiness=None, version=1, state="active"):
@@ -63,11 +74,12 @@ class MemoryDb(hr.HuntDb):
         }
         return bid
 
-    def add_job(self, agent_id, type, status="queued", payload=None):
+    def add_job(self, agent_id, type, status="queued", payload=None, requested_at=None):
         jid = str(uuid.uuid4())
         self.jobs[jid] = {
             "id": jid, "agent_id": agent_id, "type": type,
             "status": status, "payload": payload or {},
+            "requested_at": requested_at or f"2026-09-{1 + len(self.jobs) % 28:02d}T00:00:00Z",
         }
         return jid
 
@@ -129,6 +141,52 @@ class MemoryDb(hr.HuntDb):
             if n == agent_no:
                 return aid
         return None
+
+    def confirmed_memory(self, agent_id):
+        return [dict(r) for r in self.memory.get(agent_id, [])
+                if r.get("status") == "active" and r.get("provenance") == "confirmed"]
+
+    def next_brief_version(self, agent_id):
+        vs = [b["version"] for b in self.briefs.values() if b["agent_id"] == agent_id]
+        return (max(vs) + 1) if vs else 1
+
+    def abandon_proposed_briefs(self, agent_id):
+        n = 0
+        for b in self.briefs.values():
+            if b["agent_id"] == agent_id and b["state"] == "proposed":
+                b["state"] = "abandoned"; n += 1
+        return n
+
+    def insert_brief(self, row):
+        bid = str(uuid.uuid4())
+        self.briefs[bid] = {"id": bid, "compiled_config": None, "readiness": None, **row}
+        return bid
+
+    def at_work_agents(self):
+        return [{"id": aid, "agent_no": n} for aid, n in self.agent_numbers.items()
+                if self.agent_state.get(aid) == "at_work"]
+
+    def enqueue_job(self, agent_id, job_type, payload):
+        if any(j["agent_id"] == agent_id and j["type"] == job_type and j["status"] == "queued" for j in self.jobs.values()):
+            return False
+        self.add_job(agent_id, job_type, payload=payload)
+        return True
+
+    def live_agents(self):
+        return [{"id": aid, "agent_no": n, "state": self.agent_state.get(aid, "mirror_ready")}
+                for aid, n in self.agent_numbers.items() if self.agent_state.get(aid) != "archived"]
+
+    def briefs_in_force(self, agent_id):
+        rows = [dict(b) for b in self.briefs.values() if b["agent_id"] == agent_id and b["state"] in ("proposed", "active")]
+        return sorted(rows, key=lambda b: -b["version"])
+
+    def open_mirror_count(self, agent_id):
+        return len([r for r in self.memory.get(agent_id, [])
+                    if r.get("status") == "active" and r.get("provenance") in ("stated", "extracted", "inferred")])
+
+    def last_job(self, agent_id, job_type):
+        rows = [j for j in self.jobs.values() if j["agent_id"] == agent_id and j["type"] == job_type]
+        return dict(rows[-1]) if rows else None
 
 
 class FakeState:
@@ -434,6 +492,7 @@ def test_refresh_compiles_if_missing():
     db = MemoryDb()
     aid = str(uuid.uuid4())
     db.add_brief(aid, COMPLETE, compiled_config=None, readiness=None)
+    db.add_memory(aid, ["Led brand at Acme."])
     jid = db.add_job(aid, "refresh_readiness")
     reports = hr.Runner(db, collector=lambda _c: []).run()
     check("refresh action", reports[0].action == "refreshed")
@@ -485,6 +544,7 @@ def test_compile_job_writes_ready():
     db = MemoryDb()
     aid = str(uuid.uuid4())
     db.add_brief(aid, COMPLETE)
+    db.add_memory(aid, ["Led brand at Acme."])          # a person FOOUND can judge for
     jid = db.add_job(aid, "compile_brief")
     reports = hr.Runner(db, collector=lambda _c: []).run()
     check("compile action", reports[0].action == "compiled")
@@ -494,6 +554,30 @@ def test_compile_job_writes_ready():
     cfg = brief["compiled_config"]
     check("compile persisted include", bool(cfg["include"]))
     check("compile persisted note", "temporary" in cfg["readiness_architecture"])
+    check("compile: no person reason when memory is confirmed", "no_candidate_context" not in cfg["readiness_reasons"])
+
+
+def test_compile_names_the_missing_person():
+    """Move 2: a complete Brief with nothing confirmed in Memory is not ready —
+    the reason is named so the app can say 'confirm your record' instead of
+    letting a commission fail later with no_candidate_context."""
+    db = MemoryDb()
+    aid = str(uuid.uuid4())
+    db.add_brief(aid, COMPLETE)
+    db.add_memory(aid, ["Led brand at Acme."], provenance="stated")   # a belief, not yet confirmed
+    db.add_job(aid, "compile_brief")
+    reports = hr.Runner(db, collector=lambda _c: []).run()
+    brief = db.active_brief(aid)
+    check("compile: not ready without a person", reports[0].readiness == "not_ready" and brief["readiness"] == "not_ready")
+    check("compile: reason named", "no_candidate_context" in brief["compiled_config"]["readiness_reasons"])
+    check("compile: Brief itself still complete", bool(brief["compiled_config"]["include"]) and bool(brief["compiled_config"]["accepted_locations"]))
+    db2 = MemoryDb()
+    aid2 = str(uuid.uuid4()); db2.agent_numbers[aid2] = 1
+    db2.add_brief(aid2, COMPLETE)
+    db2.add_job(aid2, "refresh_readiness")
+    r2 = hr.Runner(db2, collector=lambda _c: []).run()
+    check("refresh: №001 ready via interim profile.md", r2[0].readiness == "ready"
+          and "no_candidate_context" not in db2.active_brief(aid2)["compiled_config"]["readiness_reasons"])
 
 
 def test_role_key_precedence():
@@ -832,8 +916,10 @@ def test_c_h2_complete_brief_ready():
     check("C engine default excludes", cfg["exclude_type"] == list(hr.ENGINE_DEFAULT_EXCLUDES))
     check("C seat_cap default 11", cfg["seat_cap"] == 11)
     check("C priority empty unless structured", cfg["priority_companies"] == [])
-    check("C search queries engine default",
-          cfg["search_queries"] == list(hr.ENGINE_DEFAULT_SEARCH_QUERIES))
+    check("C search queries: engine defaults first, then the Brief's own seats (Move 2)",
+          cfg["search_queries"][:3] == list(hr.ENGINE_DEFAULT_SEARCH_QUERIES)
+          and all(q.startswith('"') and q.endswith('"') for q in cfg["search_queries"][3:])
+          and len(cfg["search_queries"]) <= hr.MAX_SEARCH_QUERIES)
     check("C reasons empty when ready", cfg["readiness_reasons"] == [])
     check("C _readiness stripped on persist",
           "_readiness" not in hr.persistable_compiled(cfg))
@@ -1301,14 +1387,22 @@ def test_f_001_resolves_to_profile_md():
 
     ja.load_agent_config = watch
     try:
-        base, profile, ev = hr.candidate_context(ja, "some-uuid", 1)
+        ctx = hr.candidate_context(ja, "some-uuid", 1)
     finally:
         ja.load_agent_config = real
-    check("F №001 asked for 001", asked == ["001"], asked)
-    check("F №001 has a profile", bool(profile) and "Candidate Profile" in profile)
-    check("F №001 evidence map carried", len(ev) >= 1)
-    base2, profile2, _ = hr.candidate_context(ja, "other-uuid", 2)
-    check("F №002 has no context", base2 is None and profile2 == "")
+    check("F №001 asked for 001", "001" in asked, asked)
+    check("F №001 interim is profile.md", ctx.kind == "profile.md" and "Candidate Profile" in ctx.text and ctx.hash)
+    check("F №001 evidence map carried", len(ctx.evidence_map) >= 1)
+    ctx2 = hr.candidate_context(ja, "other-uuid", 2)
+    check("F №002 has no context without confirmed memory", ctx2.kind == "" and ctx2.text == "")
+    rows = [{"id": "m1", "layer": "record", "statement": "Led design at Acme.", "provenance": "confirmed",
+             "status": "active", "source": "resume.pdf", "created_at": "2026-08-01"}]
+    ctx3 = hr.candidate_context(ja, "other-uuid", 2, memory_rows=rows, brief_content=STRUCTURED)
+    check("F №002 with confirmed memory has a memory context", ctx3.kind == "memory" and "Led design at Acme." in ctx3.text
+          and ctx3.statements == 1 and ctx3.base is None and ctx3.evidence_map == [])
+    ctx4 = hr.candidate_context(ja, "some-uuid", 1, memory_rows=rows, brief_content=STRUCTURED)
+    check("F №001 with confirmed memory: Memory wins over profile.md", ctx4.kind == "memory" and "Candidate Profile" not in ctx4.text
+          and ctx4.name == "Carlos" and len(ctx4.evidence_map) >= 1)
 
 
 def test_f_non_001_never_touches_profile_md():
@@ -1486,11 +1580,11 @@ def test_r_edition_html_contract():
     db = MemoryDb()
     aid = _ready_agent(db, SPECIMEN_5d260731, agent_no=1)
     db.add_job(aid, "first_edition")
-    deep = lambda job, _p: {"role": "New seat", "moment": "Rebrand", "leadership": "CMO",
+    deep = lambda job, _p, **_kw: {"role": "New seat", "moment": "Rebrand", "leadership": "CMO",
                             "signal": "Hiring", "question": "Scope", "verdict": "Still 82.", "fit_after": 80}
     brief_args = []
 
-    def brief_fn(n, total_fetched, n_companies, ranked, new_keys):
+    def brief_fn(n, total_fetched, n_companies, ranked, new_keys, **_kw):
         brief_args.append((n, total_fetched, n_companies, [j["company"] for j in ranked], set(new_keys)))
         return "Adobe leads clear of the field."
 
@@ -1946,13 +2040,13 @@ def test_i_live_path_runs_deep_look_and_statline():
         calls["score"] += 1
         return (85 if job["company"] == "Acme" else 66, "why " + job["company"], "pause " + job["company"])
 
-    def deep_look(job, profile):
+    def deep_look(job, profile, **_kw):
         calls["deep"] += 1
         check("I deep_look sees the lead", job["company"] == "Acme" and job.get("fit") == 85)
         check("I deep_look sees the candidate context", "Carlos" in (profile or "") or len(profile or "") > 50)
         return dict(DEEP_STUB)
 
-    def write_brief(n, total, n_companies, ranked, new_keys):
+    def write_brief(n, total, n_companies, ranked, new_keys, **_kw):
         calls["brief"] += 1
         check("I write_brief gets the seated list", n == 2 and len(ranked) == 2 and total == 2)
         check("I write_brief gets Shortlist-shaped new keys", all("|" in k for k in new_keys) and len(new_keys) == 2)
@@ -1978,11 +2072,11 @@ def test_i_deep_look_not_triggered_below_threshold():
     raw = [{"title": "Creative Director", "company": "Acme", "location": "Remote", "url": "https://x/1"}]
     calls = {"deep": 0, "brief": 0}
 
-    def deep_look(*_a):
+    def deep_look(*_a, **_kw):
         calls["deep"] += 1
         return dict(DEEP_STUB)
 
-    def write_brief(*_a):
+    def write_brief(*_a, **_kw):
         calls["brief"] += 1
         return ""       # the model may decide nothing is notable
 
@@ -1999,8 +2093,8 @@ def test_i_heuristic_day_marks_both_not_run():
     raw = [{"title": "Creative Director", "company": "Acme", "location": "Remote", "url": "https://x/1"}]
     calls = {"deep": 0, "brief": 0}
     db, out = _live_run(raw, score_fit=lambda *_a: (None, None, None), key="",
-                        deep_look=lambda *_a: calls.__setitem__("deep", 1) or DEEP_STUB,
-                        write_brief=lambda *_a: calls.__setitem__("brief", 1) or "x")
+                        deep_look=lambda *_a, **_kw: calls.__setitem__("deep", 1) or DEEP_STUB,
+                        write_brief=lambda *_a, **_kw: calls.__setitem__("brief", 1) or "x")
     p = db.editions[0]["payload"]
     check("I heuristic: neither called", calls == {"deep": 0, "brief": 0})
     check("I heuristic: not_run / not_run", p["intelligence"] == {"deep": "not_run", "statline": "not_run"}
@@ -2020,11 +2114,11 @@ def test_i_silent_failures_are_named_and_never_leak():
 
     h = H(); h.setFormatter(logging.Formatter("%(message)s")); hr.log.addHandler(h); hr.log.setLevel(logging.INFO)
 
-    def deep_look(*_a):
+    def deep_look(*_a, **_kw):
         print("[deep look skipped: HTTP 400 {\"error\": \"workspace header required RAWBODY\"}]")
         return None
 
-    def write_brief(*_a):
+    def write_brief(*_a, **_kw):
         print("  [Brief API 529] overloaded RAWBODY")
         return None
 
@@ -2068,8 +2162,8 @@ def test_i_injected_scorer_still_stubs_deep_and_brief():
     ja = hr._import_job_alerts_adapters()
     saved = (ja.deep_look, ja.write_brief)
     hit = {"deep": 0, "brief": 0}
-    ja.deep_look = lambda *_a: hit.__setitem__("deep", 1) or DEEP_STUB
-    ja.write_brief = lambda *_a: hit.__setitem__("brief", 1) or "x"
+    ja.deep_look = lambda *_a, **_kw: hit.__setitem__("deep", 1) or DEEP_STUB
+    ja.write_brief = lambda *_a, **_kw: hit.__setitem__("brief", 1) or "x"
     try:
         db = MemoryDb(); aid = _ready_agent(db, STRUCTURED); db.add_job(aid, "first_edition")
         _runner(db, raw, score=_score_by_title({}, default=(90, "w", "p"))).run()
@@ -2200,7 +2294,7 @@ def test_d_deep_look_reaches_the_private_edition_end_to_end():
     ja.requests.post = lambda url, headers=None, json=None, timeout=None: _Resp(blocks)
     try:
         db, out = _live_run(raw, score_fit=lambda *_a: (85, "w", "p"), deep_look=ja.deep_look,
-                            write_brief=lambda *_a: "One line.")
+                            write_brief=lambda *_a, **_kw: "One line.")
     finally:
         ja.requests.post = saved_post
     p = db.editions[0]["payload"]
@@ -2215,6 +2309,389 @@ def test_d_dry_run_accepts_agent_number():
     src = open(hr.__file__, encoding="utf-8").read()
     check("D main resolves a numeric agent read-only", 'agent_id_for_no(int(agent_id))' in src and 'fullmatch(r"\\d{1,4}"' in src)
     check("D RestDb query is a read", 'agents?agent_no=eq.' in src and 'select=id' in src)
+
+
+# ---------------------------------------------------------------------------
+# P — Move 2: Person from Memory (Candidate Context + judge voice)
+# ---------------------------------------------------------------------------
+
+N002_MEMORY = [
+    ("record", "Head of Product Design at Northwind since 2022, leading a team of 14 across Berlin and Lisbon.", "linkedin"),
+    ("record", "Design Director at Klarna (2018–2022): rebuilt the design system and the onboarding flow used by 20M people.", "resume.pdf"),
+    ("self", "I want to run design for a company whose product is still being defined, not polish a finished one.", "conversation"),
+    ("self", "Berlin is home; London and Amsterdam are easy. Not the US for now.", "conversation"),
+]
+
+N002_BRIEF = {"chapters": [
+    {"title": "THE MOVE", "subjects": [{"handle": "Lead", "lines": ["Lead design for a product still being defined."]}]},
+    {"title": "ROLE SPACE", "subjects": [{"handle": "Craft", "lines": ["Head of Design, VP Design, Design Director."]}]},
+    {"title": "WHERE", "subjects": [{"handle": "Geography", "lines": ["Berlin, London, Amsterdam, remote Europe."]}]},
+]}
+
+
+def _n002(db, confirm=True):
+    """A second client: confirmed memory (or not), an active Brief, no profile.md."""
+    aid = str(uuid.uuid4())
+    compiled = hr.compile_from_content(N002_BRIEF)
+    assert hr.readiness_of(compiled) == "ready", compiled.get("readiness_reasons")
+    db.add_brief(aid, N002_BRIEF, compiled_config=hr.persistable_compiled(compiled), readiness="ready", version=2)
+    db.agent_numbers[aid] = 2
+    for layer, st, src in N002_MEMORY:
+        db.add_memory(aid, [st], layer=layer, source=src,
+                      provenance="confirmed" if confirm else "stated")
+    return aid
+
+
+def test_p_compiler_reads_seats_outside_001_vocabulary():
+    """Move 2: the ROLE gate must work for a designer, a marketer, a C-level —
+    not only for creative-director seats. Bare ranks never become families."""
+    fam = hr._extract_role_families
+    check("P vp design is one family, never bare vp", fam("VP Design") == ["vp design"] and fam("VP of Design") == ["vp design"])
+    check("P chief officers", fam("Chief Design Officer") == ["chief design officer"] and fam("Chief Brand Officer") == ["chief brand officer"])
+    check("P bare ranks refused", fam("VP") == [] and fam("Director") == [] and fam("Head") == [])
+    check("P creative abbreviations still whole titles", fam("Group CD, ECD, Head of Creative") == ["group cd", "ecd", "head of creative"])
+    check("P generic variants for an unknown seat", hr.expand_role_family("vp design") == ["vp design", "vp of design", "vp, design"]
+          and hr.expand_role_family("head of product design") == ["head of product design", "head, product design"])
+    check("P hand rows untouched for №001's seats", hr.expand_role_family("creative director") == list(hr.ROLE_SYNONYMS["creative director"]))
+    c = hr.compile_from_content(N002_BRIEF)
+    check("P №002 Brief compiles ready with real families", hr.readiness_of(c) == "ready"
+          and c["families"] == ["head of design", "vp design", "design director"] and "vp" not in c["include"])
+    check("P №002 market is fetched for their seats, not only filtered",
+          '"head of design"' in c["search_queries"] and '"vp design"' in c["search_queries"] and '"design director"' in c["search_queries"])
+    ja = hr._import_job_alerts_adapters()
+    agent = hr.agent_config_from_brief(ja, c, agent_id="x", agent_no=2)
+    check("P VP Sales is not eligible under a design Brief", not ja.passes_title(agent, "VP Sales, EMEA")
+          and not ja.passes_title(agent, "SVP Engineering") and ja.passes_title(agent, "VP, Design") and ja.passes_title(agent, "Director of Design, Growth"))
+
+
+def test_p_compiler_is_verbatim_deterministic_and_confirmed_only():
+    import candidate_context as cc
+    rows = []
+    for i, (layer, st, src) in enumerate(N002_MEMORY):
+        rows.append({"id": f"m{i}", "layer": layer, "statement": st, "source": src,
+                     "provenance": "confirmed", "status": "active", "created_at": f"2026-08-0{i+1}"})
+    rows += [
+        {"id": "x1", "layer": "record", "statement": "UNCONFIRMED CLAIM", "source": "s", "provenance": "stated", "status": "active", "created_at": "2026-08-09"},
+        {"id": "x2", "layer": "model", "statement": "INFERRED CLAIM", "source": "s", "provenance": "inferred", "status": "active", "created_at": "2026-08-09"},
+        {"id": "x3", "layer": "record", "statement": "RETRACTED CLAIM", "source": "s", "provenance": "confirmed", "status": "retracted", "created_at": "2026-08-09"},
+        {"id": "x4", "layer": "record", "statement": "SUPERSEDED CLAIM", "source": "s", "provenance": "stated", "status": "superseded", "created_at": "2026-08-09"},
+        {"id": "x5", "layer": "self", "statement": "TENSION CLAIM", "source": "s", "provenance": "confirmed", "status": "tension", "created_at": "2026-08-09"},
+    ]
+    out = cc.compile_candidate_context(name="Ada", rows=rows, brief_content=N002_BRIEF)
+    t = out["text"]
+    check("P confirmed statements verbatim", all(st in t for _l, st, _s in N002_MEMORY))
+    check("P nothing unconfirmed enters", not any(k in t for k in ("UNCONFIRMED", "INFERRED", "RETRACTED", "SUPERSEDED", "TENSION")))
+    check("P counts", out["statements"] == 4 and out["layers"]["record"] == 2 and out["layers"]["self"] == 2)
+    check("P sources listed", out["sources"] == ["conversation", "linkedin", "resume.pdf"])
+    check("P layer order record then self", t.index("## Record") < t.index("## In their own words"))
+    check("P brief rendered as authorization", "## What they are looking for" in t and "ROLE SPACE: Head of Design, VP Design, Design Director." in t
+          and "never to admit a role the Brief did not authorize" in t)
+    check("P name in heading", t.startswith("# Candidate Context — Ada"))
+    import random
+    shuffled = list(rows); random.Random(7).shuffle(shuffled)
+    out2 = cc.compile_candidate_context(name="Ada", rows=shuffled, brief_content=N002_BRIEF)
+    check("P deterministic", out2["text"] == t and out2["hash"] == out["hash"] and len(out["hash"]) == 64)
+    rows[0] = dict(rows[0], statement=rows[0]["statement"] + " Also Paris.")
+    check("P hash tracks statements", cc.compile_candidate_context(name="Ada", rows=rows, brief_content=N002_BRIEF)["hash"] != out["hash"])
+    check("P hash tracks Brief", cc.compile_candidate_context(name="Ada", rows=shuffled, brief_content=STRUCTURED)["hash"] != out["hash"])
+    empty = cc.compile_candidate_context(name="Ada", rows=[r for r in rows if r["provenance"] != "confirmed"], brief_content=N002_BRIEF)
+    check("P no confirmed rows → no context", empty["text"] == "" and empty["hash"] == "" and empty["statements"] == 0)
+    check("P no Brief → no authorization section, still a context", "## What they are looking for" not in
+          cc.compile_candidate_context(name="Ada", rows=shuffled, brief_content=None)["text"])
+
+
+def test_p_second_client_is_judged_from_memory_without_profile_md():
+    """№002 end to end on the live path: confirmed Memory → context → the
+    original judge (neutral voice) → private edition, with no profile.md."""
+    raw = [{"title": "Head of Design", "company": "Fabric", "location": "Berlin", "url": "https://fabric/1"},
+           {"title": "Design Director, Growth", "company": "Orbit", "location": "London", "url": "https://orbit/1"},
+           {"title": "Creative Director", "company": "Suno", "location": "NYC", "url": "https://suno/1"}]
+    ja = hr._import_job_alerts_adapters()
+    seen = {"profiles": [], "prompts": [], "deep": 0, "brief": 0, "opened_profile_md": 0}
+    real_open = ja.load_profile
+
+    def load_profile_spy(agent):
+        seen["opened_profile_md"] += 1
+        return real_open(agent)
+
+    def score_fit(agent, profile, job, jd):
+        seen["profiles"].append(profile)
+        seen["prompts"].append(ja.JudgeVoice(agent).one + "|" + ja.JudgeVoice(agent).obj)
+        return (86 if job["company"] == "Fabric" else 71, "why " + job["company"], "pause")
+
+    def deep_look(job, profile, agent=None, **_kw):
+        seen["deep"] += 1
+        check("P deep look reads the memory context", "Northwind" in profile and "Candidate Profile" not in profile)
+        check("P deep look voice is the client's", ja.JudgeVoice(agent).one == "one client")
+        return dict(DEEP_STUB)
+
+    def write_brief(n, total, nc, ranked, new_keys, agent=None, as_of=None, **_kw):
+        seen["brief"] += 1
+        check("P statline voice and clock", ja.JudgeVoice(agent).one == "one client" and as_of and "UTC" in as_of)
+        return "Fabric leads clear of the field."
+
+    saved = {k: getattr(ja, k) for k in ("score_fit", "deep_look", "write_brief", "ANTHROPIC_KEY", "load_profile")}
+    ja.score_fit, ja.deep_look, ja.write_brief, ja.ANTHROPIC_KEY, ja.load_profile = score_fit, deep_look, write_brief, "k", load_profile_spy
+    db = MemoryDb()
+    aid = _n002(db)
+    jid = db.add_job(aid, "first_edition")
+    out = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(out):
+            hr.Runner(db, collector=lambda _c: raw, today=FROZEN_TODAY, fetch_jd=lambda _u: "",
+                      score=None, profile=None, state_loader=lambda _a, _n: None).run()
+    finally:
+        for k, v in saved.items():
+            setattr(ja, k, v)
+    check("P job done", db.jobs[jid]["status"] == "done" and db.jobs[jid].get("error") in (None, ""), db.jobs[jid])
+    p = db.editions[0]["payload"]
+    check("P eligibility is the Brief's: Suno NYC out, Berlin/London in", sorted(s["company"] for s in p["seats"]) == ["Fabric", "Orbit"]
+          and p["counts"]["eligible"] == 2)
+    check("P judged against the memory context, never profile.md", len(seen["profiles"]) == 2
+          and all("Northwind" in pr and "Klarna" in pr and "Candidate Profile" not in pr for pr in seen["profiles"])
+          and seen["opened_profile_md"] == 0)
+    check("P Brief rendered inside the context", all("ROLE SPACE: Head of Design" in pr for pr in seen["profiles"]))
+    check("P neutral voice", all(pp == "one client|them" for pp in seen["prompts"]), seen["prompts"])
+    check("P deep look and statline ran for №002", seen["deep"] == 1 and seen["brief"] == 1
+          and p["intelligence"] == {"deep": "ok", "statline": "ok"})
+    cc = p["candidate_context"]
+    check("P receipt: memory, 4 statements, hash, no text", cc["kind"] == "memory" and cc["statements"] == 4
+          and len(cc["hash"]) == 64 and cc["sources"] == ["conversation", "linkedin", "resume.pdf"]
+          and "Northwind" not in json.dumps(cc))
+    h = db.editions[0]["html"]
+    check("P greeting without a name is plain", re.search(r'class="brief">Good (morning|afternoon|evening)\.</p>', h) is not None)
+    check("P edition rendered", "I kept looking" in h and "Fabric leads clear of the field." in h and "Northwind" not in h)
+
+
+def test_p_second_client_without_confirmed_memory_is_refused_before_any_call():
+    raw = [{"title": "Head of Design", "company": "Fabric", "location": "Berlin", "url": "https://fabric/1"}]
+    calls = {"collector": 0, "score": 0}
+
+    def collector(_c):
+        calls["collector"] += 1
+        return raw
+
+    db = MemoryDb()
+    aid = _n002(db, confirm=False)      # beliefs exist, none confirmed
+    jid = db.add_job(aid, "first_edition")
+    hr.Runner(db, collector=collector, today=FROZEN_TODAY, fetch_jd=lambda _u: "",
+              score=lambda *_a: calls.__setitem__("score", 1) or (80, "w", "p"), profile=None,
+              state_loader=lambda _a, _n: None).run()
+    check("P unconfirmed beliefs are not a context", db.jobs[jid]["error"] == "no_candidate_context")
+    check("P refused before collection and judgment", calls == {"collector": 0, "score": 0} and db.editions == [])
+
+
+def test_p_001_prompts_are_byte_identical_to_the_originals():
+    """The three prompts for №001 must not move: his persona, pronouns and
+    judgment lenses are the original literals, now as config."""
+    ja = hr._import_job_alerts_adapters()
+    agent = ja.load_agent_config("001")
+    v = ja.JudgeVoice(agent)
+    check("P 001 persona", v.one == "one senior creative director" and (v.subj, v.obj, v.poss) == ("he", "him", "his"))
+    check("P 001 lenses verbatim", v.lenses == "the companies he has built for, brands he entered before their identity was fixed, cities he calls home, teams he built from zero")
+    check("P 001 rubric verbatim", v.rubric == "seniority match, craft match, brand-led scope, AI-era relevance")
+    check("P public call sites pass no agent (original wording)", ja.JudgeVoice(None).one == "one senior creative director"
+          and ja.JudgeVoice(None).a_persona == "a senior creative director")
+    captured = []
+    saved = (ja.requests.post, ja.ANTHROPIC_KEY)
+    ja.requests.post = lambda url, headers=None, json=None, timeout=None: (captured.append(json["messages"][0]["content"]), _Resp([{"type": "text", "text": "{}"}]))[1]
+    ja.ANTHROPIC_KEY = "k"
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            ja.score_fit(agent, "PROFILE", {"title": "Creative Director", "company": "Apple", "location": "Culver City", "url": "u"}, "JD")
+            ja.deep_look({"title": "Creative Director", "company": "Apple", "location": "Culver City", "url": "u", "fit": 85, "ai_why": "w", "ai_pause": "p"}, "PROFILE")
+            ja.write_brief(1, 100, 41, [{"title": "Creative Director", "company": "Apple", "location": "Culver City", "fit": 85}], set())
+    finally:
+        ja.requests.post, ja.ANTHROPIC_KEY = saved
+    check("P 001 score prompt literal", "You are the personal career agent of one senior creative director." in captured[0]
+          and "judging ONE role for HIM specifically" in captured[0]
+          and "NOTE: He has flagged Apple as a priority target — he asked his agent to watch this company closely." in captured[0]
+          and "seniority match, craft match, brand-led scope, AI-era relevance for THIS candidate" in captured[0]
+          and "spoken to him as you/your (never his name, never he/his)" in captured[0]
+          and "name what he should verify first" in captured[0])
+    deep_p = [c for c in captured if c.startswith("You are FOOUND")]
+    brief_p = [c for c in captured if "THE SHORTLIST" in c]
+    check("P 001 deep prompt literal", deep_p and "You are FOOUND, the personal career agent of one senior creative director." in deep_p[0]
+          and "CANDIDATE PROFILE (judge against HIM):" in deep_p[0])
+    check("P 001 statline prompt literal", brief_p and "your one client, a senior creative director. The page already" in brief_p[0]
+          and "8:00 AM ET" in brief_p[0])
+    neutral = ja.JudgeVoice(hr.agent_config_from_brief(ja, hr.compile_from_content(N002_BRIEF), agent_id="x", agent_no=2))
+    check("P a neutral client never sees he/him/his or a discipline", not re.search(r"\b(he|him|his)\b", neutral.one + "|" + neutral.lenses)
+          and "creative director" not in neutral.one)
+
+
+# ---------------------------------------------------------------------------
+# Q — Move 2: FOOUND drafts a proposed Working Brief from confirmed Memory
+# ---------------------------------------------------------------------------
+
+def _draft_json(ids, role_line="Head of Design, VP Design, Design Director.", where_line="Berlin, London, Amsterdam, remote Europe."):
+    return json.dumps({"chapters": [
+        {"title": "THE MOVE", "subjects": [
+            {"handle": "Lead", "lines": ["Lead design for a product still being defined."], "grounds": [ids[2]]},
+            {"handle": "Build", "lines": ["Build the team and the system, not inherit a finished one."], "grounds": [ids[0], ids[1]]}]},
+        {"title": "ROLE SPACE", "subjects": [{"handle": "Craft", "lines": [role_line], "grounds": [ids[0]]}]},
+        {"title": "WHERE", "subjects": [{"handle": "Geography", "lines": [where_line], "grounds": [ids[3]]}]},
+        {"title": "AVOID", "subjects": [{"handle": "Not this", "lines": ["Not the US for now."], "grounds": [ids[3]]},
+                                        {"handle": "Invented", "lines": ["No agencies."], "grounds": ["not-a-real-id"]}]},
+    ]})
+
+
+def test_q_parse_is_strict_and_grounded():
+    import brief_proposal as bp
+    ids = ["m0", "m1", "m2", "m3"]
+    content, reason = bp.parse_brief_draft("Here is the brief:\n" + _draft_json(ids) + "\nHope this helps.", ids)
+    check("Q parsed", content is not None and reason == "")
+    titles = [c["title"] for c in content["chapters"]]
+    check("Q chapter order fixed", titles == ["THE MOVE", "ROLE SPACE", "WHERE", "AVOID"])
+    avoid = [c for c in content["chapters"] if c["title"] == "AVOID"][0]
+    check("Q ungrounded subject dropped", [s["handle"] for s in avoid["subjects"]] == ["Not this"])
+    check("Q grounds kept only when real", content["chapters"][0]["subjects"][1]["grounds"] == ["m0", "m1"])
+    bad, reason = bp.parse_brief_draft("no json here", ids)
+    check("Q no json named", bad is None and reason == "no_json")
+    partial = json.dumps({"chapters": [{"title": "THE MOVE", "subjects": [{"handle": "Lead", "lines": ["x"], "grounds": ["m0"]}]}]})
+    bad, reason = bp.parse_brief_draft(partial, ids)
+    check("Q missing chapters named", bad is None and reason == "missing_chapters:ROLE SPACE,WHERE")
+    ok, why = bp.check_proposal(content, hr.compile_from_content, hr.readiness_of)
+    check("Q executable draft passes the compiler", ok and why == "")
+    prose, _ = bp.parse_brief_draft(_draft_json(ids, role_line="Something senior in design leadership.", where_line="Somewhere in Europe with a good design scene."), ids)
+    ok2, why2 = bp.check_proposal(prose, hr.compile_from_content, hr.readiness_of)
+    check("Q prose ROLE SPACE is caught by the compiler", not ok2 and "ROLE family" in why2)
+
+
+def test_q_propose_brief_job_end_to_end():
+    db = MemoryDb()
+    aid = str(uuid.uuid4()); db.agent_numbers[aid] = 2
+    rows = []
+    for layer, st, src in N002_MEMORY:
+        rows += db.add_memory(aid, [st], layer=layer, source=src)[-1:]
+    ids = [r["id"] for r in rows]
+    prompts = []
+
+    def drafter(prompt):
+        prompts.append(prompt)
+        # first draft is prose (not huntable); the second, after feedback, is plain titles
+        if len(prompts) == 1:
+            return _draft_json(ids, role_line="A senior design leadership seat.", where_line="Somewhere in Europe.")
+        return _draft_json(ids)
+
+    jid = db.add_job(aid, "propose_brief")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        reports = hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY, drafter=drafter).run()
+    check("Q job done", db.jobs[jid]["status"] == "done" and reports[0].action == "proposed", db.jobs[jid])
+    check("Q two attempts, feedback carried the compiler's reading", len(prompts) == 2
+          and "COULD NOT BE HUNTED" in prompts[1] and "ROLE family" in prompts[1])
+    check("Q prompt grounded in confirmed statements with ids", all(f"[{i}]" in prompts[0] for i in ids)
+          and "Northwind" in prompts[0] and "Candidate Context" in prompts[0])
+    briefs = [b for b in db.briefs.values() if b["agent_id"] == aid]
+    check("Q one proposed brief, version 1, not active", len(briefs) == 1 and briefs[0]["state"] == "proposed" and briefs[0]["version"] == 1)
+    content = briefs[0]["content"]
+    check("Q content in the Brief grammar", [c["title"] for c in content["chapters"]] == ["THE MOVE", "ROLE SPACE", "WHERE", "AVOID"])
+    prov = content["provenance"]
+    check("Q provenance receipt", prov["proposed_by"] == "engine" and prov["executable"] is True and prov["attempts"] == 2
+          and len(prov["candidate_context_hash"]) == 64 and prov["compiler_reasons"] == [])
+    compiled = hr.compile_from_content(content)
+    check("Q the proposal compiles ready", hr.readiness_of(compiled) == "ready" and compiled["families"] == ["head of design", "vp design", "design director"])
+    check("Q nothing is authority yet: no active brief, agent untouched", db.active_brief(aid) is None and db.editions == [])
+    check("Q console carries no statement text", "Northwind" not in out.getvalue() and "Berlin" not in out.getvalue())
+    # a second proposal abandons the first
+    db.add_job(aid, "propose_brief")
+    hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY, drafter=lambda p: _draft_json(ids)).run()
+    states = sorted((b["version"], b["state"]) for b in db.briefs.values() if b["agent_id"] == aid)
+    check("Q re-proposal abandons the old, versions advance", states == [(1, "abandoned"), (2, "proposed")], states)
+
+
+def test_q_propose_brief_refuses_without_confirmed_memory_and_never_uses_profile_md():
+    db = MemoryDb()
+    aid = str(uuid.uuid4()); db.agent_numbers[aid] = 1          # even №001: intent needs confirmed Memory
+    jid = db.add_job(aid, "propose_brief")
+    called = []
+    hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY, drafter=lambda p: called.append(1) or "").run()
+    check("Q no confirmed memory → no proposal, no model call", db.jobs[jid]["error"] == "no_candidate_context" and called == []
+          and not [b for b in db.briefs.values() if b["agent_id"] == aid])
+    db2 = MemoryDb()
+    aid2 = str(uuid.uuid4()); db2.agent_numbers[aid2] = 2
+    db2.add_memory(aid2, ["Led design at Acme."])
+    jid2 = db2.add_job(aid2, "propose_brief")
+    hr.Runner(db2, collector=lambda _c: [], today=FROZEN_TODAY, drafter=lambda p: "sorry, no").run()
+    check("Q unusable drafts fail honestly", db2.jobs[jid2]["error"] == "proposal_failed"
+          and not [b for b in db2.briefs.values() if b["agent_id"] == aid2])
+
+
+def test_q_redraft_hears_the_clients_objection():
+    db = MemoryDb()
+    aid = str(uuid.uuid4()); db.agent_numbers[aid] = 2
+    rows = []
+    for layer, st, src in N002_MEMORY:
+        rows += db.add_memory(aid, [st], layer=layer, source=src)[-1:]
+    ids = [r["id"] for r in rows]
+    prompts = []
+    db.add_job(aid, "propose_brief", payload={"wrong": [{"chapter": "THE MOVE", "handle": "Build"}]})
+    hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY, drafter=lambda p: prompts.append(p) or _draft_json(ids)).run()
+    check("Q objection reaches the drafter", len(prompts) == 1 and "marked these subjects of the previous draft as wrong: THE MOVE / Build" in prompts[0])
+
+
+def test_q_daily_enqueue_is_idempotent_and_gated():
+    db = MemoryDb()
+    a1 = _n002(db); db.agent_state[a1] = "at_work"                       # ready, no edition → queued
+    a2 = _n002(db); db.agent_state[a2] = "at_work"                       # ready, edition today → skipped
+    db.editions.append({"agent_id": a2, "edition_date": FROZEN_TODAY.isoformat(), "payload": {}, "html": "", "outcome": "seats"})
+    a3 = _n002(db); db.agent_state[a3] = "paused"                        # not at_work → ignored
+    a4 = str(uuid.uuid4()); db.agent_numbers[a4] = 9; db.agent_state[a4] = "at_work"   # no brief
+    a5 = str(uuid.uuid4()); db.agent_numbers[a5] = 10; db.agent_state[a5] = "at_work"
+    db.add_brief(a5, N002_BRIEF, readiness="not_ready")                  # not ready
+    r = hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY)
+    out = r.enqueue_daily()
+    check("Q daily counts", out == {"at_work": 4, "queued": 1, "already_queued": 0, "has_edition": 1, "no_brief": 1, "not_ready": 1}, out)
+    q = [j for j in db.jobs.values() if j["agent_id"] == a1 and j["type"] == "first_edition"]
+    check("Q one queued edition job with the brief version", len(q) == 1 and q[0]["payload"] == {"brief_version": 2, "daily": True})
+    out2 = r.enqueue_daily()
+    check("Q second beat queues nothing new", out2["queued"] == 0 and out2["already_queued"] == 1
+          and len([j for j in db.jobs.values() if j["type"] == "first_edition"]) == 1)
+
+
+def test_q_full_chain_for_a_second_client():
+    """№002, end to end through the engine: confirmed Memory → FOOUND drafts
+    the Brief → the client confirms (the 013 door, simulated on the memory
+    db) → compile names readiness → the daily beat queues an edition → the
+    original judge produces a private edition from the Memory context."""
+    db = MemoryDb()
+    aid = str(uuid.uuid4()); db.agent_numbers[aid] = 2; db.agent_state[aid] = "at_work"
+    rows = []
+    for layer, st, src in N002_MEMORY:
+        rows += db.add_memory(aid, [st], layer=layer, source=src)[-1:]
+    ids = [r["id"] for r in rows]
+    # 1. draft
+    db.add_job(aid, "propose_brief")
+    hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY, drafter=lambda p: _draft_json(ids)).run()
+    proposed = [b for b in db.briefs.values() if b["agent_id"] == aid and b["state"] == "proposed"]
+    check("Q chain: proposal exists, nothing active", len(proposed) == 1 and db.active_brief(aid) is None)
+    # 2. the client confirms (activate_brief): proposed → active + compile job (as migration 013 does)
+    proposed[0]["state"] = "active"; proposed[0]["confirmed_at"] = "2026-09-02T12:00:00Z"
+    db.add_job(aid, "compile_brief", payload={"brief_version": 1})
+    hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY).run()
+    active = db.active_brief(aid)
+    check("Q chain: compiled ready with the person present", active["readiness"] == "ready"
+          and "no_candidate_context" not in active["compiled_config"]["readiness_reasons"])
+    # 3. the daily beat queues the edition; the hunt judges from Memory
+    raw = [{"title": "Head of Design", "company": "Fabric", "location": "Berlin", "url": "https://fabric/1"},
+           {"title": "VP, Design", "company": "Orbit", "location": "Amsterdam", "url": "https://orbit/1"},
+           {"title": "VP Sales", "company": "Orbit", "location": "Amsterdam", "url": "https://orbit/2"},
+           {"title": "Creative Director", "company": "Suno", "location": "NYC", "url": "https://suno/1"}]
+    r = hr.Runner(db, collector=lambda _c: raw, today=FROZEN_TODAY, fetch_jd=lambda _u: "",
+                  score=_score_by_title({"Head of Design": (84, "why", "pause")}, default=(66, "w", "p")),
+                  profile=None, state_loader=lambda _a, _n: None,
+                  deep=lambda *_a, **_k: dict(DEEP_STUB), brief_line_fn=lambda *_a, **_k: "Fabric leads clear of the field.")
+    beat = r.enqueue_daily()
+    check("Q chain: beat queued one edition", beat["queued"] == 1)
+    r.run()
+    check("Q chain: edition written", len(db.editions) == 1 and db.editions[0]["agent_id"] == aid)
+    p = db.editions[0]["payload"]
+    check("Q chain: Brief authority, not Carlos's", sorted(s["company"] for s in p["seats"]) == ["Fabric", "Orbit"]
+          and p["counts"]["eligible"] == 2 and p["candidate_context"]["kind"] == "memory")
+    check("Q chain: the original intelligence, in the edition", p["intelligence"] == {"deep": "ok", "statline": "ok"}
+          and "I kept looking" in db.editions[0]["html"])
+    check("Q chain: second beat is a no-op", r.enqueue_daily()["has_edition"] == 1)
 
 
 def test_h9_boundaries():
@@ -2240,6 +2717,129 @@ def test_h9_boundaries():
     check("H9 no memory reads", db.memory_reads == 0)
     check("H9 no market_seen reads", db.market_seen_reads == 0)
     check("H9 no publish", db.publish_calls == 0)
+
+
+def test_q_sweep_proposes_without_being_asked():
+    """Move 2: nobody asks FOOUND for a Brief. A settled Mirror with no Brief
+    in force gets one propose_brief job; an active Brief is never touched; an
+    open Mirror waits unless the client has been quiet; a proposal drafted
+    from the current understanding is left alone; a stale one is redrafted;
+    a draft that failed on this understanding is not retried."""
+    import candidate_context as cc
+    now = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+    db = MemoryDb()
+
+    def person(no, *, confirm_all=True, state="mirror_ready"):
+        aid = str(uuid.uuid4()); db.agent_numbers[aid] = no; db.agent_state[aid] = state
+        rows = []
+        for layer, st, src in N002_MEMORY:
+            rows += db.add_memory(aid, [st], layer=layer, source=src)[-1:]
+        if not confirm_all:
+            db.add_memory(aid, ["Spent a year in Tokyo."], layer="record", source="resume.pdf", provenance="extracted")
+        return aid, rows
+
+    settled, _ = person(2)                                             # → queued
+    active, _ = person(3); db.add_brief(active, N002_BRIEF, readiness="ready")   # → has_active
+    nothing = str(uuid.uuid4()); db.agent_numbers[nothing] = 4; db.agent_state[nothing] = "feed_submitted"   # → no_confirmed
+    open_recent, rows_open = person(5, confirm_all=False)              # open Mirror, confirmed 5 min ago → waits
+    for r in db.memory[open_recent]:
+        r["created_at"] = "2026-09-03T11:55:00Z"
+    open_quiet, _ = person(6, confirm_all=False)                       # open Mirror, quiet 30 min → queued
+    for r in db.memory[open_quiet]:
+        r["created_at"] = "2026-09-03T11:30:00Z"
+    current, rows_cur = person(7)                                      # proposal from this understanding → current
+    h_cur = cc.context_hash(cc.confirmed_rows(db.confirmed_memory(current)), None)
+    db.add_brief(current, dict(N002_BRIEF, provenance={"candidate_context_hash": h_cur}), state="proposed", readiness="ready")
+    stale, _ = person(8)                                               # proposal from an older understanding → queued (redraft)
+    db.add_brief(stale, dict(N002_BRIEF, provenance={"candidate_context_hash": "old"}), state="proposed", readiness="ready")
+    failed, _ = person(9)                                              # failed after the newest confirmation → not retried
+    db.add_job(failed, "propose_brief", status="failed", requested_at="2026-09-03T11:00:00Z")
+    archived, _ = person(10, state="archived")                         # never seen
+    running, _ = person(11); db.add_job(running, "propose_brief", status="running")   # in flight
+
+    r = hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY)
+    out = r.sweep_proposals(now=now)
+    check("Q sweep counts", out == {"agents": 9, "queued": 3, "has_active": 1, "no_confirmed": 1, "mirror_open": 1,
+                                    "current": 1, "in_flight": 1, "failed_on_this": 1, "already_queued": 0}, out)
+    queued_for = sorted(db.agent_numbers[j["agent_id"]] for j in db.jobs.values()
+                        if j["type"] == "propose_brief" and j["status"] == "queued")
+    check("Q sweep queued for the settled, the quiet, and the stale", queued_for == [2, 6, 8], queued_for)
+    j = next(j for j in db.jobs.values() if j["agent_id"] == settled)
+    check("Q sweep payload names the understanding it drafts from",
+          j["payload"].get("auto") is True and len(j["payload"].get("context_hash", "")) == 64)
+    out2 = r.sweep_proposals(now=now)
+    check("Q second beat proposes nothing new", out2["queued"] == 0 and out2["in_flight"] == 4, out2)
+    # the failed one is retried once the client confirms something new
+    db.add_memory(failed, ["Open to Copenhagen."], layer="self", source="conversation")
+    db.memory[failed][-1]["created_at"] = "2026-09-03T11:59:00Z"
+    out3 = r.sweep_proposals(now=now + timedelta(minutes=30))
+    check("Q new confirmation reopens a failed draft; the recent one is now quiet", out3["queued"] == 2
+          and any(j["agent_id"] == failed and j["status"] == "queued" for j in db.jobs.values())
+          and any(j["agent_id"] == open_recent and j["status"] == "queued" for j in db.jobs.values()), out3)
+
+
+def test_q_proposal_carries_its_own_readiness():
+    """A proposal FOOUND cannot hunt from is stored with readiness not_ready
+    and the compiler's reasons, so the room can say so instead of offering
+    to confirm it; a huntable one is stored ready."""
+    db = MemoryDb()
+    aid = str(uuid.uuid4()); db.agent_numbers[aid] = 2
+    ids = [r["id"] for layer, st, src in N002_MEMORY for r in db.add_memory(aid, [st], layer=layer, source=src)[-1:]]
+    db.add_job(aid, "propose_brief")
+    hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY, drafter=lambda p: _draft_json(ids)).run()
+    ok = next(b for b in db.briefs.values() if b["agent_id"] == aid and b["state"] == "proposed")
+    blocking = [r for r in ok["compiled_config"]["readiness_reasons"] if not r.startswith("unmapped_location_phrase:")]
+    check("Q huntable proposal stored ready", ok["readiness"] == "ready" and blocking == [],
+          (ok["readiness"], ok["compiled_config"]["readiness_reasons"]))
+    no_where = json.dumps({"chapters": [
+        {"title": "THE MOVE", "subjects": [{"handle": "Lead", "lines": ["Lead design."], "grounds": [ids[2]]}]},
+        {"title": "ROLE SPACE", "subjects": [{"handle": "Craft", "lines": ["Head of Design."], "grounds": [ids[0]]}]},
+        {"title": "WHERE", "subjects": [{"handle": "Still learning", "lines": ["Where you want to work."], "grounds": []}]},
+    ]})
+    db.add_job(aid, "propose_brief")
+    hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY, drafter=lambda p: no_where).run()
+    gap = next(b for b in db.briefs.values() if b["agent_id"] == aid and b["state"] == "proposed")
+    check("Q unhuntable proposal stored not_ready with the reason",
+          gap["readiness"] == "not_ready" and "no_accepted_locations" in gap["compiled_config"]["readiness_reasons"]
+          and gap["content"]["provenance"]["executable"] is False and ok["id"] != gap["id"]
+          and db.briefs[ok["id"]]["state"] == "abandoned", (gap["readiness"], gap["compiled_config"].get("readiness_reasons")))
+
+
+def test_q_sweep_stands_down_when_the_door_is_not_in_the_database():
+    """Before migration 013 is applied, jobs.type does not know propose_brief.
+    The production adapter names that (job_type_unknown) and the sweep stands
+    down with door_closed=1 instead of failing the heartbeat every beat."""
+    class Resp:
+        def __init__(self, code, text=""):
+            self.status_code, self.text, self.content = code, text, text.encode()
+        def raise_for_status(self):
+            if self.status_code >= 400:
+                import requests
+                raise requests.HTTPError(response=self)
+        def json(self):
+            return json.loads(self.text) if self.text else []
+    class FakeRequests:
+        def post(self, url, headers=None, data=None, timeout=None):
+            return Resp(400, '{"code":"23514","message":"new row for relation \"jobs\" violates check constraint \"jobs_type_check\""}')
+    rest = hr.RestDb("https://example.supabase.co", "k")
+    rest._requests = FakeRequests()
+    try:
+        rest.enqueue_job("a", "propose_brief", {})
+        check("Q closed door named", False, "no error raised")
+    except hr.HuntError as e:
+        check("Q closed door named", e.name == "job_type_unknown", e.name)
+
+    class ClosedDb(MemoryDb):
+        def enqueue_job(self, agent_id, job_type, payload):
+            raise hr.HuntError("job_type_unknown")
+    db = ClosedDb()
+    for no in (2, 3):
+        aid = str(uuid.uuid4()); db.agent_numbers[aid] = no; db.agent_state[aid] = "mirror_ready"
+        for layer, st, src in N002_MEMORY:
+            db.add_memory(aid, [st], layer=layer, source=src)
+    out = hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY).sweep_proposals()
+    check("Q sweep stands down once, queues nothing", out.get("door_closed") == 1 and out["queued"] == 0
+          and not any(j["type"] == "propose_brief" for j in db.jobs.values()), out)
 
 
 def main():
