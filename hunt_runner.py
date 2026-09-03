@@ -2266,6 +2266,12 @@ class HuntDb:
     def insert_edition(self, row: dict) -> None:
         raise NotImplementedError
 
+    def replace_edition(self, edition_id: str, row: dict) -> None:
+        """The day's edition, rewritten from a Brief that came into force
+        after it was made. One edition per day is a schema fact; the newer
+        Brief's hunt is the day's record."""
+        raise NotImplementedError
+
     def edition_by_id(self, edition_id: str) -> Optional[dict]:
         raise NotImplementedError
 
@@ -2428,7 +2434,7 @@ class RestDb(HuntDb):
     def editions_for_day(self, agent_id: str, day: date) -> list[dict]:
         return self._get(
             f"editions?agent_id=eq.{agent_id}&edition_date=eq.{day.isoformat()}"
-            "&select=id,agent_id,edition_date,payload,html,outcome"
+            "&select=id,agent_id,edition_date,brief_version,payload,html,outcome"
         )
 
     def prior_edition_payloads(self, agent_id: str) -> list[dict]:
@@ -2440,6 +2446,10 @@ class RestDb(HuntDb):
 
     def insert_edition(self, row: dict) -> None:
         self._post("editions", row)
+
+    def replace_edition(self, edition_id: str, row: dict) -> None:
+        body = {k: v for k, v in row.items() if k not in ("agent_id", "edition_date")}
+        self._patch(f"editions?id=eq.{edition_id}", body)
 
     def edition_by_id(self, edition_id: str) -> Optional[dict]:
         cols = "id,agent_id,edition_date,brief_version,html,payload,outcome"
@@ -2700,6 +2710,14 @@ class Runner:
             raise HuntError("compile_failed")
         self.db.write_compile(brief["id"], compiled, readiness)
         self.db.complete(job["id"])
+        # A Brief that comes into force while FOOUND is already at work earns
+        # its own edition: "FOOUND is at work from it" must be true today, not
+        # tomorrow. One queued job per (agent, type); the daily beat would
+        # otherwise skip a day that already has an edition from the old Brief.
+        if readiness == "ready" and self._is_at_work(job["agent_id"]):
+            if self.db.enqueue_job(job["agent_id"], "first_edition",
+                                   {"brief_version": brief.get("version"), "reason": "brief_in_force"}):
+                report.detail["edition_queued"] = True
         log.info(
             "compiled job=%s readiness=%s subjects=%d include=%d locations=%d reasons=%d",
             job["id"], readiness, len(compiled.get("subjects_used") or []),
@@ -2711,6 +2729,13 @@ class Runner:
         report.readiness = readiness
         report.detail["reasons"] = len(compiled.get("readiness_reasons") or [])
         return report
+
+    def _is_at_work(self, agent_id: str) -> bool:
+        try:
+            return any(str(a.get("id")) == str(agent_id) for a in self.db.at_work_agents())
+        except Exception as e:
+            log.info("at_work read failed agent=%s class=%s", agent_id, type(e).__name__)
+            return False
 
     def _refresh(self, job: dict, report: RunReport) -> RunReport:
         brief = self._load_active(job["agent_id"])
@@ -2971,7 +2996,14 @@ class Runner:
 
     def _first_edition(self, job: dict, report: RunReport) -> RunReport:
         existing = self.db.editions_for_day(job["agent_id"], self.today)
-        if existing:
+        brief = self._load_active(job["agent_id"])
+        # One edition per day. A day that already has an edition from this
+        # Brief is done; an edition from an older Brief is rewritten, because
+        # the Brief now in force is the authority and the day's record must
+        # come from it.
+        stale = [e for e in existing
+                 if brief.get("version") is not None and e.get("brief_version") != brief.get("version")]
+        if existing and not stale:
             self.db.complete(job["id"])
             log.info("first_edition noop job=%s existing=%d", job["id"], len(existing))
             report.action = "noop"
@@ -2979,7 +3011,6 @@ class Runner:
             report.detail["reason"] = "same_day_edition_exists"
             return report
 
-        brief = self._load_active(job["agent_id"])
         compiled = self._compile_for_hunt(brief)
         result = self._hunt(job["agent_id"], brief, compiled, job_id=job["id"])
         version = brief.get("version")
@@ -2992,22 +3023,27 @@ class Runner:
         if version is None and isinstance(job_payload, dict):
             version = job_payload.get("brief_version")
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        row = {
+            "agent_id": job["agent_id"],
+            "edition_date": self.today.isoformat(),
+            "brief_version": version,
+            "html": result["html"],
+            "payload": result["payload"],
+            "outcome": result["outcome"],
+            "delivered_at": now,
+        }
+        replaced_version = stale[0].get("brief_version") if stale else None
         try:
-            self.db.insert_edition({
-                "agent_id": job["agent_id"],
-                "edition_date": self.today.isoformat(),
-                "brief_version": version,
-                "html": result["html"],
-                "payload": result["payload"],
-                "outcome": result["outcome"],
-                "delivered_at": now,
-            })
+            if stale:
+                self.db.replace_edition(stale[0]["id"], row)
+            else:
+                self.db.insert_edition(row)
         except Exception as e:
             log.info("edition persist error job=%s class=%s", job["id"], type(e).__name__)
             raise HuntError("edition_persist_failed")
         self.db.complete(job["id"])
-        log.info("first_edition job=%s outcome=%s seats=%d", job["id"],
-                 result["outcome"], len(result["seats"]))
+        log.info("first_edition job=%s outcome=%s seats=%d replaced=%s", job["id"],
+                 result["outcome"], len(result["seats"]), bool(stale))
         print(operator_line(result.get("agent_no"), result["counts"],
                             result["engine"], result["outcome"],
                             engine_reason=result.get("engine_reason", ""),
@@ -3016,6 +3052,8 @@ class Runner:
         report.action = "edition"
         report.seats = len(result["seats"])
         report.detail["outcome"] = result["outcome"]
+        if stale:
+            report.detail["replaced_brief_version"] = replaced_version
         report.detail["counts"] = dict(result["counts"])
         return report
 
