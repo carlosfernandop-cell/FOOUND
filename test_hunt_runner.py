@@ -917,10 +917,10 @@ def test_c_h2_complete_brief_ready():
     check("C engine default excludes", cfg["exclude_type"] == list(hr.ENGINE_DEFAULT_EXCLUDES))
     check("C seat_cap default 11", cfg["seat_cap"] == 11)
     check("C priority empty unless structured", cfg["priority_companies"] == [])
-    check("C search queries: engine defaults first, then the Brief's own seats (Move 2)",
-          cfg["search_queries"][:3] == list(hr.ENGINE_DEFAULT_SEARCH_QUERIES)
-          and all(q.startswith('"') and q.endswith('"') for q in cfg["search_queries"][3:])
-          and len(cfg["search_queries"]) <= hr.MAX_SEARCH_QUERIES)
+    check("C search queries: the Brief's craft nouns bare, then its seats quoted (Move 3)",
+          cfg["search_queries"] == ["creative", "brand", '"creative director"',
+                                    '"head of creative"', '"head of brand"']
+          and len(cfg["search_queries"]) <= hr.MAX_SEARCH_QUERIES, cfg["search_queries"])
     check("C reasons empty when ready", cfg["readiness_reasons"] == [])
     check("C _readiness stripped on persist",
           "_readiness" not in hr.persistable_compiled(cfg))
@@ -1626,10 +1626,15 @@ def test_r_edition_html_contract():
     p = ed["payload"]
     check("R payload deep kept", p["deep"]["verdict"] == "Still 82.")
     check("R payload brief_line", p["brief_line"] == "Adobe leads clear of the field.")
-    check("R payload counts", p["counts"] == {"market_fetched": 3, "eligible": 3, "excluded": 0,
-                                               "second_look": 0, "legacy_hits": 0, "read": 3,
-                                               "unread": 0, "seated": 2, "refused": 1,
-                                               "model_reads_attempted": 3, "model_reads_failed": 0}, p["counts"])
+    check("R payload counts", {k: v for k, v in p["counts"].items() if k != "sources"} == {
+        "market_fetched": 3, "eligible": 3, "excluded": 0,
+        "second_look": 0, "legacy_hits": 0, "read": 3,
+        "unread": 0, "seated": 2, "refused": 1,
+        "model_reads_attempted": 3, "model_reads_failed": 0}, p["counts"])
+    check("R payload sources (Move 3): the universe is recorded with the edition",
+          p["counts"].get("sources") == p["sources"]["selected"] > 0
+          and p["sources"]["founding"] == p["sources"]["founding_total"]
+          and "regions" in p["sources"], p.get("sources"))
     check("R fit_after not applied (deferred)", p["seats"][0]["fit"] == 82)
 
 
