@@ -2914,11 +2914,13 @@ class Runner:
             if last and last.get("status") in ("queued", "running"):
                 out["in_flight"] += 1
                 continue
-            if last and last.get("status") == "failed" and str(last.get("requested_at") or "") >= newest:
+            if self._stood_down(last, newest):
                 out["failed_on_this"] += 1
                 continue
             try:
-                queued = self.db.enqueue_job(aid, "propose_brief", {"auto": True, "context_hash": h})
+                queued = self.db.enqueue_job(
+                    aid, "propose_brief",
+                    {"auto": True, "context_hash": h, "engine": current_engine_sha()})
             except HuntError as e:
                 if e.name != "job_type_unknown":
                     raise
@@ -3038,6 +3040,34 @@ class Runner:
                               "trusted": len(page["trusted_with"]), "attempts": attempts})
         return report
 
+    @staticmethod
+    def _stood_down(last: dict | None, newest: str) -> bool:
+        """Whether an automatic attempt that already failed should stay down.
+
+        FOOUND stands down after a failure so it does not burn the same
+        answer twice. It stands up again when something changed that could
+        change the answer: the person confirmed something new, or the engine
+        that failed is no longer the engine running. Without the second
+        clause a shipped fix never reaches the person the bug failed — live
+        on 2026-09-03, No.002's Candidate draft failed on a token budget,
+        the budget was fixed within hours, and nothing retried it.
+        """
+        if not last or last.get("status") != "failed":
+            return False
+        if str(last.get("requested_at") or "") < newest:
+            return False                      # newer confirmed memory: try again
+        payload = last.get("payload") or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (TypeError, ValueError):
+                payload = {}
+        was = str((payload or {}).get("engine") or "")
+        now_sha = current_engine_sha()
+        if was != now_sha and now_sha != "unknown":
+            return False                      # a different engine now: try again
+        return True
+
     def sweep_candidates(self, now: datetime | None = None) -> dict:
         """Move 4: once a person has confirmed their record and the Mirror is
         settled (or quiet), FOOUND drafts their Candidate page, once. Never
@@ -3065,11 +3095,12 @@ class Runner:
             if last and last.get("status") in ("queued", "running"):
                 out["in_flight"] += 1
                 continue
-            if last and last.get("status") == "failed" and str(last.get("requested_at") or "") >= newest:
+            if self._stood_down(last, newest):
                 out["failed_on_this"] += 1
                 continue
             try:
-                queued = self.db.enqueue_job(aid, "draft_candidate", {"auto": True})
+                queued = self.db.enqueue_job(
+                    aid, "draft_candidate", {"auto": True, "engine": current_engine_sha()})
             except HuntError as e:
                 if e.name != "job_type_unknown":
                     raise

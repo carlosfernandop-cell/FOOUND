@@ -28,6 +28,7 @@ H10 commission recovery predicate (mirrors 011)
 
 from __future__ import annotations
 
+import os
 import inspect
 import io
 import json
@@ -3012,6 +3013,46 @@ def test_v_sweep_drafts_the_candidate_once():
     check("V one job, for the settled person", len(queued) == 1 and queued[0]["agent_id"] == settled)
     again = hr.Runner(db, collector=lambda _c: []).sweep_candidates(now=now)
     check("V second beat queues nothing new", again["queued"] == 0 and again["in_flight"] == 1, again)
+
+
+def test_v2_a_failure_stands_up_when_the_engine_changes():
+    """Live on 2026-09-03: No.002's Candidate draft failed on a token budget;
+    the budget was fixed hours later and nothing retried, because she had
+    confirmed nothing new. A failure stands down against the engine that
+    made it, not forever."""
+    now = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
+
+    def failed_person(engine):
+        db = MemoryDb()
+        aid = str(uuid.uuid4()); db.agent_numbers[aid] = 2; db.agent_state[aid] = "at_work"
+        for layer, st, src in N002_MEMORY:
+            db.add_memory(aid, [st], layer=layer, source=src)
+        db.add_job(aid, "draft_candidate", status="failed", requested_at="2026-09-03T17:07:00Z",
+                   payload=({"auto": True, "engine": engine} if engine else {"auto": True}))
+        return db, aid
+
+    os.environ["ENGINE_SHA"] = "bbbb222"
+    try:
+        db, _ = failed_person("bbbb222")
+        same = hr.Runner(db, collector=lambda _c: []).sweep_candidates(now=now)
+        check("V2 the same engine stands down", same["queued"] == 0 and same["failed_on_this"] == 1, same)
+
+        db, _ = failed_person("aaaa111")
+        moved = hr.Runner(db, collector=lambda _c: []).sweep_candidates(now=now)
+        check("V2 a newer engine tries again", moved["queued"] == 1 and moved["failed_on_this"] == 0, moved)
+        job = [j for j in db.jobs.values() if j["status"] == "queued"][0]
+        check("V2 the new attempt records its engine", job["payload"].get("engine") == "bbbb222", job["payload"])
+
+        db, _ = failed_person(None)
+        older = hr.Runner(db, collector=lambda _c: []).sweep_candidates(now=now)
+        check("V2 an attempt from before the rule tries once", older["queued"] == 1, older)
+    finally:
+        os.environ.pop("ENGINE_SHA", None)
+
+    # with no engine known at all, the old behaviour stands: one attempt, then down
+    db, _ = failed_person("aaaa111")
+    unknown = hr.Runner(db, collector=lambda _c: []).sweep_candidates(now=now)
+    check("V2 an unknown engine never loops", unknown["queued"] == 0 and unknown["failed_on_this"] == 1, unknown)
 
 
 def test_w_a_brief_in_force_earns_its_edition_today():
