@@ -1,12 +1,37 @@
-# FOOUND — heartbeat (Move 2). The engine runs on its own clock so a client
-# never needs Carlos to press a button.
+# FOOUND heartbeat — the engine's beat.
 #
-# Every run: (1) synthesis — reads what clients fed; (2) proposal sweep —
-# a client whose Mirror is settled and who has no Brief in force gets one
-# propose_brief job (FOOUND proposes; nobody has to ask); (3) daily
-# enqueue — one edition job per at_work agent whose Brief is ready and who
-# has no edition today (idempotent; the handler no-ops on a same-day
-# edition); (4) hunt — processes queued jobs: compile_brief,
+# One run does, in order: (1) synthesis of what clients fed; (2) the sweeps
+# (FOOUND proposes Briefs and drafts Candidate pages; nobody has to ask);
+# (3) daily editions, when switched on; (4) the queued hunts. Nothing here
+# executes an intent the client's confirmed record (or the daily clock) did
+# not call for.
+#
+# THE CLOCK. GitHub's schedule is best-effort (observed: every 2–4.5 h). So
+# every run ends by handing the beat to its successor: a `clock` job sleeps
+# to the next quarter hour, then dispatches this workflow again with the
+# repository's own GITHUB_TOKEN (workflow_dispatch is one of the two events
+# that token may raise). No credential, no person. If several runs overlap
+# (a schedule tick, a manual run, a database wake), only the oldest sleeping
+# clock dispatches; the chain converges to one. The schedule stays as the
+# restart of last resort. Migration 014 adds immediacy on top: a queued job
+# wakes the engine within seconds, once a dispatch token is in Vault.
+#
+# The daily enqueue is OFF until FOOUND_DAILY_EDITIONS is set to "1" in the
+# repository variables (Settings → Secrets and variables → Actions → Variables).
+
+name: heartbeat
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"     # best-effort restart of the chain
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Why the engine is being woken (job:<type> | memory:confirmed | clock | manual)"
+        required: false
+        default: "manual"
+
+jobs: compile_brief,
 # refresh_readiness, propose_brief, first_edition. Nothing runs that a
 # client's confirmed intent (or the daily clock) did not call for.
 #
@@ -30,14 +55,16 @@ on:
         required: false
         default: "manual"
 
-concurrency:
-  group: hunt-runner            # never alongside hunt-runner / dry-run
-  cancel-in-progress: false
-
 jobs:
   beat:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    # The group serialises the work, never the waiting: the clock job below
+    # sleeps outside it, so a database wake or a manual run is never queued
+    # behind a sleeping runner.
+    concurrency:
+      group: hunt-runner            # never alongside hunt-runner / dry-run
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -71,3 +98,38 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           FOOUND_STATE_DIR: /tmp/foound-state
         run: python hunt_runner.py
+
+  clock:
+    # The next beat. Sleeps to the next quarter hour, then dispatches this
+    # workflow again. Runs after the beat whatever the beat's outcome, so a
+    # failed hunt never stops the clock. Only the oldest sleeping clock among
+    # concurrent runs dispatches, so overlapping runs converge to one chain.
+    needs: beat
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: write
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Sleep to the next quarter hour
+        run: |
+          now=$(date +%s)
+          next=$(( (now / 900 + 1) * 900 ))
+          wait=$(( next - now ))
+          echo "next beat in ${wait}s"
+          sleep "$wait"
+      - name: Hand the beat on (oldest clock only)
+        run: |
+          me=${{ github.run_id }}
+          oldest=$(gh run list --repo "${{ github.repository }}" --workflow heartbeat.yml \
+                    --status in_progress --json databaseId --jq '.[].databaseId' \
+                    | sort -n | head -1)
+          if [ -n "$oldest" ] && [ "$oldest" -lt "$me" ]; then
+            echo "an older beat ($oldest) holds the clock; standing down"
+            exit 0
+          fi
+          gh workflow run heartbeat.yml --repo "${{ github.repository }}" -f reason=clock
+          echo "next beat dispatched"
