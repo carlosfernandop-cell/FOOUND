@@ -31,29 +31,8 @@ on:
         required: false
         default: "manual"
 
-jobs: compile_brief,
-# refresh_readiness, propose_brief, first_edition. Nothing runs that a
-# client's confirmed intent (or the daily clock) did not call for.
-#
-# The daily enqueue is OFF until FOOUND_DAILY_EDITIONS is set to "1" in the
-# repository's Actions variables — turning it on is the product decision
-# "editions arrive every day". Everything else here only executes intents
-# already expressed through the app.
-#
 # PUBLIC REPO: logs are public. Both runners print ids, counts and enums
 # only — never statement text, seat titles, URLs, prompts or model output.
-
-name: heartbeat
-
-on:
-  schedule:
-    - cron: "*/15 * * * *"     # GitHub's clock: best-effort (observed: once in 7 h). Migration 014 is the real one.
-  workflow_dispatch:
-    inputs:
-      reason:
-        description: "Why the engine is being woken (job:<type> | memory:confirmed | clock | manual)"
-        required: false
-        default: "manual"
 
 jobs:
   beat:
