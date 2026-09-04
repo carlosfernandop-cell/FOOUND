@@ -226,6 +226,9 @@ class FakeState:
 FROZEN_NOW = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
 FIXTURE_PROFILE = "Fixture Candidate Context. Twenty years in brand. Bar: build the function."
 FROZEN_TODAY = date(2026, 9, 2)
+# 09:00 Berlin on FROZEN_TODAY: past EDITION_HOUR_LOCAL, so tests of the daily
+# sweep describe the sweep and never the wall clock. The hour has its own test.
+AFTER_EDITION_HOUR = datetime(2026, 9, 2, 7, 0, tzinfo=timezone.utc)
 
 
 def check(name, cond, detail=""):
@@ -1655,7 +1658,7 @@ def test_r_edition_html_contract():
         "market_fetched": 3, "eligible": 3, "excluded": 0,
         "second_look": 0, "legacy_hits": 0, "read": 3,
         "unread": 0, "seated": 2, "refused": 1,
-        "model_reads_attempted": 3, "model_reads_failed": 0}, p["counts"])
+        "model_reads_attempted": 3, "model_reads_failed": 0, "model_reads_remembered": 0}, p["counts"])
     check("R payload sources (Move 3): the universe is recorded with the edition",
           p["counts"].get("sources") == p["sources"]["selected"] > 0
           and p["sources"]["founding"] == p["sources"]["founding_total"]
@@ -2672,13 +2675,30 @@ def test_q_daily_enqueue_is_idempotent_and_gated():
     a5 = str(uuid.uuid4()); db.agent_numbers[a5] = 10; db.agent_state[a5] = "at_work"
     db.add_brief(a5, N002_BRIEF, readiness="not_ready")                  # not ready
     r = hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY)
-    out = r.enqueue_daily()
-    check("Q daily counts", out == {"at_work": 4, "queued": 1, "already_queued": 0, "has_edition": 1, "no_brief": 1, "not_ready": 1}, out)
+    out = r.enqueue_daily(now=AFTER_EDITION_HOUR)
+    check("Q daily counts", out == {"at_work": 4, "queued": 1, "already_queued": 0, "has_edition": 1, "no_brief": 1, "not_ready": 1, "before_hour": 0}, out)
     q = [j for j in db.jobs.values() if j["agent_id"] == a1 and j["type"] == "first_edition"]
     check("Q one queued edition job with the brief version", len(q) == 1 and q[0]["payload"] == {"brief_version": 2, "daily": True})
-    out2 = r.enqueue_daily()
+    out2 = r.enqueue_daily(now=AFTER_EDITION_HOUR)
     check("Q second beat queues nothing new", out2["queued"] == 0 and out2["already_queued"] == 1
           and len([j for j in db.jobs.values() if j["type"] == "first_edition"]) == 1)
+
+
+def test_q_daily_waits_for_the_persons_morning():
+    """The day's edition is made before the person's morning, not at
+    midnight UTC: a beat at 02:30 Berlin queues nothing and says so; the
+    first beat after 05:00 Berlin queues it. Summer and winter clocks."""
+    from datetime import datetime, timezone
+    db = MemoryDb()
+    a1 = _n002(db); db.agent_state[a1] = "at_work"
+    r = hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY)
+    early = r.enqueue_daily(now=datetime(2026, 9, 2, 0, 30, tzinfo=timezone.utc))   # 02:30 CEST
+    check("Q before the hour: nothing queued, named", early["before_hour"] == 1 and early["queued"] == 0
+          and not [j for j in db.jobs.values() if j["type"] == "first_edition"])
+    late = r.enqueue_daily(now=datetime(2026, 9, 2, 3, 10, tzinfo=timezone.utc))    # 05:10 CEST
+    check("Q after the hour: queued", late["queued"] == 1 and late["before_hour"] == 0)
+    check("Q winter clock", not hr.edition_hour_reached(datetime(2026, 12, 2, 3, 30, tzinfo=timezone.utc))
+          and hr.edition_hour_reached(datetime(2026, 12, 2, 4, 5, tzinfo=timezone.utc)))
 
 
 def test_q_full_chain_for_a_second_client():
@@ -2719,7 +2739,7 @@ def test_q_full_chain_for_a_second_client():
                   if j["agent_id"] == aid and j["type"] == "first_edition" and j["status"] == "queued"]
     check("Q chain: the Brief in force queued its own edition",
           len(from_brief) == 1 and (from_brief[0].get("payload") or {}).get("reason") == "brief_in_force")
-    beat = r.enqueue_daily()
+    beat = r.enqueue_daily(now=AFTER_EDITION_HOUR)
     check("Q chain: beat finds that edition queued, adds none", beat["queued"] == 0 and beat["already_queued"] == 1)
     r.run()
     check("Q chain: edition written", len(db.editions) == 1 and db.editions[0]["agent_id"] == aid)
@@ -2728,7 +2748,7 @@ def test_q_full_chain_for_a_second_client():
           and p["counts"]["eligible"] == 2 and p["candidate_context"]["kind"] == "memory")
     check("Q chain: the original intelligence, in the edition", p["intelligence"] == {"deep": "ok", "statline": "ok"}
           and "I kept looking" in db.editions[0]["html"])
-    check("Q chain: second beat is a no-op", r.enqueue_daily()["has_edition"] == 1)
+    check("Q chain: second beat is a no-op", r.enqueue_daily(now=AFTER_EDITION_HOUR)["has_edition"] == 1)
 
 
 def test_h9_boundaries():
@@ -3031,6 +3051,69 @@ def test_w_a_brief_in_force_earns_its_edition_today():
     hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY).run()
     check("W not at work: no edition queued",
           not [j for j in db.jobs.values() if j["agent_id"] == b and j["type"] == "first_edition"])
+
+
+def test_x_a_judgment_is_remembered_across_days():
+    """Daily editions must not re-judge the same posting every morning. A
+    posting judged within 14 days keeps its fit, why and pause with no model
+    call; a second look the person asked for re-reads it; an old judgment
+    is re-read; the payload carries judged_on so tomorrow can remember."""
+    from datetime import timedelta
+    db = MemoryDb()
+    aid = _n002(db); db.agent_state[aid] = "at_work"
+    raw = [{"title": "Head of Design", "company": "Fabric", "location": "Berlin", "url": "https://fabric/1"},
+           {"title": "Design Director", "company": "Orbit", "location": "Amsterdam", "url": "https://orbit/1"}]
+    calls = []
+    def score(table):
+        base = _score_by_title(table, default=(66, "w", "p"))
+        def f(a, p, job, jd):
+            calls.append(job["title"])
+            return base(a, p, job, jd)
+        return f
+    day1 = FROZEN_TODAY
+    r1 = hr.Runner(db, collector=lambda _c: raw, today=day1, fetch_jd=lambda _u: "",
+                   score=score({"Head of Design": (84, "why1", "pause1"), "Design Director": (40, "w1", "no1")}),
+                   profile=None, state_loader=lambda _a, _n: None,
+                   deep=lambda *_a, **_k: dict(DEEP_STUB), brief_line_fn=lambda *_a, **_k: "x")
+    db.add_job(aid, "first_edition", payload={"brief_version": 2, "daily": True})
+    r1.run()
+    e1 = [e for e in db.editions if e["agent_id"] == aid][0]
+    check("X day 1: two model reads, judged_on stamped",
+          calls == ["Head of Design", "Design Director"] and e1["payload"]["judged_on"] == day1.isoformat()
+          and e1["payload"]["seats"][0]["judged_on"] == day1.isoformat()
+          and e1["payload"]["refused"][0]["judged_on"] == day1.isoformat())
+    # day 2: the judge would now say something else; FOOUND remembers instead
+    calls.clear()
+    day2 = day1 + timedelta(days=1)
+    r2 = hr.Runner(db, collector=lambda _c: raw, today=day2, fetch_jd=lambda _u: "",
+                   score=score({"Head of Design": (55, "why2", "pause2"), "Design Director": (90, "w2", "no2")}),
+                   profile=None, state_loader=lambda _a, _n: None,
+                   deep=lambda *_a, **_k: dict(DEEP_STUB), brief_line_fn=lambda *_a, **_k: "x")
+    db.add_job(aid, "first_edition", payload={"brief_version": 2, "daily": True})
+    r2.run()
+    e2 = [e for e in db.editions if e["agent_id"] == aid and e["edition_date"] == day2.isoformat()][0]
+    seat = e2["payload"]["seats"][0]
+    check("X day 2: no model reads; the seat keeps its judgment",
+          calls == [] and seat["company"] == "Fabric" and seat["fit"] == 84 and seat["ai_why"] == "why1"
+          and seat["judged_on"] == day1.isoformat()
+          and e2["payload"]["counts"]["model_reads_remembered"] == 2
+          and e2["payload"]["counts"]["model_reads_attempted"] == 0)
+    # day 16: old enough to re-read
+    calls.clear()
+    day16 = day1 + timedelta(days=16)
+    r3 = hr.Runner(db, collector=lambda _c: raw, today=day16, fetch_jd=lambda _u: "",
+                   score=score({"Head of Design": (70, "why3", "pause3"), "Design Director": (41, "w3", "no3")}),
+                   profile=None, state_loader=lambda _a, _n: None,
+                   deep=lambda *_a, **_k: dict(DEEP_STUB), brief_line_fn=lambda *_a, **_k: "x")
+    db.add_job(aid, "first_edition", payload={"brief_version": 2, "daily": True})
+    r3.run()
+    e3 = [e for e in db.editions if e["agent_id"] == aid and e["edition_date"] == day16.isoformat()][0]
+    check("X day 16: re-read, re-stamped", len(calls) == 2 and e3["payload"]["seats"][0]["fit"] == 70
+          and e3["payload"]["seats"][0]["judged_on"] == day16.isoformat())
+    # a different Brief in force: yesterday's judgments do not carry
+    rem = hr.remembered_judgments([e3["payload"]], day16, compile_hash="not-that-brief")
+    same = hr.remembered_judgments([e3["payload"]], day16, compile_hash=e3["payload"]["compiled_config_hash"])
+    check("X a new Brief re-judges; the same Brief remembers", rem == {} and len(same) == 2)
 
 
 def main():
