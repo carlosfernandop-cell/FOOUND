@@ -60,7 +60,7 @@ def draft_candidate_prompt(context_text: str, rows: list[dict]) -> str:
         "- now: their current seat and company, as a short phrase, if a statement gives it. based: the city, if a statement gives it. "
         "since: the year their career began, if statements give it.\n"
         "- chapters: the career as houses, newest first, at most six. Each: company (the name only), years (like \"{2022–}\" or \"{2018–22}\"), "
-        "at_rest (the title and one short clause, under 120 characters), narrative (two to four sentences: what they were trusted with and what happened), "
+        "at_rest (the title and one short clause, under 120 characters), narrative (two or three sentences, under 70 words: what they were trusted with and what happened), "
         "meta (city and years, like \"Berlin · 2022–present\"), grounds.\n"
         "- trusted_with: at most three. Each: word (a short phrase of two to four words, like \"The first hire\"), line (one sentence of evidence), grounds. "
         "Specific to this person; never generic skills.\n"
@@ -113,6 +113,14 @@ def parse_candidate_draft(text: str, valid_ids) -> tuple[dict | None, str]:
     quotes and names are never taken from the model."""
     obj = _balanced_json_object(text or "")
     if obj is None:
+        # Name the failure so a beat log can tell an empty reply (key, model,
+        # network) from a reply that began JSON and never closed it (cut off
+        # at the token budget) from prose with no object at all.
+        t = (text or "").strip()
+        if not t:
+            return None, "empty_reply"
+        if "{" in t and t.count("{") > t.count("}"):
+            return None, "unbalanced_json"
         return None, "no_json"
     valid = {str(v) for v in (valid_ids or [])}
     line = _clean(obj.get("line"), MAX_LINE_CHARS)

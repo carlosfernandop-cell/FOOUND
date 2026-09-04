@@ -60,6 +60,24 @@ log = logging.getLogger("hunt_runner")
 DEFAULT_SEAT_CAP = 11
 MAX_SEAT_CAP = 20
 HUNT_JOB_TYPES = ("compile_brief", "refresh_readiness", "first_edition", "propose_brief", "draft_candidate")
+CANDIDATE_DRAFT_MAX_TOKENS = 7000
+
+# The daily edition is made before the person's morning. FOOUND's founding
+# clients are European; one default until a person's own city sets it.
+EDITION_HOUR_LOCAL = 5
+EDITION_TIMEZONE = "Europe/Berlin"
+
+
+def edition_hour_reached(now: datetime) -> bool:
+    """True once the local clock in EDITION_TIMEZONE has passed EDITION_HOUR_LOCAL
+    today; the daily enqueue waits for it so the edition is made in the small
+    hours, not at midnight UTC with half the day's postings still to come."""
+    try:
+        from zoneinfo import ZoneInfo
+        local = now.astimezone(ZoneInfo(EDITION_TIMEZONE))
+    except Exception:
+        local = now
+    return local.hour >= EDITION_HOUR_LOCAL
 MAX_JOBS_PER_RUN = 10
 
 # Move 1 read budget for the private hunt. Fixed for Stage 1 by contract:
@@ -1133,6 +1151,53 @@ def _fallback_role_key(title: str, company: str, location: str) -> str:
 # Personal market memory — prior private editions.payload only.
 # ---------------------------------------------------------------------------
 
+REMEMBER_JUDGMENT_DAYS = 14
+
+
+def remembered_judgments(prior_payloads: list[dict], today: date,
+                         max_age_days: int = REMEMBER_JUDGMENT_DAYS,
+                         compile_hash: str = "") -> dict[str, dict]:
+    """role_key → the judgment FOOUND already made of this posting (fit, why,
+    pause, judged_on), newest first, no older than max_age_days. A daily
+    edition must not re-judge the same posting every morning: the judge's
+    variance would make seats flicker, and the cost is paid for nothing.
+    FOOUND changes its mind for a reason — the person asked for a second
+    look, or the judgment is old enough to re-read — never by accident."""
+    out: dict[str, dict] = {}
+    for payload in prior_payloads:
+        if not isinstance(payload, dict):
+            continue
+        # A judgment was made under a Brief. A different Brief in force is a
+        # reason to change one's mind: only editions compiled from the same
+        # Brief are remembered.
+        if compile_hash and payload.get("compiled_config_hash") not in (None, "", compile_hash):
+            continue
+        day = payload.get("judged_on") if isinstance(payload.get("judged_on"), str) else ""
+        for kind, why_k, pause_k in (("seats", "ai_why", "ai_pause"), ("refused", "why", "pause")):
+            items = payload.get(kind)
+            if not isinstance(items, list):
+                continue
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                key = it.get("role_key")
+                fit = coerce_fit(it.get("fit"))
+                jd = it.get("judged_on") if isinstance(it.get("judged_on"), str) and it.get("judged_on") else day
+                if not isinstance(key, str) or not key or fit is None or not jd:
+                    continue
+                try:
+                    age = (today - date.fromisoformat(jd[:10])).days
+                except ValueError:
+                    continue
+                if age < 0 or age > max_age_days:
+                    continue
+                prev = out.get(key)
+                if prev is None or jd >= prev["judged_on"]:
+                    out[key] = {"fit": fit, "why": it.get(why_k) or "", "pause": it.get(pause_k) or "",
+                                "judged_on": jd}
+    return out
+
+
 def personal_history(prior_payloads: list[dict]) -> dict[str, str]:
     """role_key → earliest first_seen date (ISO). Never reads market_seen."""
     seen: dict[str, str] = {}
@@ -1454,6 +1519,7 @@ def seat_payload(s: dict) -> dict:
         "tier": _fit_tier_label(coerce_fit(s.get("fit"))) if coerce_fit(s.get("fit")) is not None else "",
         "lead": bool(s.get("lead")),
         "seclabel": s.get("seclabel") or "",
+        "judged_on": s.get("judged_on") or "",
     }
 
 
@@ -1467,6 +1533,7 @@ def refusal_payload(r: dict, relook: bool = False) -> dict:
         "pause": r.get("ai_pause") or "",
         "why": r.get("ai_why") or "",
         "relook": bool(relook),
+        "judged_on": r.get("judged_on") or "",
     }
 
 
@@ -1484,6 +1551,7 @@ def build_payload(seats: list[dict], compiled: dict, engine_sha: str,
     if ledger:
         out.update({
             "counts": dict(ledger.get("counts") or {}),
+            "judged_on": ledger.get("judged_on") or "",
             "refused": list(ledger.get("refused") or []),
             "refused_shown": list(ledger.get("refused_shown") or []),
             "unread": list(ledger.get("unread") or []),
@@ -1972,14 +2040,27 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
     key_fn = lambda j: j.get("role_key") or role_key(j)
 
     # 8. judgment: the original loop, private budget -------------------------
-    model_reads = {"attempted": 0, "failed": 0}
+    # A posting FOOUND judged within REMEMBER_JUDGMENT_DAYS keeps that
+    # judgment; only a second look the person asked for re-reads it.
+    remembered = remembered_judgments(prior_payloads or [], today,
+                                      compile_hash=compiled_config_hash(compiled))
+    relook_keys = set(second_look or set())
+    model_reads = {"attempted": 0, "failed": 0, "remembered": 0}
 
     def counted(real_score):
         def counted_score(a, p, job, jd):
+            key = key_fn(job)
+            r = remembered.get(key)
+            if r is not None and key not in relook_keys:
+                model_reads["remembered"] += 1
+                job["judged_on"] = r["judged_on"]
+                return (r["fit"], r["why"], r["pause"])
             model_reads["attempted"] += 1
             out = real_score(a, p, job, jd)
             if not out or out[0] is None:
                 model_reads["failed"] += 1
+            else:
+                job["judged_on"] = today.isoformat()
             return out
         return counted_score
 
@@ -2081,9 +2162,11 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
         "refused": len(rejects),
         "model_reads_attempted": model_reads["attempted"],
         "model_reads_failed": model_reads["failed"],
+        "model_reads_remembered": model_reads["remembered"],
     }
     ledger = {
         "counts": counts,
+        "judged_on": today.isoformat(),
         "refused": [refusal_payload(r, relook=id(r) in relook_ids) for r in rejects],
         "refused_shown": [r["role_key"] for r in shown],
         "unread": unread,
@@ -2134,9 +2217,11 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
     }
 
 
-def draft_with_model(ja, prompt: str) -> str:
-    """One Messages call for the Brief draft. Returns the reply text ('' on
-    any failure). Nothing about the reply is logged here."""
+def draft_with_model(ja, prompt: str, max_tokens: int = 2500) -> str:
+    """One Messages call for a draft (Brief, Candidate page). Returns the
+    reply text ('' on any failure). Nothing about the reply is logged here.
+    A reply cut off at max_tokens is unbalanced JSON, which the parsers
+    read as no_json — so the budget must fit the shape asked for."""
     key = getattr(ja, "ANTHROPIC_KEY", "") or ""
     if not key:
         return ""
@@ -2147,7 +2232,7 @@ def draft_with_model(ja, prompt: str) -> str:
             headers={"x-api-key": key, "anthropic-version": "2023-06-01",
                      "content-type": "application/json"},
             json={"model": getattr(ja, "CLAUDE_MODEL", "claude-sonnet-5"),
-                  "max_tokens": 2500, "messages": [{"role": "user", "content": prompt}]},
+                  "max_tokens": int(max_tokens), "messages": [{"role": "user", "content": prompt}]},
             timeout=180,
         )
         if not r.ok:
@@ -2750,14 +2835,24 @@ class Runner:
         return report
 
 
-    def enqueue_daily(self) -> dict:
+    def enqueue_daily(self, now: datetime | None = None) -> dict:
         """The heartbeat's other half (Move 2): every at_work agent with an
         active, ready Brief and no edition today gets one queued edition job
         (type first_edition — the daily edition; the handler is a no-op
         when today's edition already exists). Idempotent: the jobs table
-        allows one queued job per (agent, type). Counts only."""
+        allows one queued job per (agent, type). Counts only.
+
+        The day's edition is made before the person's morning, not at
+        midnight: nothing is queued until EDITION_HOUR_LOCAL in
+        EDITION_TIMEZONE, so the first beat after that hour makes the
+        edition and it is ready when they wake. One default, no setting."""
+        now = now or datetime.now(timezone.utc)
         out = {"at_work": 0, "queued": 0, "already_queued": 0, "has_edition": 0,
-               "no_brief": 0, "not_ready": 0}
+               "no_brief": 0, "not_ready": 0, "before_hour": 0}
+        if not edition_hour_reached(now):
+            out["before_hour"] = 1
+            log.info("enqueue_daily " + " ".join(f"{k}={v}" for k, v in out.items()))
+            return out
         for a in self.db.at_work_agents():
             out["at_work"] += 1
             aid = a.get("id")
@@ -2912,7 +3007,12 @@ class Runner:
         ctx = candidate_context(ja, agent_id, agent_no, memory_rows=rows, brief_content=None)
         if ctx.kind != "memory" or not rows:
             raise HuntError("no_candidate_context")
-        drafter = self.drafter if self.drafter is not None else (lambda prompt: draft_with_model(ja, prompt))
+        # Live (2026-09-03, beat #10): both drafts failed with no_json after
+        # ~30 s each — the page (six chapters with narratives, three
+        # trusted-withs, grounds) does not fit the Brief's 2,500-token budget
+        # and arrived cut off. The Candidate page gets the budget its shape needs.
+        drafter = self.drafter if self.drafter is not None else (
+            lambda prompt: draft_with_model(ja, prompt, max_tokens=CANDIDATE_DRAFT_MAX_TOKENS))
         valid_ids = [str(r.get("id")) for r in rows]
         page, reason, attempts = None, "", 0
         for attempt in (1, 2):
