@@ -213,6 +213,36 @@ jobs:
           FOOUND_015_KEEP_DB: "1"
         run: bash sql/dev/run_015_harness.sh
 
+  migration-016:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: harness
+          POSTGRES_DB: foound_016
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Run 016 harness (disposable)
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: harness
+          PGDATABASE: foound_016
+          FOOUND_016_KEEP_DB: "1"
+        run: bash sql/dev/run_016_harness.sh
+
   migration-014:
     runs-on: ubuntu-latest
     services:
