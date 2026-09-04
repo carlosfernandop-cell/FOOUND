@@ -210,6 +210,11 @@ class MemoryDb(hr.HuntDb):
             self.candidates = []
         self.candidates.append(dict(row))
 
+    def latest_candidate_page(self, agent_id):
+        rows = [c for c in getattr(self, "candidates", []) if c["agent_id"] == agent_id]
+        rows.sort(key=lambda c: c.get("version") or 0)
+        return dict(rows[-1].get("page") or {}) if rows else None
+
     def last_job(self, agent_id, job_type):
         rows = [j for j in self.jobs.values() if j["agent_id"] == agent_id and j["type"] == job_type]
         return dict(rows[-1]) if rows else None
@@ -3014,6 +3019,25 @@ def test_v_sweep_drafts_the_candidate_once():
     check("V one job, for the settled person", len(queued) == 1 and queued[0]["agent_id"] == settled)
     again = hr.Runner(db, collector=lambda _c: []).sweep_candidates(now=now)
     check("V second beat queues nothing new", again["queued"] == 0 and again["in_flight"] == 1, again)
+
+
+def test_v3_a_redraft_keeps_what_the_person_wrote():
+    """Live (2026-09-04): Mara typed her name and uploaded her portrait, then a
+    redraft would have handed her an empty name and an empty plate. FOOUND
+    rewrites only what FOOUND wrote."""
+    import candidate_draft as cd
+    prev = {"name": ["Mara", "Lindqvist"], "portrait": "https://x/p.jpg", "links": {"linkedin": "https://l/in"},
+            "own_words": "", "work": [], "references": [{"name": "A", "quote": "q", "who": "w"}],
+            "line": "old line", "chapters": [{"company": "Old"}], "confirmed": ["line", "chapter:0"]}
+    fresh = {"name": [], "portrait": "", "links": {}, "own_words": "", "work": [], "references": [],
+             "line": "new line", "chapters": [{"company": "New"}]}
+    out = cd.carry_own_fields(fresh, prev)
+    check("V3 name and portrait carry", out["name"] == ["Mara", "Lindqvist"] and out["portrait"] == "https://x/p.jpg")
+    check("V3 links and references carry", out["links"] == {"linkedin": "https://l/in"} and out["references"] == prev["references"])
+    check("V3 FOOUND's lines are the new ones", out["line"] == "new line" and out["chapters"][0]["company"] == "New")
+    check("V3 confirmations do not carry", "confirmed" not in out)
+    check("V3 empty previous fields do not overwrite", out["own_words"] == "" and out["work"] == [])
+    check("V3 no previous page is fine", cd.carry_own_fields(fresh, None) is fresh)
 
 
 def test_v2_a_failure_stands_up_when_the_engine_changes():

@@ -191,3 +191,23 @@ def parse_candidate_draft(text: str, valid_ids) -> tuple[dict | None, str]:
 def provenance(engine_sha: str, context_hash: str, model: str, attempts: int) -> dict:
     return {"drafted_by": "engine", "format": DRAFT_FORMAT, "engine_sha": engine_sha,
             "candidate_context_hash": context_hash, "model": model, "attempts": attempts}
+
+
+OWN_FIELDS = ("name", "portrait", "links", "own_words", "work", "references")
+
+
+def carry_own_fields(page: dict, previous: dict | None) -> dict:
+    """The person's own fields outlive a redraft. FOOUND rewrites only what it
+    wrote; the name, portrait, links, own words, work and references are
+    theirs and come across from the newest page untouched. Confirmations do
+    not carry: every FOOUND-written line is new and waits hollow again."""
+    if not isinstance(previous, dict):
+        return page
+    out = dict(page)
+    for key in OWN_FIELDS:
+        value = previous.get(key)
+        if value in (None, "", [], {}):
+            continue
+        out[key] = value
+    return out
+
