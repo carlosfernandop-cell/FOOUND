@@ -31,7 +31,7 @@ import re
 DRAFT_FORMAT = 1
 MAX_CHAPTERS = 6
 MAX_TRUSTED = 3
-MAX_LINE_CHARS = 360
+MAX_LINE_CHARS = 220
 MAX_NARRATIVE_CHARS = 700
 MAX_WORD_CHARS = 40
 _URL = re.compile(r"https?://\S+", re.I)
@@ -55,8 +55,9 @@ def draft_candidate_prompt(context_text: str, rows: list[dict]) -> str:
         f"CANDIDATE CONTEXT (what they confirmed):\n{context_text}\n\n"
         f"CONFIRMED STATEMENTS WITH IDS:\n{grounded}\n\n"
         "THE SHAPE (fixed):\n"
-        "- line: one paragraph, at most three sentences, beginning exactly \"This is the candidate I work for.\" "
-        "Then the span of the career and the pattern you see across it. This is your judgment, stated with confidence.\n"
+        "- line: at most three SHORT sentences, under 200 characters in all, beginning exactly \"This is the candidate I work for.\" "
+        "Then the span of the career in a few words, then the pattern you see across it. This is your judgment, stated with confidence. "
+        "Do not list the companies; the chapters do that. Live (2026-09-04): a 360-character itinerary read as a paragraph, not a line.\n"
         "- now: their current seat and company, as a short phrase, if a statement gives it. based: the city, if a statement gives it. "
         "since: the year their career began, if statements give it.\n"
         "- chapters: the career as houses, newest first, at most six. Each: company (the name only), years (like \"{2022–}\" or \"{2018–22}\"), "
@@ -101,6 +102,19 @@ def _clean(value, limit: int) -> str:
     return s[:limit]
 
 
+def _whole_sentences(s: str, limit: int) -> str:
+    """Cut to `limit` at a sentence end, never mid-sentence: a line that
+    stops on a full stop reads as judgment; one that stops mid-word reads
+    as a fault. If no sentence fits, keep the first sentence whole."""
+    if len(s) <= limit:
+        return s
+    ends = [m.end() for m in re.finditer(r"[.!?](?=\s|$)", s)]
+    fitting = [e for e in ends if e <= limit]
+    if fitting:
+        return s[:fitting[-1]].strip()
+    return s[:ends[0]].strip() if ends else s[:limit].rstrip()
+
+
 def _years(value) -> str:
     s = re.sub(r"\s+", "", str(value or ""))
     s = s.strip("{}")
@@ -123,7 +137,7 @@ def parse_candidate_draft(text: str, valid_ids) -> tuple[dict | None, str]:
             return None, "unbalanced_json"
         return None, "no_json"
     valid = {str(v) for v in (valid_ids or [])}
-    line = _clean(obj.get("line"), MAX_LINE_CHARS)
+    line = _whole_sentences(_clean(obj.get("line"), MAX_LINE_CHARS * 2), MAX_LINE_CHARS)
     if not line.startswith("This is the candidate I work for"):
         line = ("This is the candidate I work for. " + line).strip() if line else ""
     if _URL.search(line):

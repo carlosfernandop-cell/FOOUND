@@ -2810,7 +2810,8 @@ def test_q_sweep_proposes_without_being_asked():
     stale, _ = person(8)                                               # proposal from an older understanding → queued (redraft)
     db.add_brief(stale, dict(N002_BRIEF, provenance={"candidate_context_hash": "old"}), state="proposed", readiness="ready")
     failed, _ = person(9)                                              # failed after the newest confirmation → not retried
-    db.add_job(failed, "propose_brief", status="failed", requested_at="2026-09-03T11:00:00Z")
+    db.add_job(failed, "propose_brief", status="failed", requested_at="2026-09-03T11:00:00Z",
+               payload={"auto": True, "engine": hr.current_engine_sha()})
     archived, _ = person(10, state="archived")                         # never seen
     running, _ = person(11); db.add_job(running, "propose_brief", status="running")   # in flight
 
@@ -3004,7 +3005,8 @@ def test_v_sweep_drafts_the_candidate_once():
     open_recent = person(5, confirm_all=False)
     for r in db.memory[open_recent]:
         r["created_at"] = "2026-09-03T11:55:00Z"                        # → mirror_open
-    failed = person(6); db.add_job(failed, "draft_candidate", status="failed", requested_at="2026-09-03T11:59:00Z")  # → failed_on_this
+    failed = person(6); db.add_job(failed, "draft_candidate", status="failed", requested_at="2026-09-03T11:59:00Z",
+                                   payload={"auto": True, "engine": hr.current_engine_sha()})  # → failed_on_this
     out = hr.Runner(db, collector=lambda _c: []).sweep_candidates(now=now)
     check("V sweep counts", out["agents"] == 5 and out["queued"] == 1 and out["has_page"] == 1
           and out["no_confirmed"] == 1 and out["mirror_open"] == 1 and out["failed_on_this"] == 1, out)
@@ -3012,6 +3014,51 @@ def test_v_sweep_drafts_the_candidate_once():
     check("V one job, for the settled person", len(queued) == 1 and queued[0]["agent_id"] == settled)
     again = hr.Runner(db, collector=lambda _c: []).sweep_candidates(now=now)
     check("V second beat queues nothing new", again["queued"] == 0 and again["in_flight"] == 1, again)
+
+
+def test_v2_a_failure_stands_up_when_the_engine_changes():
+    """Live on 2026-09-03: No.002's Candidate draft failed on a token budget;
+    the budget was fixed hours later and nothing retried, because she had
+    confirmed nothing new. A failure stands down against the engine that
+    made it, not forever."""
+    now = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
+
+    def failed_person(engine):
+        db = MemoryDb()
+        aid = str(uuid.uuid4()); db.agent_numbers[aid] = 2; db.agent_state[aid] = "at_work"
+        for layer, st, src in N002_MEMORY:
+            db.add_memory(aid, [st], layer=layer, source=src)
+        db.add_job(aid, "draft_candidate", status="failed", requested_at="2026-09-03T17:07:00Z",
+                   payload=({"auto": True, "engine": engine} if engine else {"auto": True}))
+        return db, aid
+
+    real_sha = hr.current_engine_sha
+    hr.current_engine_sha = lambda: "bbbb222"
+    try:
+        db, _ = failed_person("bbbb222")
+        same = hr.Runner(db, collector=lambda _c: []).sweep_candidates(now=now)
+        check("V2 the same engine stands down", same["queued"] == 0 and same["failed_on_this"] == 1, same)
+
+        db, _ = failed_person("aaaa111")
+        moved = hr.Runner(db, collector=lambda _c: []).sweep_candidates(now=now)
+        check("V2 a newer engine tries again", moved["queued"] == 1 and moved["failed_on_this"] == 0, moved)
+        job = [j for j in db.jobs.values() if j["status"] == "queued"][0]
+        check("V2 the new attempt records its engine", job["payload"].get("engine") == "bbbb222", job["payload"])
+
+        db, _ = failed_person(None)
+        older = hr.Runner(db, collector=lambda _c: []).sweep_candidates(now=now)
+        check("V2 an attempt from before the rule tries once", older["queued"] == 1, older)
+    finally:
+        hr.current_engine_sha = real_sha
+
+    # with no engine known at all, the old behaviour stands: one attempt, then down
+    hr.current_engine_sha = lambda: "unknown"
+    try:
+        db, _ = failed_person("aaaa111")
+        unknown = hr.Runner(db, collector=lambda _c: []).sweep_candidates(now=now)
+        check("V2 an unknown engine never loops", unknown["queued"] == 0 and unknown["failed_on_this"] == 1, unknown)
+    finally:
+        hr.current_engine_sha = real_sha
 
 
 def test_w_a_brief_in_force_earns_its_edition_today():
