@@ -2429,6 +2429,11 @@ class HuntDb:
     def insert_candidate(self, row: dict) -> None:
         raise NotImplementedError
 
+    def latest_candidate_page(self, agent_id: str) -> Optional[dict]:
+        """Read-only: the page of the newest candidates row (any state), or None.
+        The person's own fields live there and outlive a redraft."""
+        raise NotImplementedError
+
 
 class RestDb(HuntDb):
     """Production transport: Supabase PostgREST with the service key."""
@@ -2657,6 +2662,16 @@ class RestDb(HuntDb):
 
     def insert_candidate(self, row: dict) -> None:
         self._post("candidates", row)
+
+    def latest_candidate_page(self, agent_id: str) -> Optional[dict]:
+        rows = self._get(f"candidates?agent_id=eq.{agent_id}&select=page&order=version.desc&limit=1")
+        page = rows[0].get("page") if rows else None
+        if isinstance(page, str):
+            try:
+                page = json.loads(page)
+            except (TypeError, ValueError):
+                page = None
+        return page if isinstance(page, dict) else None
 
 
 # ---------------------------------------------------------------------------
@@ -3028,6 +3043,11 @@ class Runner:
             log.info("draft_candidate job=%s outcome=failed reason=%s attempts=%d", job["id"], reason or "no_json", attempts)
             raise HuntError("candidate_draft_failed")
         page = dict(page, provenance=cd.provenance(current_engine_sha(), ctx.hash, getattr(ja, "CLAUDE_MODEL", ""), attempts))
+        # A redraft rewrites what FOOUND wrote, never what the person wrote:
+        # their name, portrait, links, own words, work and references carry
+        # over from the newest page. Their confirmations do not: FOOUND's
+        # lines are new and wait hollow again.
+        page = cd.carry_own_fields(page, self.db.latest_candidate_page(agent_id))
         retired = self.db.retire_candidate_drafts(agent_id)
         version = self.db.next_candidate_version(agent_id)
         self.db.insert_candidate({"agent_id": agent_id, "version": version, "state": "draft",
