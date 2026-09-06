@@ -45,6 +45,10 @@ class AgentConfig:
     persona: str = ""                       # e.g. "senior creative director"
     pronouns: tuple = ("they", "them", "their")   # (subject, object, possessive)
     judgment_lenses: str = ""               # the WHY guidance's pattern clause
+    # Private hunt only. Supplied from the active Brief at hunt time, never
+    # loaded from Memory or persisted as client config. Empty preserves the
+    # legacy public caller's prompt shape.
+    working_brief_text: str = ""
 
     # --- presentation ---
     manual_jobs: list = field(default_factory=list)

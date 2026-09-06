@@ -90,6 +90,34 @@ jobs:
             echo "::notice::No golden fixture — commit golden_edition.html to enable this guard."
           fi
 
+  # The accepted reliability behaviour, proven on matching pushes and pull
+  # requests (the workflow's push paths filter which pushes run): the full
+  # offline pytest suite (219 tests plus 15 subtests at v6). No network
+  # beyond pip, no secrets, no database. test_synthesis_runner.py needs
+  # psycopg2 and is not part of this job.
+  regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies (pinned to the locally tested versions)
+        run: pip install requests==2.34.2 pytest==9.1.1
+      - name: Offline regression suite
+        run: >
+          python -m pytest -q
+          test_hunt_runner.py test_intelligence_contract.py
+          test_open_intelligence_gates.py test_evidence_boundaries.py
+          test_restdb_wire.py test_no_agent_literals.py test_market_sources.py
+          test_edition_authority.py test_hunt_retry.py test_017_harness_safety.py
+          test_receipt_recovery.py experiments
+
   # Disposable Postgres. Never production. Proves migration 011 empirically.
   migration-011:
     runs-on: ubuntu-latest
@@ -242,6 +270,36 @@ jobs:
           PGDATABASE: foound_016
           FOOUND_016_KEEP_DB: "1"
         run: bash sql/dev/run_016_harness.sh
+
+  migration-017:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: harness
+          POSTGRES_DB: foound_017
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Run 017 harness (disposable)
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: harness
+          PGDATABASE: foound_017
+          FOOUND_017_KEEP_DB: "1"
+        run: bash sql/dev/run_017_harness.sh
 
   migration-014:
     runs-on: ubuntu-latest

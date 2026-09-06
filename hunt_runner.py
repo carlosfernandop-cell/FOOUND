@@ -115,6 +115,8 @@ NAMED_ERRORS = {
     "compile_failed",
     "hunt_adapter_failed",
     "edition_persist_failed",
+    "receipt_unavailable",
+    "judgment_unavailable",
     "no_candidate_context",
     "candidate_draft_failed",
     "no_role_families",
@@ -131,6 +133,54 @@ class HuntError(Exception):
             name = "compile_failed"
         super().__init__(name)
         self.name = name
+
+
+# Fable's 017 companion, narrowed during Astra's reciprocal review. Only a
+# structured PostgreSQL RAISE with an exact known message settles authority.
+# A proxy body or arbitrary exception containing these words is not proof.
+AUTHORITY_REASONS = ("paused", "brief_superseded", "no_active_brief",
+                     "no_version", "no_agent", "brief_unconfirmed",
+                     "state_mirror_ready", "state_commissioned",
+                     "state_awaiting_confirmation", "state_archived",
+                     "state_invited", "state_feed_submitted", "state_commissioning")
+
+HUNT_RETRY_LIMIT = 3
+HUNT_DAILY_LIMIT = 6
+HUNT_RETRY_SECONDS = 3600
+# Transient: the hourly recovery applies. receipt_unavailable is the attempt
+# receipt (the basis written before any paid work) failing to persist: no
+# work was done, no receipt exists, so it cannot count toward the daily cap;
+# it is bounded by the clock instead (one try per HUNT_RETRY_SECONDS through
+# the sweep's failed on basis path) and by the day.
+TRANSIENT_HUNT_ERRORS = frozenset({"judgment_unavailable", "hunt_adapter_failed",
+                                   "receipt_unavailable"})
+
+
+def decoded_job_payload(job: dict | None) -> dict:
+    value = (job or {}).get("payload") or {}
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except (ValueError, TypeError):
+            return {}
+    return value if isinstance(value, dict) else {}
+
+
+def authority_refusal(exc: BaseException) -> str:
+    response = getattr(exc, "response", None)
+    if response is None or getattr(response, "status_code", None) != 400:
+        return ""
+    try:
+        body = json.loads(response.text)
+    except (TypeError, ValueError, AttributeError):
+        return ""
+    if not isinstance(body, dict) or body.get("code") != "P0001":
+        return ""
+    message = body.get("message")
+    for reason in AUTHORITY_REASONS:
+        if message == "authority_changed:" + reason:
+            return reason
+    return ""
 
 
 # ---------------------------------------------------------------------------
@@ -1152,11 +1202,52 @@ def _fallback_role_key(title: str, company: str, location: str) -> str:
 # ---------------------------------------------------------------------------
 
 REMEMBER_JUDGMENT_DAYS = 14
+JUDGMENT_PROTOCOL = 1
+
+
+def judgment_basis(ja, agent, brief: dict, compiled: dict, person: str) -> dict:
+    """Version the inputs to personal judgment, not merely eligibility.
+
+    Bump JUDGMENT_PROTOCOL when the private judge's prompt or decision policy
+    changes. An unrelated deployment must not cause every role to be judged
+    again. Only hashes and the model identifier enter the private receipt.
+    """
+    body = {
+        "protocol": JUDGMENT_PROTOCOL,
+        "agent_id": agent.agent_id,
+        "brief": brief_content_hash(brief.get("content")),
+        "compiled": compiled_config_hash(compiled),
+        "person": hashlib.sha256(person.encode("utf-8")).hexdigest(),
+        "model": str(getattr(ja, "CLAUDE_MODEL", "")),
+        "voice": {key: getattr(agent, key, None)
+                  for key in ("persona", "pronouns", "judgment_lenses")},
+    }
+    raw = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return {"format": JUDGMENT_PROTOCOL, "model": body["model"],
+            "hash": hashlib.sha256(raw.encode("utf-8")).hexdigest()}
+
+
+def posting_evidence_hash(job: dict, jd: str) -> str:
+    """Same identity is not same evidence. Empty text cannot prove stability.
+
+    The judge already receives the fetched text. Fingerprint that exact input
+    plus the title, company, location and canonical URL. Tracking parameters
+    do not change the evidence; identity-bearing query parameters do.
+    Never store the posting text in the receipt or print it to public logs.
+    """
+    if not isinstance(jd, str) or not jd.strip():
+        return ""
+    body = {key: re.sub(r"\s+", " ", str(job.get(key) or "")).strip()
+            for key in ("title", "company", "location", "url")}
+    body["url"] = canonical_job_url(job.get("url") or "")
+    body["text"] = re.sub(r"\s+", " ", jd).strip()
+    raw = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 def remembered_judgments(prior_payloads: list[dict], today: date,
                          max_age_days: int = REMEMBER_JUDGMENT_DAYS,
-                         compile_hash: str = "") -> dict[str, dict]:
+                         compile_hash: str = "", judgment_hash: str = "") -> dict[str, dict]:
     """role_key → the judgment FOOUND already made of this posting (fit, why,
     pause, judged_on), newest first, no older than max_age_days. A daily
     edition must not re-judge the same posting every morning: the judge's
@@ -1164,13 +1255,18 @@ def remembered_judgments(prior_payloads: list[dict], today: date,
     FOOUND changes its mind for a reason — the person asked for a second
     look, or the judgment is old enough to re-read — never by accident."""
     out: dict[str, dict] = {}
+    if not compile_hash or not judgment_hash:
+        return out  # a legacy or missing receipt cannot establish compatibility
     for payload in prior_payloads:
         if not isinstance(payload, dict):
             continue
         # A judgment was made under a Brief. A different Brief in force is a
         # reason to change one's mind: only editions compiled from the same
         # Brief are remembered.
-        if compile_hash and payload.get("compiled_config_hash") not in (None, "", compile_hash):
+        if payload.get("compiled_config_hash") != compile_hash:
+            continue
+        basis = payload.get("judgment_basis")
+        if not isinstance(basis, dict) or basis.get("hash") != judgment_hash:
             continue
         day = payload.get("judged_on") if isinstance(payload.get("judged_on"), str) else ""
         for kind, why_k, pause_k in (("seats", "ai_why", "ai_pause"), ("refused", "why", "pause")):
@@ -1181,10 +1277,16 @@ def remembered_judgments(prior_payloads: list[dict], today: date,
                 if not isinstance(it, dict):
                     continue
                 key = it.get("role_key")
+                evidence_hash = it.get("evidence_hash")
                 fit = coerce_fit(it.get("fit"))
                 jd = it.get("judged_on") if isinstance(it.get("judged_on"), str) and it.get("judged_on") else day
                 if not isinstance(key, str) or not key or fit is None or not jd:
                     continue
+                if not isinstance(evidence_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", evidence_hash):
+                    continue
+                if any(it.get(k) is not None and not isinstance(it[k], dict)
+                       for k in ("research", "deep")):
+                    continue  # malformed receipts do not establish reusable judgment
                 try:
                     age = (today - date.fromisoformat(jd[:10])).days
                 except ValueError:
@@ -1194,7 +1296,9 @@ def remembered_judgments(prior_payloads: list[dict], today: date,
                 prev = out.get(key)
                 if prev is None or jd >= prev["judged_on"]:
                     out[key] = {"fit": fit, "why": it.get(why_k) or "", "pause": it.get(pause_k) or "",
-                                "judged_on": jd}
+                                "judged_on": jd, "evidence_hash": evidence_hash,
+                                "research": dict(it.get("research") or {}),
+                                "deep": dict(it.get("deep") or {})}
     return out
 
 
@@ -1374,6 +1478,8 @@ def render_edition_html(seats: list[dict], context: dict | None = None) -> str:
         pause = (s.get("ai_pause") or "").strip()
         if pause:
             blocks.append(_plabel("What gives me pause", pause))
+        if s.get("research", {}).get("status") == "not_researched_after_promotion":
+            blocks.append(_plabel("Research", "This role has not had a deeper research pass."))
         blocks.append(_plabel("Why now", s.get("why_now") or "", escape=False))
         dl = s.get("deep") if isinstance(s.get("deep"), dict) else None
         if dl:
@@ -1423,7 +1529,7 @@ def render_edition_html(seats: list[dict], context: dict | None = None) -> str:
 
     passed = ""
     shown = context.get("refused_shown") or []
-    if seats and shown:
+    if shown:
         word = "misses" if len(shown) > 1 else "miss"
         rows = []
         for r in shown:
@@ -1520,6 +1626,9 @@ def seat_payload(s: dict) -> dict:
         "lead": bool(s.get("lead")),
         "seclabel": s.get("seclabel") or "",
         "judged_on": s.get("judged_on") or "",
+        "evidence_hash": s.get("evidence_hash") or "",
+        "research": dict(s.get("research") or {}),
+        "deep": dict(s.get("deep") or {}),
     }
 
 
@@ -1534,6 +1643,9 @@ def refusal_payload(r: dict, relook: bool = False) -> dict:
         "why": r.get("ai_why") or "",
         "relook": bool(relook),
         "judged_on": r.get("judged_on") or "",
+        "evidence_hash": r.get("evidence_hash") or "",
+        "research": dict(r.get("research") or {}),
+        "deep": dict(r.get("deep") or {}),
     }
 
 
@@ -1560,9 +1672,13 @@ def build_payload(seats: list[dict], compiled: dict, engine_sha: str,
             "authority": dict(ledger.get("authority") or {}),
             "brief_line": ledger.get("brief_line") or "",
             "deep": ledger.get("deep"),
+            "deep_role_key": ledger.get("deep_role_key") or "",
+            "lead_research_status": ledger.get("lead_research_status") or "not_requested",
+            "judgment_status": ledger.get("judgment_status") or "unknown",
             "intelligence": dict(ledger.get("intelligence") or {}),
             "read_budget": ledger.get("read_budget"),
             "candidate_context": ledger.get("candidate_context") or {},
+            "judgment_basis": dict(ledger.get("judgment_basis") or {}),
         })
     return out
 
@@ -1591,7 +1707,7 @@ def _captured_stdio():
 
 DEEP_LOOK_THRESHOLD = 80   # the original loop's trigger; unchanged
 
-DEEP_REASONS = ("ok", "not_run", "not_triggered", "http_4xx", "http_5xx",
+DEEP_REASONS = ("ok", "remembered", "not_run", "not_triggered", "http_4xx", "http_5xx",
                 "no_json", "truncated", "paused", "thin_reply", "error")
 STATLINE_REASONS = ("ok", "not_run", "empty", "http_4xx", "http_5xx",
                     "unusable_reply", "error")
@@ -2003,6 +2119,8 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
         profile_path=getattr(base, "profile_path", "") if base is not None else "",
         voice=base,
     )
+    agent.working_brief_text = json.dumps(brief.get("content") or {}, ensure_ascii=False,
+                                         sort_keys=True, separators=(",", ":"))
     if not agent.include:
         raise HuntError("no_role_families")
     seat_cap = int(compiled.get("seat_cap") or DEFAULT_SEAT_CAP)
@@ -2042,18 +2160,27 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
     # 8. judgment: the original loop, private budget -------------------------
     # A posting FOOUND judged within REMEMBER_JUDGMENT_DAYS keeps that
     # judgment; only a second look the person asked for re-reads it.
+    basis = judgment_basis(ja, agent, brief, compiled, ctx_profile)
     remembered = remembered_judgments(prior_payloads or [], today,
-                                      compile_hash=compiled_config_hash(compiled))
+                                      compile_hash=compiled_config_hash(compiled),
+                                      judgment_hash=basis["hash"])
     relook_keys = set(second_look or set())
     model_reads = {"attempted": 0, "failed": 0, "remembered": 0}
 
     def counted(real_score):
         def counted_score(a, p, job, jd):
             key = key_fn(job)
+            evidence_hash = posting_evidence_hash(job, jd)
+            job["evidence_hash"] = evidence_hash
             r = remembered.get(key)
-            if r is not None and key not in relook_keys:
+            if (r is not None and evidence_hash and r["evidence_hash"] == evidence_hash
+                    and key not in relook_keys):
                 model_reads["remembered"] += 1
                 job["judged_on"] = r["judged_on"]
+                if r["research"]:
+                    job["research"] = dict(r["research"])
+                if r["deep"]:
+                    job["deep"] = dict(r["deep"])
                 return (r["fit"], r["why"], r["pause"])
             model_reads["attempted"] += 1
             out = real_score(a, p, job, jd)
@@ -2074,6 +2201,10 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
                 agent, eligible, new_keys, second_look,
                 read_budget=read_budget, key_fn=key_fn,
             )
+        # The shared public path permits a heuristic fallback. Private work
+        # requires an actual judgment before a role can be seated or refused.
+        ranked_all = [j for j in ranked_all if type(j.get("fit")) is int
+                      and 0 <= j["fit"] <= 100] if used_ai else []
         read_ids = {id(j) for j in ranked_all}
         unread = [j["role_key"] for j in eligible if id(j) not in read_ids]
 
@@ -2090,17 +2221,69 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
         # to stdout, which the private path swallows; the captured text is
         # classified into an enum and discarded — never logged, never stored.
         deep_out = None
+        deep_role_key = ""
         n = len(ranked)
         deep_reason = "not_run"
         if used_ai and n > 0:
             deep_reason = "not_triggered"
             if ((ranked[0].get("fit") or 0) >= DEEP_LOOK_THRESHOLD
                     or ranked[0].get("company") in agent.priority_companies):
-                with _captured_stdio() as buf:
-                    deep_out = ja.deep_look(ranked[0], ctx_profile, agent=agent)
-                deep_reason = classify_deep_look(deep_out, buf.getvalue())
+                lead = ranked[0]
+                deep_role_key = lead["role_key"]
+                if lead.get("research", {}).get("status") == "applied" and lead.get("deep"):
+                    deep_out = lead["deep"]
+                    deep_reason = "remembered"
+                else:
+                    with _captured_stdio() as buf:
+                        deep_out = ja.deep_look(lead, ctx_profile, agent=agent)
+                    deep_reason = classify_deep_look(deep_out, buf.getvalue())
                 if deep_out:
-                    ranked[0]["deep"] = deep_out
+                    lead["deep"] = deep_out
+                    if deep_reason != "remembered":
+                        fit_after = deep_out.get("fit_after")
+                        valid = (type(fit_after) is int and 0 <= fit_after <= 100
+                                 and isinstance(deep_out.get("verdict"), str)
+                                 and bool(deep_out["verdict"].strip()))
+                        # Research must change the decision, not merely decorate
+                        # a contradictory recommendation. Keep the first case
+                        # intact in the receipt; settle only a valid conclusion.
+                        lead["research"] = {
+                            "status": "applied" if valid else "incomplete",
+                            "initial_fit": lead.get("fit"),
+                            "initial_why": lead.get("ai_why") or "",
+                            "initial_pause": lead.get("ai_pause") or "",
+                            "fit_after": fit_after if valid else None,
+                            "verdict": deep_out.get("verdict") or "",
+                            "researched_on": today.isoformat(),
+                        }
+                        if valid:
+                            lead["fit"] = fit_after
+                            if fit_after < 60:
+                                lead["ai_pause"] = " ".join(str(deep_out.get(k) or "").strip()
+                                                              for k in ("verdict", "question")).strip()
+                            ranked_all.sort(key=lambda j: (j.get("fit") if j.get("fit") is not None else -1),
+                                            reverse=True)
+                            seating = ja.seat_edition(agent, ranked_all, used_ai, second_look,
+                                                      key_fn=key_fn, cap=seat_cap)
+                            ranked = seating["ranked"]
+                            rejects = seating["rejects"]
+                            shown = seating["shown"]
+                            n = len(ranked)
+        # One research pass per hunt, as before. Do not imply the newly
+        # promoted lead received the pass that disqualified its predecessor.
+        lead_research_status = "not_requested"
+        if ranked and ranked[0].get("research", {}).get("status") == "applied":
+            lead_research_status = "remembered" if deep_reason == "remembered" else "applied"
+        elif ranked and deep_role_key and ranked[0]["role_key"] != deep_role_key:
+            lead_research_status = "not_researched_after_promotion"
+            ranked[0]["research"] = {"status": lead_research_status}
+        elif ranked and deep_reason not in ("not_run", "not_triggered"):
+            lead_research_status = "unavailable"
+        if not ranked and rejects:
+            # An earned zero still owes the person the reasons for refusal.
+            with_reason = [j for j in rejects if j.get("ai_pause")]
+            relooked = [j for j in with_reason if key_fn(j) in relook_keys]
+            shown = (relooked + [j for j in with_reason if j not in relooked])[:max(5, len(relooked))]
         brief_line = None
         brief_reason = "not_run"
         if n > 0 and used_ai:
@@ -2118,7 +2301,9 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
             j["why_now"] = ja.why_now_text(j, j["role_key"] in new_keys, now=now, as_of=as_of)
 
     seats = assign_editorial_labels(ranked)
-    n_read = sum(1 for j in ranked_all if j.get("fit") is not None) if used_ai else len(ranked_all)
+    n_read = len(ranked_all)
+    judgment_status = ("unavailable" if unread and not n_read else
+                       "incomplete" if unread else "complete")
 
     # engine reason (enum only) ----------------------------------------------
     if used_ai:
@@ -2138,7 +2323,11 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
     daypart = _daypart(local_now(now, agent_no).hour)
     greeting = f"Good {daypart}, {voice_name}." if voice_name else f"Good {daypart}."
     cascade = [f"I searched {len(raw or []):,} jobs overnight."]
-    if n == 0:
+    if judgment_status == "unavailable":
+        cascade.append("I could not assess the roles today. No recommendation is ready.")
+    elif n == 0 and judgment_status == "incomplete":
+        cascade.append("None of the roles I assessed cleared the bar. Other roles remain unassessed.")
+    elif n == 0:
         cascade.append("Nothing cleared the bar today.")
     else:
         cascade.append(f"FOOUND {n} for you.")
@@ -2146,7 +2335,7 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
             cascade.append(f"{seating['n_strong']} are unusually strong.")
         if seating["has_standout"]:
             cascade.append("1 stands apart.")
-    statline = f"{n_read} read in full &middot; everything else dismissed on sight."
+    statline = f"{n_read} assessed &middot; {len(unread)} awaiting assessment."
     if brief_line:
         statline += " " + html.escape(brief_line)
 
@@ -2172,6 +2361,7 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
         "unread": unread,
         "engine": "ai" if used_ai else "heuristic",
         "engine_reason": engine_reason,
+        "judgment_status": judgment_status,
         "authority": {
             "brief_id": str(brief.get("id") or ""),
             "brief_version": brief.get("version"),
@@ -2184,9 +2374,12 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
         },
         "brief_line": brief_line or "",
         "deep": deep_out,
+        "deep_role_key": deep_role_key,
+        "lead_research_status": lead_research_status,
         "intelligence": {"deep": deep_reason, "statline": brief_reason},
         "read_budget": read_budget,
         "candidate_context": ctx.receipt(),
+        "judgment_basis": basis,
     }
     context = {
         "greeting": greeting,
@@ -2208,7 +2401,9 @@ def run_hunt(ja, *, agent_id: str, agent_no: int | None, brief: dict,
         "seats": seats,
         "html": html_doc,
         "payload": payload,
-        "outcome": "empty" if not seats else "seats",
+        # Unavailable is a local result, not a new database outcome. The
+        # runner fails the job rather than recording a successful empty day.
+        "outcome": "unavailable" if judgment_status == "unavailable" else "empty" if not seats else "seats",
         "counts": counts,
         "engine": ledger["engine"],
         "engine_reason": engine_reason,
@@ -2412,6 +2607,12 @@ class HuntDb:
     def last_job(self, agent_id: str, job_type: str) -> Optional[dict]:
         """Read-only: the most recent job of this type for this agent
         (id, status, requested_at, payload), or None."""
+        raise NotImplementedError
+
+    def edition_attempts(self, agent_id: str, day: date) -> list[dict]:
+        raise NotImplementedError
+
+    def record_hunt_basis(self, job_id: str, payload: dict) -> None:
         raise NotImplementedError
 
     # -- Move 4: the Candidate page ---------------------------------------
@@ -2642,8 +2843,20 @@ class RestDb(HuntDb):
     def last_job(self, agent_id: str, job_type: str) -> Optional[dict]:
         rows = self._get(
             f"jobs?agent_id=eq.{agent_id}&type=eq.{job_type}"
-            "&select=id,status,requested_at,payload&order=requested_at.desc&limit=1")
+            "&select=id,status,requested_at,started_at,completed_at,error,payload&order=requested_at.desc&limit=1")
         return rows[0] if rows else None
+
+    def edition_attempts(self, agent_id: str, day: date) -> list[dict]:
+        return list(self._get(
+            f"jobs?agent_id=eq.{agent_id}&type=eq.first_edition"
+            f"&payload->>edition_date=eq.{day.isoformat()}"
+            "&select=id,status,requested_at,started_at,completed_at,error,payload"
+            "&order=requested_at.desc&limit=100") or [])
+
+    def record_hunt_basis(self, job_id: str, payload: dict) -> None:
+        rows = self._patch(f"jobs?id=eq.{job_id}&status=eq.running", {"payload": payload})
+        if len(rows) != 1:
+            raise HuntError("receipt_unavailable")
 
     def candidate_count(self, agent_id: str) -> int:
         rows = self._get(f"candidates?agent_id=eq.{agent_id}&select=id&limit=50")
@@ -2742,6 +2955,24 @@ class Runner:
         try:
             return self._process(job, report)
         except HuntError as e:
+            if job.get("type") == "first_edition":
+                payload = decoded_job_payload(job)
+                attempt = payload.get("attempt")
+                total = payload.get("attempts_today")
+                retry = (e.name in TRANSIENT_HUNT_ERRORS and type(attempt) is int
+                         and attempt < HUNT_RETRY_LIMIT and type(total) is int
+                         and total < HUNT_DAILY_LIMIT)
+                # no receipt was saved, so no attempt is counted: the sweep
+                # may try again after the hour (clock bounded, not cap bounded)
+                if e.name == "receipt_unavailable" and attempt is None:
+                    retry = True
+                payload = dict(payload, retry_policy="bounded_hourly_v1",
+                               retry_after=(datetime.now(timezone.utc) + timedelta(seconds=HUNT_RETRY_SECONDS)).isoformat()
+                               if retry else None)
+                try:
+                    self.db.record_hunt_basis(job["id"], payload)
+                except Exception as receipt_error:
+                    log.info("retry receipt unavailable job=%s class=%s", job["id"], type(receipt_error).__name__)
             self.db.fail(job["id"], e.name)
             log.info("failed job=%s error=%s", job["id"], e.name)
             report.action = "failed"
@@ -2863,7 +3094,8 @@ class Runner:
         edition and it is ready when they wake. One default, no setting."""
         now = now or datetime.now(timezone.utc)
         out = {"at_work": 0, "queued": 0, "already_queued": 0, "has_edition": 0,
-               "no_brief": 0, "not_ready": 0, "before_hour": 0}
+               "no_brief": 0, "not_ready": 0, "before_hour": 0,
+               "failed_on_basis": 0}
         if not edition_hour_reached(now):
             out["before_hour"] = 1
             log.info("enqueue_daily " + " ".join(f"{k}={v}" for k, v in out.items()))
@@ -2878,15 +3110,83 @@ class Runner:
             if brief.get("readiness") != "ready":
                 out["not_ready"] += 1
                 continue
-            if self.db.editions_for_day(aid, self.today):
+            editions = self.db.editions_for_day(aid, self.today)
+            if editions and all(e.get("brief_version") == brief.get("version")
+                                and brief.get("version") is not None for e in editions):
                 out["has_edition"] += 1
                 continue
-            if self.db.enqueue_job(aid, "first_edition", {"brief_version": brief.get("version"), "daily": True}):
+            last = self.db.last_job(aid, "first_edition")
+            if last and last.get("status") in ("queued", "running"):
+                out["already_queued"] += 1
+                continue
+            attempts = self.db.edition_attempts(aid, self.today)
+            if self._retry_hold(attempts, last, brief, now):
+                out["failed_on_basis"] += 1
+                continue
+            if self.db.enqueue_job(aid, "first_edition", {
+                    "brief_version": brief.get("version"), "daily": True,
+                    "edition_date": self.today.isoformat(), "engine": current_engine_sha()}):
                 out["queued"] += 1
             else:
                 out["already_queued"] += 1
         log.info("enqueue_daily " + " ".join(f"{k}={v}" for k, v in out.items()))
         return out
+
+    def _daily_failed_on_basis(self, last: dict | None, brief: dict) -> bool:
+        """One automatic daily attempt per Brief and engine after failure.
+
+        A new day, a newly activated Brief or a shipped engine fix reopens
+        work. This is scheduler backoff, not a database concurrency lock.
+        Legacy requests without a recorded edition day use their request day.
+        """
+        if not last or last.get("status") != "failed":
+            return False
+        payload = last.get("payload") or {}
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (TypeError, ValueError):
+                payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        day = payload.get("edition_date") or str(last.get("requested_at") or "")[:10]
+        return (day == self.today.isoformat()
+                and payload.get("brief_version") == brief.get("version")
+                and str(payload.get("engine") or current_engine_sha()) == current_engine_sha())
+
+    def _matching_attempts(self, attempts: list[dict], brief: dict) -> list[dict]:
+        return [j for j in attempts if decoded_job_payload(j).get("attempt")
+                and decoded_job_payload(j).get("brief_version") == brief.get("version")
+                and decoded_job_payload(j).get("engine") == current_engine_sha()]
+
+    def _retry_hold(self, attempts: list[dict], last: dict | None,
+                    brief: dict, now: datetime) -> str:
+        # Count actual work receipts across all entry paths. Incomplete
+        # history fails closed. This is not a cross process mutex.
+        if len(attempts) >= 100:
+            return "history_limit"
+        if sum(bool(decoded_job_payload(j).get("attempt")) for j in attempts) >= HUNT_DAILY_LIMIT:
+            return "daily_limit"
+        matching = self._matching_attempts(attempts, brief)
+        if len(matching) >= HUNT_RETRY_LIMIT:
+            return "daily_limit"
+        # Receipt failures did no work and have no attempt number. They
+        # still impose cooldown at execution, not only at the scheduler.
+        failed = [j for j in attempts if self._daily_failed_on_basis(j, brief)]
+        if last and self._daily_failed_on_basis(last, brief) and not any(j["id"] == last["id"] for j in failed):
+            failed.append(last)
+        if not failed:
+            return ""
+        newest = max(failed, key=lambda j: str(j.get("completed_at") or j.get("requested_at") or ""))
+        if newest.get("error") not in TRANSIENT_HUNT_ERRORS:
+            return "failure_held"
+        try:
+            finished = datetime.fromisoformat(str(newest.get("completed_at") or "").replace("Z", "+00:00"))
+            if finished.tzinfo is None:
+                return "failure_held"
+        except ValueError:
+            return "failure_held"
+        return "retry_cooldown" if (now - finished).total_seconds() < HUNT_RETRY_SECONDS else ""
 
     def sweep_proposals(self, now: datetime | None = None) -> dict:
         """Move 2: FOOUND proposes on its own. Nobody should have to ask
@@ -3162,8 +3462,44 @@ class Runner:
             report.detail["reason"] = "same_day_edition_exists"
             return report
 
+        attempts = [j for j in self.db.edition_attempts(job["agent_id"], self.today)
+                    if j.get("id") != job["id"]]
+        held = self._retry_hold(attempts, None, brief, datetime.now(timezone.utc))
+        if held:
+            self.db.complete(job["id"])
+            report.action = "noop"
+            report.detail["reason"] = held
+            return report
+        basis = dict(decoded_job_payload(job), brief_version=brief.get("version"),
+                     engine=current_engine_sha(), edition_date=self.today.isoformat(),
+                     attempt=len(self._matching_attempts(attempts, brief)) + 1,
+                     attempts_today=sum(bool(decoded_job_payload(j).get("attempt")) for j in attempts) + 1,
+                     daily_limit=HUNT_DAILY_LIMIT,
+                     retry_limit=HUNT_RETRY_LIMIT, retry_delay_seconds=HUNT_RETRY_SECONDS)
+        # The receipt must persist before any paid work. A transport error
+        # here is the receipt's failure, not the Brief's and not the model's:
+        # named receipt_unavailable (transient, hourly recovery), never a
+        # deterministic class that would hold the day.
+        # Preserve authority on the failure receipt without claiming work
+        # happened. The counted basis replaces this only after it persists.
+        job["payload"] = dict(decoded_job_payload(job),
+                              brief_version=brief.get("version"),
+                              engine=current_engine_sha(), edition_date=self.today.isoformat())
+        try:
+            self.db.record_hunt_basis(job["id"], basis)
+        except HuntError:
+            raise
+        except Exception as e:
+            log.info("receipt write error job=%s class=%s", job["id"], type(e).__name__)
+            raise HuntError("receipt_unavailable")
+        job["payload"] = basis
         compiled = self._compile_for_hunt(brief)
         result = self._hunt(job["agent_id"], brief, compiled, job_id=job["id"])
+        if result.get("outcome") == "unavailable":
+            print(operator_line(result.get("agent_no"), result["counts"],
+                                result["engine"], "unavailable",
+                                engine_reason=result.get("engine_reason", "")))
+            raise HuntError("judgment_unavailable")
         version = brief.get("version")
         job_payload = job.get("payload") or {}
         if isinstance(job_payload, str):
@@ -3190,6 +3526,15 @@ class Runner:
             else:
                 self.db.insert_edition(row)
         except Exception as e:
+            reason = authority_refusal(e)
+            if reason:
+                self.db.complete(job["id"])
+                log.info("first_edition withheld job=%s reason=%s", job["id"], reason)
+                report.action = "noop"
+                report.seats = None
+                report.detail["reason"] = "authority_changed"
+                report.detail["authority_reason"] = reason
+                return report
             log.info("edition persist error job=%s class=%s", job["id"], type(e).__name__)
             raise HuntError("edition_persist_failed")
         self.db.complete(job["id"])
