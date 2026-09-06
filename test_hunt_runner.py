@@ -219,6 +219,14 @@ class MemoryDb(hr.HuntDb):
         rows = [j for j in self.jobs.values() if j["agent_id"] == agent_id and j["type"] == job_type]
         return dict(rows[-1]) if rows else None
 
+    def edition_attempts(self, agent_id, day):
+        return [dict(j) for j in self.jobs.values() if j["agent_id"] == agent_id
+                and j["type"] == "first_edition"
+                and hr.decoded_job_payload(j).get("edition_date") == day.isoformat()]
+
+    def record_hunt_basis(self, job_id, payload):
+        self.jobs[job_id]["payload"] = dict(payload)
+
 
 class FakeState:
     """Stands in for foound_state.PrivateState."""
@@ -1615,7 +1623,7 @@ def test_r_edition_html_contract():
     aid = _ready_agent(db, SPECIMEN_5d260731, agent_no=1)
     db.add_job(aid, "first_edition")
     deep = lambda job, _p, **_kw: {"role": "New seat", "moment": "Rebrand", "leadership": "CMO",
-                            "signal": "Hiring", "question": "Scope", "verdict": "Still 82.", "fit_after": 80}
+                            "signal": "Hiring", "question": "Scope", "verdict": "My view changed: 82 to 80.", "fit_after": 80}
     brief_args = []
 
     def brief_fn(n, total_fetched, n_companies, ranked, new_keys, **_kw):
@@ -1638,11 +1646,11 @@ def test_r_edition_html_contract():
     check("R html fit order Adobe then Suno", [s["handle"] for s in pic] == ["Adobe", "Suno"])
     k_adobe = hr.role_key(raw[0])
     check("R html data-id = role_key", f'data-id="{k_adobe}"' in h)
-    for attr in ("data-company", "data-title", "data-location", "data-url", "data-fit=\"82\"",
+    for attr in ("data-company", "data-title", "data-location", "data-url", "data-fit=\"80\"",
                  "data-posted-at", "data-why", "data-pause", "data-why-now"):
         check(f"R html {attr}", attr in h)
-    check("R html anno", "{fit&nbsp;82}" in h)
-    check("R html scoreline number · tier", '<div class="scoreline">82 &middot; Strong fit</div>' in h)
+    check("R html anno", "{fit&nbsp;80}" in h)
+    check("R html scoreline number · tier", '<div class="scoreline">80 &middot; Strong fit</div>' in h)
     check("R html role", '<div class="role">Head of Brand, Adobe Creative' in h)
     for lab in ("Why I chose it", "What gives me pause", "Why now", "I kept looking"):
         check(f"R html plabel {lab}", f'<div class="plabel">{lab}</div>' in h)
@@ -1650,14 +1658,14 @@ def test_r_edition_html_contract():
     check("R html apply", 'class="apply" href="https://adobe.wd5.myworkdayjobs.com/x/1"' in h)
     check("R html greeting", '<p class="brief">Good ' in h)
     check("R html cascade", "I searched 3 jobs overnight." in h and "FOOUND 2 for you." in h)
-    check("R html statline", "3 read in full &middot; everything else dismissed on sight. Adobe leads clear of the field." in h)
+    check("R html statline", "3 assessed &middot; 0 awaiting assessment. Adobe leads clear of the field." in h)
     check("R html lead seclabel", "I&rsquo;d start with Adobe" in h)
     check("R html refusals", 'Found, not FOOUND' in h and "1 more read in full and declined" in h
           and 'class="pitem' in h and "Writer-led remit." in h)
     check("R html colophon", "FOOUND AT WORK &middot; Edition 001" in h and "companies watched" in h)
     check("R html no DUMMY ROLE", "DUMMY ROLE" not in h)
     p = ed["payload"]
-    check("R payload deep kept", p["deep"]["verdict"] == "Still 82.")
+    check("R payload deep kept", p["deep"]["verdict"] == "My view changed: 82 to 80.")
     check("R payload brief_line", p["brief_line"] == "Adobe leads clear of the field.")
     check("R payload counts", {k: v for k, v in p["counts"].items() if k != "sources"} == {
         "market_fetched": 3, "eligible": 3, "excluded": 0,
@@ -1668,7 +1676,8 @@ def test_r_edition_html_contract():
           p["counts"].get("sources") == p["sources"]["selected"] > 0
           and p["sources"]["founding"] == p["sources"]["founding_total"]
           and "regions" in p["sources"], p.get("sources"))
-    check("R fit_after not applied (deferred)", p["seats"][0]["fit"] == 82)
+    check("R research settles the score and preserves the initial judgment",
+          p["seats"][0]["fit"] == 80 and p["seats"][0]["research"]["initial_fit"] == 82)
 
 
 def test_r_heuristic_day_is_degraded_not_broken():
@@ -1685,11 +1694,8 @@ def test_r_heuristic_day_is_degraded_not_broken():
                   profile=FIXTURE_PROFILE, state_loader=lambda _a, _n: None).run()
     finally:
         ja.ANTHROPIC_KEY = saved
-    p = db.editions[0]["payload"]
-    check("R heuristic engine recorded", p["engine"] == "heuristic")
-    check("R heuristic seats present, no fit", len(p["seats"]) == 2 and all(s["fit"] is None for s in p["seats"]))
-    check("R heuristic no refusals", p["refused"] == [])
-    check("R heuristic no scoreline", "scoreline" not in db.editions[0]["html"])
+    check("R unavailable judgment writes no edition", db.editions == [])
+    check("R unavailable judgment fails explicitly", list(db.jobs.values())[0]["error"] == "judgment_unavailable")
 
 
 def test_r_operator_line_and_stdout_hygiene():
@@ -1900,14 +1906,24 @@ def test_a_engine_reason_enum():
         if key is not None:
             ja.ANTHROPIC_KEY = key
         out = io.StringIO()
+        captured = []
         try:
             with contextlib.redirect_stdout(out):
-                hr.Runner(db, collector=lambda _c: raw, today=FROZEN_TODAY, fetch_jd=lambda _u: "",
-                          score=score, profile=FIXTURE_PROFILE, state_loader=lambda _a, _n: None,
-                          model_probe=model_probe).run()
+                runner = hr.Runner(db, collector=lambda _c: raw, today=FROZEN_TODAY, fetch_jd=lambda _u: "",
+                                   score=score, profile=FIXTURE_PROFILE, state_loader=lambda _a, _n: None,
+                                   model_probe=model_probe)
+                original = runner._hunt
+                def capture(*args, **kwargs):
+                    result = original(*args, **kwargs)
+                    captured.append(result)
+                    return result
+                runner._hunt = capture
+                runner.run()
         finally:
             ja.ANTHROPIC_KEY = saved
-        p = db.editions[0]["payload"]
+        p = captured[0]["payload"]
+        if captured[0]["outcome"] == "unavailable":
+            check("A unavailable never persisted", db.editions == [])
         return p, out.getvalue()
 
     p, line = run(_score_by_title({}, default=(70, "w", "p")))
@@ -2097,10 +2113,11 @@ def test_i_live_path_runs_deep_look_and_statline():
     h, p = ed["html"], ed["payload"]
     check("I deep look rendered", "I kept looking" in h and "My view changed: 85 to 86." in h
           and "Reports to the CMO." in h)
-    check("I statline rendered", "Acme leads clear of the field." in h and "2 read in full" in h)
+    check("I statline rendered", "Acme leads clear of the field." in h and "2 assessed" in h)
     check("I payload deep + brief_line", p["deep"]["verdict"] == "My view changed: 85 to 86."
           and p["brief_line"] == "Acme leads clear of the field.")
-    check("I fit_after still not applied", p["seats"][0]["fit"] == 85)
+    check("I research settles the score with its original receipt",
+          p["seats"][0]["fit"] == 86 and p["seats"][0]["research"]["initial_fit"] == 85)
     check("I intelligence enums ok", p["intelligence"] == {"deep": "ok", "statline": "ok"}, p.get("intelligence"))
     check("I operator line carries both", "deep=ok statline=ok" in out and "reason=ai" in out, out)
     check("I counters still count on the live path", p["counts"]["model_reads_attempted"] == 2
@@ -2134,10 +2151,9 @@ def test_i_heuristic_day_marks_both_not_run():
     db, out = _live_run(raw, score_fit=lambda *_a: (None, None, None), key="",
                         deep_look=lambda *_a, **_kw: calls.__setitem__("deep", 1) or DEEP_STUB,
                         write_brief=lambda *_a, **_kw: calls.__setitem__("brief", 1) or "x")
-    p = db.editions[0]["payload"]
     check("I heuristic: neither called", calls == {"deep": 0, "brief": 0})
-    check("I heuristic: not_run / not_run", p["intelligence"] == {"deep": "not_run", "statline": "not_run"}
-          and p["engine_reason"] == "no_key", p["intelligence"])
+    check("I unavailable: no edition", db.editions == [])
+    check("I unavailable: reason recorded", "reason=no_key" in out)
 
 
 def test_i_silent_failures_are_named_and_never_leak():
@@ -2674,16 +2690,17 @@ def test_q_daily_enqueue_is_idempotent_and_gated():
     db = MemoryDb()
     a1 = _n002(db); db.agent_state[a1] = "at_work"                       # ready, no edition → queued
     a2 = _n002(db); db.agent_state[a2] = "at_work"                       # ready, edition today → skipped
-    db.editions.append({"agent_id": a2, "edition_date": FROZEN_TODAY.isoformat(), "payload": {}, "html": "", "outcome": "seats"})
+    db.editions.append({"agent_id": a2, "edition_date": FROZEN_TODAY.isoformat(), "brief_version": db.active_brief(a2)["version"], "payload": {}, "html": "", "outcome": "seats"})
     a3 = _n002(db); db.agent_state[a3] = "paused"                        # not at_work → ignored
     a4 = str(uuid.uuid4()); db.agent_numbers[a4] = 9; db.agent_state[a4] = "at_work"   # no brief
     a5 = str(uuid.uuid4()); db.agent_numbers[a5] = 10; db.agent_state[a5] = "at_work"
     db.add_brief(a5, N002_BRIEF, readiness="not_ready")                  # not ready
     r = hr.Runner(db, collector=lambda _c: [], today=FROZEN_TODAY)
     out = r.enqueue_daily(now=AFTER_EDITION_HOUR)
-    check("Q daily counts", out == {"at_work": 4, "queued": 1, "already_queued": 0, "has_edition": 1, "no_brief": 1, "not_ready": 1, "before_hour": 0}, out)
+    check("Q daily counts", out == {"at_work": 4, "queued": 1, "already_queued": 0, "has_edition": 1, "no_brief": 1, "not_ready": 1, "before_hour": 0, "failed_on_basis": 0}, out)
     q = [j for j in db.jobs.values() if j["agent_id"] == a1 and j["type"] == "first_edition"]
-    check("Q one queued edition job with the brief version", len(q) == 1 and q[0]["payload"] == {"brief_version": 2, "daily": True})
+    check("Q one queued edition job with the brief version", len(q) == 1 and q[0]["payload"] == {
+        "brief_version": 2, "daily": True, "edition_date": FROZEN_TODAY.isoformat(), "engine": hr.current_engine_sha()})
     out2 = r.enqueue_daily(now=AFTER_EDITION_HOUR)
     check("Q second beat queues nothing new", out2["queued"] == 0 and out2["already_queued"] == 1
           and len([j for j in db.jobs.values() if j["type"] == "first_edition"]) == 1)
@@ -3142,7 +3159,7 @@ def test_x_a_judgment_is_remembered_across_days():
             return base(a, p, job, jd)
         return f
     day1 = FROZEN_TODAY
-    r1 = hr.Runner(db, collector=lambda _c: raw, today=day1, fetch_jd=lambda _u: "",
+    r1 = hr.Runner(db, collector=lambda _c: raw, today=day1, fetch_jd=lambda _u: "Unchanged posting evidence.",
                    score=score({"Head of Design": (84, "why1", "pause1"), "Design Director": (40, "w1", "no1")}),
                    profile=None, state_loader=lambda _a, _n: None,
                    deep=lambda *_a, **_k: dict(DEEP_STUB), brief_line_fn=lambda *_a, **_k: "x")
@@ -3156,7 +3173,7 @@ def test_x_a_judgment_is_remembered_across_days():
     # day 2: the judge would now say something else; FOOUND remembers instead
     calls.clear()
     day2 = day1 + timedelta(days=1)
-    r2 = hr.Runner(db, collector=lambda _c: raw, today=day2, fetch_jd=lambda _u: "",
+    r2 = hr.Runner(db, collector=lambda _c: raw, today=day2, fetch_jd=lambda _u: "Unchanged posting evidence.",
                    score=score({"Head of Design": (55, "why2", "pause2"), "Design Director": (90, "w2", "no2")}),
                    profile=None, state_loader=lambda _a, _n: None,
                    deep=lambda *_a, **_k: dict(DEEP_STUB), brief_line_fn=lambda *_a, **_k: "x")
@@ -3165,14 +3182,15 @@ def test_x_a_judgment_is_remembered_across_days():
     e2 = [e for e in db.editions if e["agent_id"] == aid and e["edition_date"] == day2.isoformat()][0]
     seat = e2["payload"]["seats"][0]
     check("X day 2: no model reads; the seat keeps its judgment",
-          calls == [] and seat["company"] == "Fabric" and seat["fit"] == 84 and seat["ai_why"] == "why1"
+          calls == [] and seat["company"] == "Fabric" and seat["fit"] == 86 and seat["ai_why"] == "why1"
+          and seat["research"]["initial_fit"] == 84
           and seat["judged_on"] == day1.isoformat()
           and e2["payload"]["counts"]["model_reads_remembered"] == 2
           and e2["payload"]["counts"]["model_reads_attempted"] == 0)
     # day 16: old enough to re-read
     calls.clear()
     day16 = day1 + timedelta(days=16)
-    r3 = hr.Runner(db, collector=lambda _c: raw, today=day16, fetch_jd=lambda _u: "",
+    r3 = hr.Runner(db, collector=lambda _c: raw, today=day16, fetch_jd=lambda _u: "Unchanged posting evidence.",
                    score=score({"Head of Design": (70, "why3", "pause3"), "Design Director": (41, "w3", "no3")}),
                    profile=None, state_loader=lambda _a, _n: None,
                    deep=lambda *_a, **_k: dict(DEEP_STUB), brief_line_fn=lambda *_a, **_k: "x")
@@ -3182,8 +3200,11 @@ def test_x_a_judgment_is_remembered_across_days():
     check("X day 16: re-read, re-stamped", len(calls) == 2 and e3["payload"]["seats"][0]["fit"] == 70
           and e3["payload"]["seats"][0]["judged_on"] == day16.isoformat())
     # a different Brief in force: yesterday's judgments do not carry
-    rem = hr.remembered_judgments([e3["payload"]], day16, compile_hash="not-that-brief")
-    same = hr.remembered_judgments([e3["payload"]], day16, compile_hash=e3["payload"]["compiled_config_hash"])
+    judgment_hash = e3["payload"]["judgment_basis"]["hash"]
+    rem = hr.remembered_judgments([e3["payload"]], day16, compile_hash="not-that-brief",
+                                 judgment_hash=judgment_hash)
+    same = hr.remembered_judgments([e3["payload"]], day16, compile_hash=e3["payload"]["compiled_config_hash"],
+                                  judgment_hash=judgment_hash)
     check("X a new Brief re-judges; the same Brief remembers", rem == {} and len(same) == 2)
 
 

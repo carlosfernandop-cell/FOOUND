@@ -1,5 +1,7 @@
 # Job Alerts — Creative & Brand Leadership
 
+> Historical public runner setup follows. It is not the current private FOOUND architecture or a launch readiness claim. For the local September intelligence review, source map, proposed changes and unresolved release gates, start with [the review record](product/INTELLIGENCE_REVIEW_2026_09_06.md). Production laws remain in `product/PRODUCT_LAWS.md`. This review branch has not been deployed.
+
 Automated daily job search for senior creative roles (Creative Director, Head of Brand,
 etc.) at AI-native and top-tier tech companies. Runs free on GitHub Actions every
 weekday at 8 AM Eastern, saves new matches to Notion, and emails a daily digest.

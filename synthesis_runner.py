@@ -835,11 +835,12 @@ class Runner:
 
         try:
             return self._process(job, item_ids, report)
-        except Exception:
+        except Exception as exc:
             # Engine bug or environment death with the job running: attempt the
             # abort door so the client is never stuck; janitor is the backstop.
-            log.exception("processing error job=%s (exception class only above)",
-                          job["id"])
+            # Exception messages and tracebacks can contain document text or
+            # provider response bodies. Actions logs are public: class only.
+            log.error("processing error job=%s class=%s", job["id"], type(exc).__name__)
             try:
                 self.db.finalize_failed(job["id"], None)
                 report.action = "aborted"
