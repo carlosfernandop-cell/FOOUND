@@ -1,5 +1,7 @@
 # FOOUND — App ↔ Engine Contract
 
+> Local review note, 6 September 2026: [the intelligence review](INTELLIGENCE_REVIEW_2026_09_06.md) proposes additive private judgment receipts and research settlement. It does not silently amend this frozen contract or certify deployment. App compatibility and reciprocal review are release gates.
+
 *Frozen August 21, 2026. One product brain (the frozen v3.1 plan), two
 execution surfaces. This document is what stops them from slowly duplicating
 each other's logic. Changes to this contract are reviewed changes, in the
