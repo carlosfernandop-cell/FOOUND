@@ -56,6 +56,29 @@ RETRACTED_FETCH_LIMIT = 1000    # suppression context must be COMPLETE: if more
                                 # missing client retractions
 
 JANITOR_STALE_MINUTES = 30
+DEFERRED_WALK_LIMIT = 8         # deferred jobs (files still uploading, 018) the
+                                # runner walks past in one beat to reach a
+                                # job that is ready; never a retry loop
+SYNTHESIS_WAIT_MINUTES = 60     # mirror of the door's synthesis_wait_minutes()
+                                # (018). Discovery is two tiers: first the
+                                # queued jobs that are not waiting (started_at
+                                # null, or the wait is over), oldest first;
+                                # only when there is none, the jobs still
+                                # waiting on the door's clock, oldest first.
+                                # Guarantee: a request that is not waiting is
+                                # discovered before any waiting one, so
+                                # waiting requests never delay it. Limit: a
+                                # waiting request is re-asked only in idle
+                                # beats, only if it is among the oldest
+                                # DEFERRED_WALK_LIMIT waiting, at one claim per
+                                # such beat; otherwise it is next asked when
+                                # its wait is over, when it is claimed like any
+                                # other request. A busy stream of not waiting
+                                # work postpones waiting ones the same way.
+                                # Drift between mirror and door is safe: a
+                                # smaller mirror only re-asks early (deferred
+                                # again); a larger one only delays the end of
+                                # a wait. test_f2 pins them equal.
 
 # Sufficiency policy: VALUES here, COMPUTATION in settle_synthesis_results().
 POLICY = {
@@ -108,7 +131,9 @@ class DoorError(Exception):
 class Db:
     """Transport interface to the database. All methods are thin."""
 
-    def oldest_queued_synthesize_job(self) -> Optional[dict]:
+    def oldest_queued_synthesize_job(self, exclude: list[str] | None = None) -> Optional[dict]:
+        """The oldest queued synthesize job, skipping the ids in `exclude`
+        (jobs the claim door deferred this beat)."""
         raise NotImplementedError
 
     def stale_running_synthesize_jobs(self, stale_minutes: int) -> list[dict]:
@@ -173,10 +198,25 @@ class RestDb(Db):
         r.raise_for_status()
         return r.json()
 
-    def oldest_queued_synthesize_job(self):
+    def oldest_queued_synthesize_job(self, exclude=None):
+        import datetime as _dt
+        skip = [i for i in (exclude or []) if UUID_RE.match(str(i).lower())]
+        not_in = f"&id=not.in.({','.join(skip)})" if skip else ""
+        # URL-safe UTC format as in stale_running_synthesize_jobs
+        wait_over = (
+            _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(minutes=SYNTHESIS_WAIT_MINUTES)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        tail = f"{not_in}&select=id,agent_id,requested_at&order=requested_at.asc&limit=1"
+        # tier one: not waiting (started_at null, or the wait is over)
         rows = self._select(
             "jobs?type=eq.synthesize&status=eq.queued"
-            "&select=id,agent_id,requested_at&order=requested_at.asc&limit=1"
+            f"&or=(started_at.is.null,started_at.lte.{wait_over}){tail}"
+        )
+        if rows:
+            return rows[0]
+        # tier two: still waiting on the door's clock (018)
+        rows = self._select(
+            f"jobs?type=eq.synthesize&status=eq.queued&started_at=gt.{wait_over}{tail}"
         )
         return rows[0] if rows else None
 
@@ -260,12 +300,20 @@ class PgDb(Db):
         except self._psycopg2.Error as e:
             raise DoorError((e.diag.message_primary or "").strip()) from e
 
-    def oldest_queued_synthesize_job(self):
-        rows = self._rows(
-            "select id::text, agent_id::text, requested_at from jobs "
-            "where type='synthesize' and status='queued' "
-            "order by requested_at asc limit 1"
-        )
+    def oldest_queued_synthesize_job(self, exclude=None):
+        base = ("select id::text, agent_id::text, requested_at from jobs "
+                "where type='synthesize' and status='queued' "
+                "and not (id = any(%s::uuid[])) and ({tier}) "
+                "order by requested_at asc limit 1")
+        args = (list(exclude or []), SYNTHESIS_WAIT_MINUTES)
+        # tier one: not waiting (started_at null, or the wait is over)
+        rows = self._rows(base.format(
+            tier="started_at is null or started_at + make_interval(mins => %s) <= now()"), args)
+        if rows:
+            return rows[0]
+        # tier two: still waiting on the door's clock (018)
+        rows = self._rows(base.format(
+            tier="started_at is not null and started_at + make_interval(mins => %s) > now()"), args)
         return rows[0] if rows else None
 
     def stale_running_synthesize_jobs(self, stale_minutes):
@@ -755,6 +803,16 @@ def validate_and_map(
 # The runner.
 # ---------------------------------------------------------------------------
 
+def _count(value) -> int:
+    """A count from a door field: lists are counted, never echoed (public logs)."""
+    if isinstance(value, (list, tuple, dict)):
+        return len(value)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 @dataclass
 class RunReport:
     """Machine-readable outcome of one invocation. Counts and enums only."""
@@ -794,27 +852,58 @@ class Runner:
         report = RunReport()
         report.janitor_finalized = self.janitor()
 
-        job = self.db.oldest_queued_synthesize_job()
-        if job is None:
-            log.info("no queued synthesize jobs")
-            return report
-        report.job_id = job["id"]
-        log.info("discovered job=%s agent=%s", job["id"], job["agent_id"])
-
-        # CLAIM — the only door in.
-        try:
-            claim = self.db.claim(job["id"])
-        except DoorError as e:
-            if e.name == "job_not_queued":
-                log.info("lost claim race job=%s", job["id"])
-                report.action = "race"
+        deferred: list[str] = []
+        while True:
+            # the keyword is passed only when something is excluded, so a
+            # transport (or test double) predating 018 still answers. Jobs
+            # already waiting on the door's clock are discovered only when no
+            # other queued job exists (see SYNTHESIS_WAIT_MINUTES): in a busy
+            # beat the bounded walk below spends slots only on requests
+            # deferred for the first time, so a ready request behind N such
+            # requests is reached within ceil((N + 1) / DEFERRED_WALK_LIMIT)
+            # beats (one job per beat, requested_at order). In an idle beat
+            # the walk re-asks the oldest waiting requests, bounded the same.
+            job = (self.db.oldest_queued_synthesize_job(exclude=deferred) if deferred
+                   else self.db.oldest_queued_synthesize_job())
+            if job is None:
+                log.info("no queued synthesize jobs deferred=%d", len(deferred))
+                report.action = "deferred" if deferred else report.action
+                report.detail["deferred"] = deferred
                 return report
-            log.error("claim door error job=%s door=%s", job["id"], e.name)
-            report.action = "error"
-            report.detail["door"] = e.name
-            return report
+            report.job_id = job["id"]
+            log.info("discovered job=%s agent=%s", job["id"], job["agent_id"])
 
-        status = claim.get("status")
+            # CLAIM — the only door in.
+            try:
+                claim = self.db.claim(job["id"])
+            except DoorError as e:
+                if e.name == "job_not_queued":
+                    log.info("lost claim race job=%s", job["id"])
+                    report.action = "race"
+                    return report
+                log.error("claim door error job=%s door=%s", job["id"], e.name)
+                report.action = "error"
+                report.detail["door"] = e.name
+                return report
+
+            status = claim.get("status")
+            if status == "deferred":
+                # 018: the request names files whose objects have not arrived;
+                # the door left the job queued, waiting on a trusted clock.
+                # Walk on to the next agent's job; never spin on this one.
+                log.info("claim deferred job=%s pending=%d ready=%d skipped=%d malformed=%d",
+                         job["id"], _count(claim.get("pending")), _count(claim.get("ready")),
+                         _count(claim.get("skipped")), _count(claim.get("malformed")))
+                deferred.append(job["id"])
+                if len(deferred) >= DEFERRED_WALK_LIMIT:
+                    log.info("deferred walk limit reached")
+                    report.action = "deferred"
+                    report.detail["deferred"] = deferred
+                    return report
+                continue
+            break
+        report.detail["deferred"] = deferred
+
         if status == "refused":
             # claim persisted the terminal failed job itself; nothing to do
             log.info("claim refused job=%s reason=%s", job["id"], claim.get("reason"))
@@ -822,13 +911,20 @@ class Runner:
             return report
         if status == "empty":
             # claim persisted the honest zero-item failure itself
-            log.info("claim empty job=%s", job["id"])
+            log.info("claim empty job=%s waited_out=%s pending=%d", job["id"],
+                     bool(claim.get("waited_out")), _count(claim.get("pending")))
             report.action = "empty"
             return report
         if status != "claimed":
             log.error("claim unexpected status job=%s", job["id"])
             report.action = "error"
             return report
+
+        # 018 receipts: counts only, never ids of what was not read
+        log.info("claim scope job=%s explicit=%s pending=%d skipped=%d malformed=%d waited_out=%s",
+                 job["id"], bool(claim.get("explicit")), _count(claim.get("pending")),
+                 _count(claim.get("skipped")), _count(claim.get("malformed")),
+                 bool(claim.get("waited_out")))
 
         item_ids = [i.lower() for i in claim["items"]]
         log.info("claimed job=%s items=%d", job["id"], len(item_ids))
@@ -957,14 +1053,14 @@ class Runner:
         )
         report.action = "settled"
         report.outcome = settled.get("outcome")
-        report.detail = {
+        report.detail.update({
             k: settled.get(k)
             for k in (
                 "items_read", "items_failed", "items_withdrawn", "memory_inserted",
                 "tension_rows", "reinforced", "statements_discarded",
                 "reinforcements_dropped", "grounded_total",
             )
-        }
+        })
         return report
 
 
