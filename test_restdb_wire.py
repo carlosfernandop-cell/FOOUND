@@ -92,18 +92,38 @@ def test_w1_discovery_url_headers_and_row(wire):
     row = db.oldest_queued_synthesize_job()
     call = fake.calls[0]
     assert call["method"] == "GET"
-    assert call["url"] == (
-        f"{BASE}/rest/v1/jobs?type=eq.synthesize&status=eq.queued"
-        "&select=id,agent_id,requested_at&order=requested_at.asc&limit=1"
-    )
+    import re
+    # 018: tier one of discovery asks for queued jobs that are not waiting
+    # (started_at null, or the wait is over), URL-safe UTC cutoff
+    assert re.fullmatch(
+        re.escape(f"{BASE}/rest/v1/jobs?type=eq.synthesize&status=eq.queued")
+        + r"&or=\(started_at\.is\.null,started_at\.lte\.\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\)"
+        + re.escape("&select=id,agent_id,requested_at&order=requested_at.asc&limit=1"),
+        call["url"],
+    ), call["url"]
     _assert_headers(call["headers"], with_content_type=True)
     assert row == {"id": "j1", "agent_id": "a1", "requested_at": "2026-08-22T00:00:00Z"}
 
 
 def test_w1b_discovery_empty_is_none(wire):
     db, fake = wire
-    fake.queue(FakeResponse(200, []))
+    fake.queue(FakeResponse(200, []))     # tier one: nothing not waiting
+    fake.queue(FakeResponse(200, []))     # tier two: nothing waiting either
     assert db.oldest_queued_synthesize_job() is None
+    assert len(fake.calls) == 2
+    assert "&started_at=gt." in fake.calls[1]["url"] and "or=(" not in fake.calls[1]["url"]
+
+
+def test_w1c_discovery_falls_back_to_waiting_jobs_only_when_idle(wire):
+    db, fake = wire
+    fake.queue(FakeResponse(200, []))
+    fake.queue(FakeResponse(200, [{"id": "jw", "agent_id": "a1", "requested_at": "2026-08-22T00:00:00Z"}]))
+    assert db.oldest_queued_synthesize_job()["id"] == "jw"
+    assert len(fake.calls) == 2
+    # a ready job in tier one is returned without asking tier two
+    fake.queue(FakeResponse(200, [{"id": "jr", "agent_id": "a2", "requested_at": "2026-08-22T00:00:00Z"}]))
+    assert db.oldest_queued_synthesize_job()["id"] == "jr"
+    assert len(fake.calls) == 3
 
 
 # -- W2 · claim -------------------------------------------------------------

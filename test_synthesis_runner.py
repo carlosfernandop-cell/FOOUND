@@ -37,7 +37,8 @@ from synthesis_runner import (
     DoorError, FROZEN_CLIENT_COPY, PgDb, Runner, Storage,
 )
 
-DSN = "dbname=foound_test user=postgres host=127.0.0.1 password=harness"
+import os
+DSN = os.environ.get("FOOUND_TEST_DSN", "dbname=foound_test user=postgres host=127.0.0.1 password=harness")
 
 POLICY_COPY_SWEEP = "FOOUND could not finish reading this. Remove it and try again."
 COPY_DEFAULT = "FOOUND could not finish reading. Try again."
@@ -171,6 +172,12 @@ def mk_file(db, uid, aid, label, mime, data, storage, byte_size=None):
         "insert into evidence_items (id,agent_id,kind,label,storage_path,"
         "mime_type,byte_size) values (%s,%s,'file',%s,%s,%s,%s) returning id",
         (iid, aid, label, path, mime, byte_size if byte_size is not None else len(data)),
+    )
+    # an uploaded file is a row AND an object (018 reads only rows whose
+    # object exists); the harness stub of storage.objects records the upload
+    db._rows(
+        "insert into storage.objects (bucket_id, name) values ('feeds', %s) returning id",
+        (path,),
     )
     return iid
 
