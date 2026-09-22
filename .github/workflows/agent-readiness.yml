@@ -44,6 +44,10 @@ on:
       - "brief_proposal.py"
       - "sql/005_multiuser.sql"
       - "sql/006_jobs.sql"
+      - "sql/018_synthesis_request_boundary.sql"
+      - "sql/018_rollback.sql"
+      - "sql/dev/run_018_harness.sh"
+      - "synthesis_runner.py"
   pull_request:
   workflow_dispatch:
 
@@ -116,7 +120,7 @@ jobs:
           test_open_intelligence_gates.py test_evidence_boundaries.py
           test_restdb_wire.py test_no_agent_literals.py test_market_sources.py
           test_edition_authority.py test_hunt_retry.py test_017_harness_safety.py
-          test_receipt_recovery.py experiments
+          test_receipt_recovery.py test_synthesis_deferral.py experiments
 
   # Disposable Postgres. Never production. Proves migration 011 empirically.
   migration-011:
@@ -300,6 +304,53 @@ jobs:
           PGDATABASE: foound_017
           FOOUND_017_KEEP_DB: "1"
         run: bash sql/dev/run_017_harness.sh
+
+  # Disposable Postgres. Never production. Proves migration 018 with the REAL
+  # runner against the REAL doors (psycopg2), the first database backed pytest
+  # job; the SQL batteries above stay as they are.
+  migration-018:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: harness
+          POSTGRES_DB: foound_018
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # full history: test_x1 runs the runner as it was at the pinned
+          # pre-018 base (9a4bf0f) against the 018 door, and FAILS (never
+          # skips) when that commit cannot be read
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install psql client and dependencies (pinned)
+        run: |
+          sudo apt-get update && sudo apt-get install -y postgresql-client
+          pip install requests==2.34.2 pytest==9.1.1 psycopg2-binary==2.9.10 pypdf==3.17.4 python-docx==1.2.0
+      - name: Run 018 harness (disposable)
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGUSER: postgres
+          PGPASSWORD: harness
+          PGDATABASE: foound_018
+          FOOUND_018_KEEP_DB: "1"
+        run: bash sql/dev/run_018_harness.sh
 
   migration-014:
     runs-on: ubuntu-latest
