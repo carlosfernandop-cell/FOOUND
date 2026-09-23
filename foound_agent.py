@@ -140,7 +140,7 @@ BOOTSTRAP_001 = AgentConfig(
     output_dir="docs",
     # The custom domain, never the github.io URL: a repo rename kills the
     # github.io address (learned Aug 18) but foound.ai survives anything.
-    edition_url='https://foound.ai/',
+    edition_url='https://foound.ai/current-edition.html',
     publish_public=True,
     include=[
     "creative director",

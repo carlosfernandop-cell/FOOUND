@@ -83,7 +83,11 @@ def main(target: str, out_path: str, normalize: bool = False) -> int:
             else:
                 agent = spec.load_agent_config("001")
             build(agent, matches, new_keys, 6204)
-        rendered = open(os.path.join(work, "docs", "index.html")).read()
+        # Older revisions wrote index.html; current publishing preserves the landing.
+        edition_path = os.path.join(work, "docs", "current-edition.html")
+        if not os.path.exists(edition_path):
+            edition_path = os.path.join(work, "docs", "index.html")
+        rendered = open(edition_path).read()
     finally:
         os.chdir(cwd)
 

@@ -1850,7 +1850,7 @@ SHORTLIST_PAGE = """<!DOCTYPE html>
   <div class="mast">
     <a class="id" href="/foound/">FOOUND</a>
     <nav>
-      <a class="here" href="/">At work</a>
+      <a class="here" href="/current-edition.html">At work</a>
       <a href="/candidate/">Candidate</a>
       <a href="/memory/">Memory</a>
       <a href="/me/">FOOUND for me &rarr;</a>
@@ -1874,7 +1874,7 @@ __ENTRIES____PASSED__  </div>
 
 
   <nav class="roombar" aria-label="Rooms">
-    <a href="/" class="here"><span class="rdot"></span>At work</a>
+    <a href="/current-edition.html" class="here"><span class="rdot"></span>At work</a>
     <a href="/candidate/"><span class="rdot"></span>Candidate</a>
     <a href="/memory/"><span class="rdot"></span>Memory</a>
   </nav>
@@ -2353,7 +2353,8 @@ def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
         .replace("__FRACTION__", f"{n:03d}/{total_fetched:,}")
     )
 
-    with open(f"{agent.output_dir}/index.html", "w") as f:
+    # The discovery landing owns index.html. Daily editions must never replace it.
+    with open(f"{agent.output_dir}/current-edition.html", "w") as f:
         f.write(page)
     archive_page = page.replace('href="/archive/"', 'href="./"')
     with open(today_file, "w") as f:
@@ -2366,7 +2367,7 @@ def build_shortlist(agent, matches: list, new_keys: set, total_fetched: int,
         for i, p in reversed(list(enumerate(editions, 1)))
     )
     with open(f"{agent.output_dir}/archive/index.html", "w") as f:
-        f.write(f'<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>THE SHORTLIST · Archive</title></head><body style="font-family:\'Helvetica Neue\',Helvetica,Arial,sans-serif;max-width:680px;margin:0 auto;padding:72px 24px;"><div style="font-size:13px;font-weight:700;letter-spacing:.14em;">THE SHORTLIST <span style="color:#6b6b6b;font-weight:400;">&middot; ARCHIVE</span></div><ol style="list-style:none;margin-top:48px;">{links}</ol><p style="margin-top:48px;font-size:13px;"><a href="../" style="color:#000;">&larr; Latest edition</a></p></body></html>')
+        f.write(f'<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>THE SHORTLIST · Archive</title></head><body style="font-family:\'Helvetica Neue\',Helvetica,Arial,sans-serif;max-width:680px;margin:0 auto;padding:72px 24px;"><div style="font-size:13px;font-weight:700;letter-spacing:.14em;">THE SHORTLIST <span style="color:#6b6b6b;font-weight:400;">&middot; ARCHIVE</span></div><ol style="list-style:none;margin-top:48px;">{links}</ol><p style="margin-top:48px;font-size:13px;"><a href="../current-edition.html" style="color:#000;">&larr; Latest edition</a></p></body></html>')
 
     print(f"Shortlist: edition No. {edition:03d} built with {n} role(s).")
     return edition
