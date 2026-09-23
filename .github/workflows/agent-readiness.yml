@@ -19,6 +19,7 @@ on:
       - "test_*.py"
       - "render_edition.py"
       - "tests/**"
+      - "docs/index.html"
       - "golden_edition.html"
       - ".github/workflows/agent-readiness.yml"
       - ".github/workflows/hunt.yml"
@@ -80,6 +81,9 @@ jobs:
 
       - name: Orchestration works end to end
         run: python3 test_main_endtoend.py
+
+      - name: Approved landing survives daily edition publishing
+        run: python3 test_landing_publish.py
 
       - name: Edition structure unchanged
         run: |
