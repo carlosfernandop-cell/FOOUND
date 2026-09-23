@@ -10,7 +10,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent
-APPROVED_SHA256 = "519f35a67f2cef1b712a6d53c63c182c993d9db913c4aabb9193e8e318853ed3"
+APPROVED_SHA256 = "e942f550b8355242784b10b085409ee894ff824bfe51b1df7934a93f6cf95533"
 
 
 class LandingPublicationTests(unittest.TestCase):
@@ -24,6 +24,19 @@ class LandingPublicationTests(unittest.TestCase):
         self.assertIn('id="reference-tomasz"', text)
         self.assertIn('href="https://foound.lovable.app/"', text)
         self.assertNotIn('{{DISCOVERY_URL}}', text)
+        self.assertIn('href="mara-at-work.html"', text)
+
+    def test_approved_mara_example_and_safe_destinations(self):
+        page = (ROOT / "docs/mara-at-work.html").read_bytes()
+        self.assertEqual(hashlib.sha256(page).hexdigest(),
+                         "837e0bd06d54934c76cb0db4d83e208ec102af86827b18a356ffeac6cbd6d952")
+        text = page.decode()
+        self.assertIn('href="./#candidate-showcase"', text)
+        self.assertIn('Sample opportunities, not live openings.', text)
+        self.assertIn('Example Brief for Mara Lindqvist', text)
+        for forbidden in ('fetch(', 'XMLHttpRequest', 'supabase', 'localStorage',
+                          'sessionStorage', '<form', 'design-review/'):
+            self.assertNotIn(forbidden, text)
 
     def test_daily_generation_never_overwrites_landing(self):
         config = {key: '' for key in ('NOTION_TOKEN', 'NOTION_DB_ID',
